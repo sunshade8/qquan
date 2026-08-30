@@ -1,6 +1,7 @@
 "use client";
 
 import Bot from "lucide-react/dist/esm/icons/bot";
+import CalendarDays from "lucide-react/dist/esm/icons/calendar-days";
 import ChartCandlestick from "lucide-react/dist/esm/icons/chart-candlestick";
 import Check from "lucide-react/dist/esm/icons/check";
 import ChevronDown from "lucide-react/dist/esm/icons/chevron-down";
@@ -15,8 +16,9 @@ import Sparkles from "lucide-react/dist/esm/icons/sparkles";
 import Trash2 from "lucide-react/dist/esm/icons/trash-2";
 import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
 import { TradingViewChart } from "./tradingview-chart";
+import { MarketCalendar } from "./market-calendar";
 
-type View = "market" | "backtest" | "settings";
+type View = "market" | "backtest" | "calendar" | "settings";
 type DataTab = "rows" | "study" | "hypothesis";
 type Feature = "return1d" | "gap" | "range" | "volume20";
 type Operator = "gt" | "lt";
@@ -317,6 +319,7 @@ export function QuantWorkspace() {
   const navItems = [
     { id: "market" as View, label: "Market", icon: ChartCandlestick },
     { id: "backtest" as View, label: "Backtest", icon: FlaskConical },
+    { id: "calendar" as View, label: "Calendar", icon: CalendarDays },
     { id: "settings" as View, label: "Settings", icon: Settings },
   ];
 
@@ -443,6 +446,8 @@ export function QuantWorkspace() {
             </div>
           </section>
         )}
+
+        {view === "calendar" && <MarketCalendar />}
 
         {view === "settings" && (
           <section className="simple-view">
