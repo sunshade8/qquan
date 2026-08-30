@@ -1,266 +1,460 @@
 "use client";
 
-import Activity from "lucide-react/dist/esm/icons/activity";
-import Bell from "lucide-react/dist/esm/icons/bell";
 import Bot from "lucide-react/dist/esm/icons/bot";
+import ChartCandlestick from "lucide-react/dist/esm/icons/chart-candlestick";
 import Check from "lucide-react/dist/esm/icons/check";
-import ChevronRight from "lucide-react/dist/esm/icons/chevron-right";
-import Clock3 from "lucide-react/dist/esm/icons/clock-3";
+import ChevronDown from "lucide-react/dist/esm/icons/chevron-down";
 import Database from "lucide-react/dist/esm/icons/database";
+import FileUp from "lucide-react/dist/esm/icons/file-up";
 import FlaskConical from "lucide-react/dist/esm/icons/flask-conical";
-import Gauge from "lucide-react/dist/esm/icons/gauge";
-import LayoutDashboard from "lucide-react/dist/esm/icons/layout-dashboard";
-import LineChartIcon from "lucide-react/dist/esm/icons/chart-no-axes-combined";
-import Menu from "lucide-react/dist/esm/icons/menu";
-import MessageSquare from "lucide-react/dist/esm/icons/message-square";
+import PanelRight from "lucide-react/dist/esm/icons/panel-right";
 import Play from "lucide-react/dist/esm/icons/play";
-import Plus from "lucide-react/dist/esm/icons/plus";
-import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw";
-import Search from "lucide-react/dist/esm/icons/search";
+import Send from "lucide-react/dist/esm/icons/send";
 import Settings from "lucide-react/dist/esm/icons/settings";
-import ShieldCheck from "lucide-react/dist/esm/icons/shield-check";
 import Sparkles from "lucide-react/dist/esm/icons/sparkles";
-import Target from "lucide-react/dist/esm/icons/target";
-import X from "lucide-react/dist/esm/icons/x";
-import { FormEvent, useState } from "react";
-import type { BacktestResult } from "@/lib/backtesting";
+import Trash2 from "lucide-react/dist/esm/icons/trash-2";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
+import { TradingViewChart } from "./tradingview-chart";
 
-type View = "overview" | "agent" | "data" | "backtests";
-type Signal = { name: string; value: string; direction: string; reason: string };
-type ChatMessage = { role: "agent" | "user"; text: string; meta?: string };
+type View = "market" | "backtest" | "settings";
+type DataTab = "rows" | "study" | "hypothesis";
+type Feature = "return1d" | "gap" | "range" | "volume20";
+type Operator = "gt" | "lt";
 
-type Hypothesis = {
-  id: string;
-  title: string;
-  symbolUniverse: string;
-  thesis: string;
-  entryRule: string;
-  exitRule: string;
-  sizingRule: string;
-  status: string;
+type PriceRow = {
+  date: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
 };
 
-const chartPoints = [42, 46, 44, 52, 50, 58, 61, 56, 64, 70, 68, 78];
-const defaultSignals: Signal[] = [
-  { name: "Market breadth", value: "68.4%", direction: "positive", reason: "50일 이동평균 위 종목 비율이 지난 4주 동안 상승했습니다." },
-  { name: "Realized volatility", value: "14.8", direction: "neutral", reason: "20일 변동성이 1년 중앙값 아래지만 반전 위험은 남아 있습니다." },
-  { name: "Momentum spread", value: "+6.2%", direction: "positive", reason: "상위 모멘텀 그룹과 지수의 3개월 성과 차이가 확대됐습니다." },
-];
-
-const initialHypothesis: Hypothesis = {
-  id: "momentum-breadth-v1",
-  title: "Breadth-confirmed momentum",
-  symbolUniverse: "S&P 500 · large cap",
-  thesis: "시장 참여 폭이 넓어질 때 상대강도가 높은 종목의 추세가 더 오래 지속된다.",
-  entryRule: "20일 상대강도 상위 10% + 시장 폭 55% 이상",
-  exitRule: "상위 25% 이탈 또는 시장 폭 45% 미만",
-  sizingRule: "동일가중 10종목 · 종목당 최대 10%",
-  status: "ready",
+type StudyResult = {
+  occurrences: number;
+  positiveRate: number;
+  average: number;
+  median: number;
+  best: number;
+  worst: number;
 };
 
-const sampleRuns = [
-  { name: "Breadth-confirmed momentum", range: "10 years", returnValue: "+12.4%", sharpe: "1.68", date: "Today, 9:42 AM", status: "Completed" },
-  { name: "Low-volatility rotation", range: "7 years", returnValue: "+8.1%", sharpe: "1.21", date: "Aug 27, 4:18 PM", status: "Completed" },
-  { name: "Earnings drift", range: "5 years", returnValue: "—", sharpe: "—", date: "Aug 24, 1:03 PM", status: "Stopped" },
+type ChatMessage = { role: "user" | "agent"; text: string };
+
+const symbols = [
+  { label: "NVDA", value: "NASDAQ:NVDA" },
+  { label: "AAPL", value: "NASDAQ:AAPL" },
+  { label: "MSFT", value: "NASDAQ:MSFT" },
+  { label: "AMZN", value: "NASDAQ:AMZN" },
+  { label: "META", value: "NASDAQ:META" },
+  { label: "SPY", value: "AMEX:SPY" },
 ];
 
-function MiniLine({ points, className = "" }: { points: number[]; className?: string }) {
-  const min = Math.min(...points);
-  const max = Math.max(...points);
-  const normalized = points.map((point) => 12 + ((point - min) / Math.max(1, max - min)) * 72);
-  return (
-    <div className={`line-canvas ${className}`} role="img" aria-label={`Trend from ${points[0]} to ${points.at(-1)}`}>
-      {normalized.slice(0, -1).map((point, index) => {
-        const next = normalized[index + 1];
-        const dx = 100 / (normalized.length - 1);
-        const dy = point - next;
-        const length = Math.sqrt(dx * dx + dy * dy);
-        const angle = Math.atan2(-dy, dx) * 180 / Math.PI;
-        return <i key={index} style={{ left: `${index * dx}%`, bottom: `${point}%`, width: `${length}%`, transform: `rotate(${angle}deg)` }} />;
-      })}
-    </div>
-  );
+const intervals = [
+  { label: "15m", value: "15" },
+  { label: "1H", value: "60" },
+  { label: "1D", value: "D" },
+  { label: "1W", value: "W" },
+];
+
+const featureLabels: Record<Feature, string> = {
+  return1d: "일간 수익률 (%)",
+  gap: "시가 갭 (%)",
+  range: "일중 변동폭 (%)",
+  volume20: "20일 평균 대비 거래량 (배)",
+};
+
+const chartIndicators = [
+  { id: "RSI@tv-basicstudies", label: "RSI", aliases: ["rsi", "상대강도"] },
+  { id: "MACD@tv-basicstudies", label: "MACD", aliases: ["macd"] },
+  { id: "BB@tv-basicstudies", label: "Bollinger Bands", aliases: ["bollinger", "볼린저", "bb"] },
+  { id: "MASimple@tv-basicstudies", label: "SMA", aliases: ["sma", "단순이동평균", "단순 이동평균"] },
+  { id: "MAExp@tv-basicstudies", label: "EMA", aliases: ["ema", "지수이동평균", "지수 이동평균"] },
+  { id: "Volume@tv-basicstudies", label: "Volume", aliases: ["volume", "거래량"] },
+  { id: "VWAP@tv-basicstudies", label: "VWAP", aliases: ["vwap"] },
+  { id: "StochasticRSI@tv-basicstudies", label: "Stochastic RSI", aliases: ["stochastic rsi", "스토캐스틱 rsi", "스토캐스틱"] },
+  { id: "ROC@tv-basicstudies", label: "ROC", aliases: ["roc", "변화율"] },
+];
+
+function parseChartCommand(text: string) {
+  const normalized = text.toLowerCase();
+  const matched = chartIndicators.filter((indicator) => indicator.aliases.some((alias) => normalized.includes(alias)));
+  const remove = /제거|삭제|지워|빼줘|remove|delete|clear/.test(normalized);
+  const add = /추가|띄워|보여|적용|넣어|add|show|apply/.test(normalized);
+  const clearAll = remove && /전부|모두|다 |all/.test(normalized);
+  if (clearAll) return { action: "clear" as const, indicators: chartIndicators };
+  if (!matched.length || (!add && !remove)) return null;
+  return { action: remove ? "remove" as const : "add" as const, indicators: matched };
 }
 
-function MetricCard({ label, value, detail, featured = false }: { label: string; value: string; detail: React.ReactNode; featured?: boolean }) {
-  return <article className={`metric-card ${featured ? "featured" : ""}`}><span className="card-label">{label}</span><strong>{value}</strong><small>{detail}</small></article>;
+function parseNumber(value: string) {
+  const number = Number(value.replaceAll(",", "").trim());
+  return Number.isFinite(number) ? number : NaN;
+}
+
+function parseCsv(text: string): PriceRow[] {
+  const lines = text.trim().split(/\r?\n/).filter(Boolean);
+  if (lines.length < 2) return [];
+  const headers = lines[0].split(",").map((header) => header.trim().toLowerCase().replaceAll(/[^a-z]/g, ""));
+  const index = (names: string[]) => headers.findIndex((header) => names.includes(header));
+  const columns = {
+    date: index(["date", "datetime", "timestamp"]),
+    open: index(["open"]),
+    high: index(["high"]),
+    low: index(["low"]),
+    close: index(["close", "adjclose", "adjustedclose"]),
+    volume: index(["volume", "vol"]),
+  };
+  if (Object.values(columns).some((column) => column < 0)) return [];
+
+  return lines.slice(1).map((line) => {
+    const cells = line.split(",");
+    return {
+      date: cells[columns.date]?.trim() ?? "",
+      open: parseNumber(cells[columns.open] ?? ""),
+      high: parseNumber(cells[columns.high] ?? ""),
+      low: parseNumber(cells[columns.low] ?? ""),
+      close: parseNumber(cells[columns.close] ?? ""),
+      volume: parseNumber(cells[columns.volume] ?? ""),
+    };
+  }).filter((row) => row.date && Object.values(row).slice(1).every((value) => Number.isFinite(value)))
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function median(values: number[]) {
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function valueForFeature(rows: PriceRow[], index: number, feature: Feature) {
+  const row = rows[index];
+  const previous = rows[index - 1];
+  if (!previous) return null;
+  if (feature === "return1d") return ((row.close / previous.close) - 1) * 100;
+  if (feature === "gap") return ((row.open / previous.close) - 1) * 100;
+  if (feature === "range") return ((row.high - row.low) / row.open) * 100;
+  if (index < 20) return null;
+  const averageVolume = rows.slice(index - 20, index).reduce((sum, item) => sum + item.volume, 0) / 20;
+  return averageVolume ? row.volume / averageVolume : null;
+}
+
+function runEventStudy(rows: PriceRow[], feature: Feature, operator: Operator, threshold: number, horizon: number): StudyResult | null {
+  const returns: number[] = [];
+  for (let index = 1; index < rows.length - horizon; index += 1) {
+    const value = valueForFeature(rows, index, feature);
+    if (value === null) continue;
+    const match = operator === "gt" ? value > threshold : value < threshold;
+    if (match) returns.push(((rows[index + horizon].close / rows[index].close) - 1) * 100);
+  }
+  if (!returns.length) return null;
+  return {
+    occurrences: returns.length,
+    positiveRate: returns.filter((value) => value > 0).length / returns.length,
+    average: returns.reduce((sum, value) => sum + value, 0) / returns.length,
+    median: median(returns),
+    best: Math.max(...returns),
+    worst: Math.min(...returns),
+  };
+}
+
+function formatPercent(value: number) {
+  return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
 }
 
 export function QuantWorkspace() {
-  const [activeView, setActiveView] = useState<View>("overview");
-  const [mobileNav, setMobileNav] = useState(false);
-  const [selectedSymbols, setSelectedSymbols] = useState(["NVDA", "MSFT", "META"]);
-  const [signals, setSignals] = useState(defaultSignals);
-  const [analysisSummary, setAnalysisSummary] = useState("선택한 종목과 시장 폭을 함께 보면 모멘텀 지속 가능성이 높지만, 변동성 반전 조건을 반드시 포함해야 합니다.");
-  const [analysisMode, setAnalysisMode] = useState<"demo" | "live">("demo");
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    { role: "agent", text: "현재 데이터에서 두 가지가 보입니다. 시장 폭은 개선되고 있고, 선택 종목의 상대강도는 지수보다 빠르게 상승했습니다. 먼저 어떤 실패 조건을 중요하게 볼까요?", meta: "Tactic Agent · AI-generated" },
-    { role: "user", text: "급락장에서 손실이 커지는 전략은 피하고 싶어. 시장 폭을 필터로 쓰면 어때?" },
-    { role: "agent", text: "좋습니다. 시장 폭 55%를 진입 필터로, 45%를 위험 축소 기준으로 두면 가설이 명확해집니다. 과최적화를 피하려면 두 임계값을 ±5% 범위로 민감도 테스트하겠습니다.", meta: "Evidence-based suggestion" },
-  ]);
-  const [chatDraft, setChatDraft] = useState("");
-  const [hypothesis, setHypothesis] = useState(initialHypothesis);
-  const [toast, setToast] = useState("");
-  const [showBacktest, setShowBacktest] = useState(false);
-  const [years, setYears] = useState(10);
-  const [capital, setCapital] = useState(100000);
-  const [costBps, setCostBps] = useState(8);
-  const [isBacktesting, setIsBacktesting] = useState(false);
-  const [backtestResult, setBacktestResult] = useState<BacktestResult | null>(null);
-  const [syncState, setSyncState] = useState<"idle" | "syncing" | "demo">("idle");
+  const [view, setView] = useState<View>("market");
+  const [symbol, setSymbol] = useState("NASDAQ:NVDA");
+  const [symbolDraft, setSymbolDraft] = useState("NASDAQ:NVDA");
+  const [interval, setInterval] = useState("D");
+  const [dataTab, setDataTab] = useState<DataTab>("rows");
+  const [rows, setRows] = useState<PriceRow[]>([]);
+  const [datasetName, setDatasetName] = useState("");
+  const [dataSource, setDataSource] = useState("");
+  const [loadingData, setLoadingData] = useState(true);
+  const [importError, setImportError] = useState("");
+  const [feature, setFeature] = useState<Feature>("return1d");
+  const [operator, setOperator] = useState<Operator>("gt");
+  const [threshold, setThreshold] = useState(3);
+  const [horizon, setHorizon] = useState(5);
+  const [study, setStudy] = useState<StudyResult | null>(null);
+  const [studyRan, setStudyRan] = useState(false);
+  const [question, setQuestion] = useState("");
+  const [asking, setAsking] = useState(false);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [hypothesis, setHypothesis] = useState("");
+  const [agentOpen, setAgentOpen] = useState(true);
+  const [studies, setStudies] = useState<string[]>([]);
 
-  const navItems = [
-    { id: "overview" as View, label: "Overview", icon: LayoutDashboard },
-    { id: "agent" as View, label: "Tactic Agent", icon: Sparkles },
-    { id: "data" as View, label: "Market Data", icon: Database },
-    { id: "backtests" as View, label: "Backtests", icon: FlaskConical },
-  ];
+  useEffect(() => {
+    const controller = new AbortController();
+    const ticker = symbol.split(":").at(-1) ?? symbol;
+    setLoadingData(true);
+    setImportError("");
+    fetch(`/api/market/history?symbol=${encodeURIComponent(ticker)}`, { signal: controller.signal })
+      .then(async (response) => {
+        const data = await response.json() as { rows?: PriceRow[]; source?: string; error?: string };
+        if (!response.ok || !data.rows?.length) throw new Error(data.error || "가격 데이터를 가져오지 못했습니다.");
+        setRows(data.rows);
+        setDatasetName(`${ticker} · 10Y daily`);
+        setDataSource(data.source ?? "Market data");
+      })
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setRows([]);
+        setDatasetName("");
+        setDataSource("");
+        setImportError(error instanceof Error ? error.message : "가격 데이터를 가져오지 못했습니다.");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoadingData(false);
+      });
+    return () => controller.abort();
+  }, [symbol]);
 
-  const displayTitle = ({ overview: "Overview", agent: "Tactic Agent", data: "Market Data", backtests: "Backtests" })[activeView];
+  const profile = useMemo(() => {
+    if (rows.length < 2) return null;
+    const changes = rows.slice(1).map((row, index) => ((row.close / rows[index].close) - 1) * 100);
+    const averageVolume = rows.reduce((sum, row) => sum + row.volume, 0) / rows.length;
+    return {
+      start: rows[0].date,
+      end: rows.at(-1)?.date ?? "",
+      change: ((rows.at(-1)!.close / rows[0].close) - 1) * 100,
+      upDays: changes.filter((value) => value > 0).length / changes.length,
+      averageVolume,
+    };
+  }, [rows]);
 
-  function navigate(view: View) {
-    setActiveView(view);
-    setMobileNav(false);
+  function selectSymbol(next: string) {
+    setSymbol(next);
+    setSymbolDraft(next);
+    setRows([]);
+    setDatasetName("");
+    setDataSource("");
+    setStudy(null);
+    setStudyRan(false);
+    setMessages([]);
   }
 
-  async function runAnalysis() {
-    setIsAnalyzing(true);
+  function submitSymbol(event: FormEvent) {
+    event.preventDefault();
+    const next = symbolDraft.trim().toUpperCase();
+    if (!next) return;
+    selectSymbol(next.includes(":") ? next : `NASDAQ:${next}`);
+  }
+
+  async function importCsv(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const parsed = parseCsv(await file.text());
+    if (parsed.length < 30) {
+      setImportError("date, open, high, low, close, volume 열과 최소 30개 행이 필요합니다.");
+      return;
+    }
+    setRows(parsed);
+    setDatasetName(file.name);
+    setDataSource("Imported CSV");
+    setImportError("");
+    setStudy(null);
+    setStudyRan(false);
+    setMessages([]);
+    event.target.value = "";
+  }
+
+  function executeStudy() {
+    setStudy(runEventStudy(rows, feature, operator, threshold, horizon));
+    setStudyRan(true);
+  }
+
+  async function askAgent(event: FormEvent) {
+    event.preventDefault();
+    const prompt = question.trim();
+    if (!prompt || asking) return;
+    setMessages((current) => [...current, { role: "user", text: prompt }]);
+    setQuestion("");
+
+    const chartCommand = parseChartCommand(prompt);
+    if (chartCommand) {
+      if (chartCommand.action === "clear") setStudies([]);
+      if (chartCommand.action === "add") setStudies((current) => [...new Set([...current, ...chartCommand.indicators.map((item) => item.id)])]);
+      if (chartCommand.action === "remove") setStudies((current) => current.filter((id) => !chartCommand.indicators.some((item) => item.id === id)));
+      const names = chartCommand.indicators.map((item) => item.label).join(", ");
+      const reply = chartCommand.action === "clear" ? "차트의 보조지표를 모두 제거했습니다." : chartCommand.action === "add" ? `${names}를 차트에 추가했습니다.` : `${names}를 차트에서 제거했습니다.`;
+      setMessages((current) => [...current, { role: "agent", text: `${reply} 무료 위젯을 새 설정으로 다시 불러옵니다.` }]);
+      return;
+    }
+
+    if (!rows.length) {
+      setMessages((current) => [...current, { role: "agent", text: "분석 데이터가 아직 없습니다. 자동 수집이 끝난 뒤 다시 물어보세요." }]);
+      return;
+    }
+    setAsking(true);
     try {
       const response = await fetch("/api/analyze", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ symbols: selectedSymbols, question: "Find robust, testable chart and data signals.", context: { breadth: 68.4, realizedVolatility: 14.8, momentumSpread: 6.2 } }),
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          symbol,
+          question: prompt,
+          dataset: {
+            name: datasetName,
+            profile,
+            rows: rows.slice(-400),
+            study: study ? { feature: featureLabels[feature], operator, threshold, horizon, result: study } : null,
+          },
+        }),
       });
-      const data = await response.json() as { summary?: string; signals?: Signal[]; hypothesis?: string; mode?: "demo" | "live"; error?: string };
-      if (!response.ok) throw new Error(data.error || "Analysis failed");
-      if (data.summary) setAnalysisSummary(data.summary);
-      if (data.signals?.length) setSignals(data.signals);
-      if (data.hypothesis) {
-        const nextThesis = data.hypothesis;
-        setHypothesis((current) => ({ ...current, thesis: nextThesis }));
-      }
-      setAnalysisMode(data.mode ?? "demo");
-      setToast(data.mode === "live" ? "Claude 분석이 완료되었습니다." : "데모 데이터로 분석 흐름을 실행했습니다.");
-    } catch {
-      setToast("분석 서비스에 연결하지 못했습니다. 기존 결과를 유지합니다.");
+      const data = await response.json() as { answer?: string; error?: string };
+      if (!response.ok) throw new Error(data.error || "Agent unavailable");
+      setMessages((current) => [...current, { role: "agent", text: data.answer ?? "응답이 비어 있습니다." }]);
+    } catch (error) {
+      setMessages((current) => [...current, { role: "agent", text: error instanceof Error ? error.message : "에이전트 연결에 실패했습니다." }]);
     } finally {
-      setIsAnalyzing(false);
+      setAsking(false);
     }
   }
 
-  function sendMessage(event: FormEvent) {
-    event.preventDefault();
-    const text = chatDraft.trim();
-    if (!text) return;
-    setMessages((current) => [...current, { role: "user", text }, { role: "agent", text: "이 조건은 검증 가능한 규칙으로 바꿀 수 있습니다. 진입 기준과 청산 기준을 분리하고, 거래비용을 포함한 결과와 제외한 결과를 함께 비교하겠습니다.", meta: "Draft response · Connect API for live reasoning" }]);
-    setChatDraft("");
-  }
-
-  async function saveHypothesis() {
-    try {
-      const response = await fetch("/api/hypotheses", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(hypothesis) });
-      const data = await response.json() as { persisted?: boolean };
-      setToast(data.persisted ? "가설을 데이터베이스에 저장했습니다." : "가설을 현재 세션에 보관했습니다. 데이터베이스 연결 후 영구 저장됩니다.");
-    } catch {
-      setToast("가설은 화면에 유지되지만 아직 영구 저장되지 않았습니다.");
-    }
-  }
-
-  async function runBacktest() {
-    setIsBacktesting(true);
-    try {
-      const response = await fetch("/api/backtest", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ hypothesisId: hypothesis.id, years, initialCapital: capital, transactionCostBps: costBps }),
-      });
-      const data = await response.json() as { result?: BacktestResult; error?: string };
-      if (!response.ok || !data.result) throw new Error(data.error || "Backtest failed");
-      setBacktestResult(data.result);
-      setShowBacktest(false);
-      setActiveView("backtests");
-      setToast("백테스트가 완료되었습니다. 이 실행에는 LLM을 사용하지 않았습니다.");
-    } catch {
-      setToast("백테스트를 완료하지 못했습니다. 입력값을 확인해 주세요.");
-    } finally {
-      setIsBacktesting(false);
-    }
-  }
-
-  async function syncData() {
-    setSyncState("syncing");
-    try {
-      await fetch("/api/market/sync", { method: "POST" });
-      setSyncState("demo");
-      setToast("동기화 경로를 확인했습니다. 시세 공급자 연결 전에는 데모 모드로 유지됩니다.");
-    } catch {
-      setSyncState("idle");
-      setToast("동기화 서비스에 연결하지 못했습니다.");
-    }
-  }
+  const navItems = [
+    { id: "market" as View, label: "Market", icon: ChartCandlestick },
+    { id: "backtest" as View, label: "Backtest", icon: FlaskConical },
+    { id: "settings" as View, label: "Settings", icon: Settings },
+  ];
 
   return (
-    <main className="app-shell">
-      <aside className={`sidebar ${mobileNav ? "mobile-open" : ""}`} aria-label="Primary navigation">
-        <div className="brand-lockup"><div className="brand-mark" aria-hidden="true">Q</div><div><strong>QQuant</strong><small>Personal research</small></div></div>
-        <nav className="side-nav">
-          {navItems.map((item) => <button key={item.id} className={`nav-item ${activeView === item.id ? "active" : ""}`} onClick={() => navigate(item.id)}><item.icon size={17} strokeWidth={2} /><b>{item.label}</b>{activeView === item.id && <span className="nav-indicator" />}</button>)}
+    <main className="terminal-shell">
+      <aside className="rail" aria-label="Primary navigation">
+        <button className="rail-brand" aria-label="QQuant market" onClick={() => setView("market")}>Q</button>
+        <nav>
+          {navItems.map((item) => (
+            <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)} aria-label={item.label} title={item.label}>
+              <item.icon size={19} strokeWidth={1.8} />
+              <span>{item.label}</span>
+            </button>
+          ))}
         </nav>
-        <div className="sidebar-section"><span>Workspace</span><button className="plain-row"><Settings size={16} /><b>Settings</b></button></div>
-        <div className="sidebar-status"><span className="status-dot" aria-hidden="true" /><span><strong>Data healthy</strong><small>Demo snapshot · 8m ago</small></span></div>
       </aside>
 
-      <section className="workspace">
-        <header className="topbar">
-          <div className="topbar-title"><button className="mobile-menu" aria-label="Open navigation" onClick={() => setMobileNav((value) => !value)}><Menu size={20} /></button><div><p className="eyebrow">QQuant / {displayTitle}</p><h1>{activeView === "overview" ? "Good morning, Woojin." : displayTitle}</h1></div></div>
-          <div className="top-actions"><button className="icon-button" aria-label="Search"><Search size={17} /></button><button className="icon-button" aria-label="Notifications"><Bell size={17} /></button><div className="avatar" aria-label="User profile">WP</div></div>
+      <section className="terminal-main">
+        <header className="command-bar">
+          <form className="symbol-search" onSubmit={submitSymbol}>
+            <label htmlFor="symbol-input">Symbol</label>
+            <input id="symbol-input" value={symbolDraft} onChange={(event) => setSymbolDraft(event.target.value)} spellCheck={false} />
+          </form>
+          <div className="watchlist" aria-label="Watchlist">
+            {symbols.map((item) => <button key={item.value} className={symbol === item.value ? "active" : ""} onClick={() => selectSymbol(item.value)}>{item.label}</button>)}
+          </div>
+          <div className="connection-state"><span className="live-dot" />TradingView{dataSource ? ` · ${dataSource}` : ""}</div>
         </header>
 
-        {activeView === "overview" && <>
-          <div className="hero-row"><div><span className="section-kicker">Research cockpit</span><h2>From signal to evidence.</h2><p>데이터에서 신호를 찾고, Tactic Agent와 검증 가능한 가설을 만든 뒤, LLM 없이 백테스트하세요.</p></div><button className="primary-button" onClick={() => navigate("agent")}><Sparkles size={16} /> Start AI analysis</button></div>
-          <section className="metric-grid" aria-label="Research overview">
-            <MetricCard featured label="Strategy capital" value="$100,000" detail={<><em>↑ 12.4%</em> illustrative return</>} />
-            <MetricCard label="Universe" value="503" detail="S&P 500 securities" />
-            <MetricCard label="Active hypotheses" value="3" detail="1 ready to backtest" />
-            <MetricCard label="Last backtest" value="1.68" detail="Sharpe ratio · 10Y" />
-          </section>
-          <section className="content-grid">
-            <article className="panel chart-panel"><div className="panel-heading"><div><span className="card-label">Market pulse</span><h3>S&amp;P 500 breadth</h3></div><div className="segmented" aria-label="Chart range"><button>1M</button><button className="selected">3M</button><button>1Y</button></div></div><div className="chart-summary"><strong>68.4%</strong><span className="positive">↑ 4.2%</span></div><MiniLine points={chartPoints} /><div className="chart-axis"><span>Jun</span><span>Jul</span><span>Aug</span></div><p className="chart-note"><Sparkles size={14} /><span>AI watch</span> Breadth is improving while volatility compresses. This may support a momentum hypothesis.</p></article>
-            <article className="panel agent-panel"><div className="agent-icon"><Sparkles size={18} /></div><span className="card-label">Tactic Agent</span><h3>Turn market evidence into a testable rule.</h3><p>신호를 검토하고, 반례를 찾고, 백테스트가 실행할 정확한 규칙을 준비합니다.</p><div className="flow-steps"><div className="done"><span><Check size={13} /></span><b>Analyze data</b><small>Signals selected</small></div><div className="current"><span>2</span><b>Build hypothesis</b><small>Continue conversation</small></div><div><span>3</span><b>Run backtest</b><small>Rules only, no LLM</small></div></div><button className="secondary-button" onClick={() => navigate("agent")}>Open workspace <ChevronRight size={16} /></button></article>
-          </section>
-          <section className="panel recent-panel"><div className="panel-heading"><div><span className="card-label">Recent activity</span><h3>Backtest history</h3></div><button className="text-button" onClick={() => navigate("backtests")}>View all <ChevronRight size={14} /></button></div><div className="run-list">{sampleRuns.slice(0, 2).map((run) => <div className="run-row" key={run.name}><div className="run-icon"><FlaskConical size={16} /></div><div><strong>{run.name}</strong><small>{run.range} · {run.date}</small></div><span className="run-return">{run.returnValue}</span><span>{run.sharpe}</span><span className="status-pill success"><Check size={11} />{run.status}</span></div>)}</div></section>
-        </>}
+        {view === "market" && (
+          <div className={`market-layout ${agentOpen ? "" : "agent-closed"}`}>
+            <section className="market-stack">
+              <article className="chart-surface">
+                <div className="chart-toolbar">
+                  <div><strong>{symbol}</strong><span>{studies.length ? `${studies.length} studies` : "TradingView"}</span></div>
+                  <div className="intervals" aria-label="Chart interval">
+                    {intervals.map((item) => <button key={item.value} className={interval === item.value ? "active" : ""} onClick={() => setInterval(item.value)}>{item.label}</button>)}
+                  </div>
+                  <button className="square-button" aria-label={agentOpen ? "Hide agent" : "Show agent"} onClick={() => setAgentOpen((current) => !current)}><PanelRight size={17} /></button>
+                </div>
+                <div className="chart-body"><TradingViewChart symbol={symbol} interval={interval} studies={studies} /></div>
+              </article>
 
-        {activeView === "agent" && <section className="agent-workspace">
-          <div className="page-intro"><div><span className="section-kicker">Human-in-the-loop research</span><h2>Tactic Agent</h2><p>LLM은 신호와 가설을 제안할 뿐입니다. 규칙을 확인하고 백테스트를 시작하는 결정은 항상 사용자가 합니다.</p></div><div className="ai-badge"><Bot size={15} /><span>Claude Opus 4.7</span><small>On demand</small></div></div>
-          <div className="research-layout">
-            <aside className="research-rail panel"><div className="rail-heading"><span className="card-label">Analysis context</span><button aria-label="Add symbol"><Plus size={15} /></button></div><p className="field-label">Selected symbols</p><div className="symbol-list">{["NVDA", "MSFT", "META", "AMZN", "AVGO"].map((symbol) => <button key={symbol} className={selectedSymbols.includes(symbol) ? "selected" : ""} onClick={() => setSelectedSymbols((current) => current.includes(symbol) ? current.filter((value) => value !== symbol) : [...current, symbol])}><span>{symbol.slice(0, 1)}</span><b>{symbol}</b>{selectedSymbols.includes(symbol) && <Check size={13} />}</button>)}</div><div className="data-context"><div><Database size={14} /><span><b>Daily OHLCV</b><small>10 years · adjusted</small></span></div><div><Activity size={14} /><span><b>Technical factors</b><small>18 signals</small></span></div><div><ShieldCheck size={14} /><span><b>Point-in-time guard</b><small>Enabled</small></span></div></div><button className="primary-button full" disabled={isAnalyzing || selectedSymbols.length === 0} onClick={runAnalysis}>{isAnalyzing ? <RefreshCw size={16} className="spin" /> : <Sparkles size={16} />}{isAnalyzing ? "Analyzing…" : "Find signals"}</button><p className="privacy-note">선택한 데이터만 서버의 AI 모델로 전송됩니다.</p></aside>
-            <section className="conversation panel"><div className="conversation-head"><div><div className="agent-avatar"><Sparkles size={17} /></div><span><strong>Research session</strong><small>{analysisMode === "live" ? "Live AI analysis" : "Demo analysis · API key not connected"}</small></span></div><button className="icon-button" aria-label="Session options"><Settings size={16} /></button></div><div className="analysis-banner"><div><Gauge size={18} /><span><strong>Current read</strong><p>{analysisSummary}</p></span></div><span className="confidence">Moderate confidence</span></div><div className="signal-strip">{signals.map((signal) => <article key={signal.name}><span className={`signal-dot ${signal.direction}`} /><small>{signal.name}</small><strong>{signal.value}</strong><p>{signal.reason}</p></article>)}</div><div className="chat-log" aria-live="polite">{messages.map((message, index) => <div className={`message ${message.role}`} key={`${message.role}-${index}`}><div className="message-author">{message.role === "agent" ? <Sparkles size={13} /> : "WP"}</div><div><p>{message.text}</p>{message.meta && <small>{message.meta}</small>}</div></div>)}</div><form className="composer" onSubmit={sendMessage}><MessageSquare size={17} /><input aria-label="Message Tactic Agent" value={chatDraft} onChange={(event) => setChatDraft(event.target.value)} placeholder="Ask about assumptions, failure cases, or parameters…" /><button disabled={!chatDraft.trim()} aria-label="Send message"><ChevronRight size={18} /></button></form><p className="ai-disclosure">AI 결과는 오류를 포함할 수 있으며 투자 조언이 아닙니다. 백테스트 전에 규칙과 데이터 범위를 확인하세요.</p></section>
-            <aside className="hypothesis-panel panel"><div className="hypothesis-head"><div><span className="card-label">Hypothesis</span><span className="status-pill ready">Ready to test</span></div><button className="icon-button" aria-label="Close inspector"><X size={15} /></button></div><label>Title<input value={hypothesis.title} onChange={(event) => setHypothesis({ ...hypothesis, title: event.target.value })} /></label><label>Universe<input value={hypothesis.symbolUniverse} onChange={(event) => setHypothesis({ ...hypothesis, symbolUniverse: event.target.value })} /></label><label>Thesis<textarea rows={4} value={hypothesis.thesis} onChange={(event) => setHypothesis({ ...hypothesis, thesis: event.target.value })} /></label><div className="rule-block"><span><Target size={14} />Entry rule</span><textarea rows={3} value={hypothesis.entryRule} onChange={(event) => setHypothesis({ ...hypothesis, entryRule: event.target.value })} /></div><div className="rule-block"><ShieldCheck size={14} /><span>Exit rule</span><textarea rows={3} value={hypothesis.exitRule} onChange={(event) => setHypothesis({ ...hypothesis, exitRule: event.target.value })} /></div><label>Position sizing<input value={hypothesis.sizingRule} onChange={(event) => setHypothesis({ ...hypothesis, sizingRule: event.target.value })} /></label><div className="inspector-actions"><button className="ghost-button" onClick={saveHypothesis}>Save draft</button><button className="primary-button" onClick={() => setShowBacktest(true)}><Play size={15} fill="currentColor" /> Backtest</button></div></aside>
+              <article className="data-dock">
+                <div className="dock-tabs">
+                  <div role="tablist" aria-label="Research data">
+                    <button role="tab" aria-selected={dataTab === "rows"} className={dataTab === "rows" ? "active" : ""} onClick={() => setDataTab("rows")}>Data</button>
+                    <button role="tab" aria-selected={dataTab === "study"} className={dataTab === "study" ? "active" : ""} onClick={() => setDataTab("study")}>Study</button>
+                    <button role="tab" aria-selected={dataTab === "hypothesis"} className={dataTab === "hypothesis" ? "active" : ""} onClick={() => setDataTab("hypothesis")}>Hypothesis</button>
+                  </div>
+                  <div className="dataset-actions">
+                    {datasetName && <span>{datasetName} · {rows.length.toLocaleString()} rows</span>}
+                    {rows.length > 0 && <button className="icon-text" onClick={() => { setRows([]); setDatasetName(""); setDataSource(""); setStudy(null); }}><Trash2 size={13} />Clear</button>}
+                    <label className="import-button"><FileUp size={14} />CSV fallback<input type="file" accept=".csv,text/csv" onChange={importCsv} /></label>
+                  </div>
+                </div>
+
+                {dataTab === "rows" && (
+                  <div className="dock-content">
+                    {!rows.length ? (
+                      <div className="empty-data"><Database size={19} /><div><strong>{loadingData ? "OHLCV를 가져오는 중입니다" : "분석 데이터가 없습니다"}</strong><p>{loadingData ? `${symbol}의 조정 일봉 10년치를 불러오고 있습니다.` : "자동 수집에 실패하면 CSV를 대체 입력으로 사용할 수 있습니다."}</p>{importError && <em>{importError}</em>}</div></div>
+                    ) : (
+                      <div className="rows-view">
+                        {profile && <div className="dataset-profile"><span><small>Period</small><b>{profile.start} — {profile.end}</b></span><span><small>Total change</small><b className={profile.change >= 0 ? "positive" : "negative"}>{formatPercent(profile.change)}</b></span><span><small>Up days</small><b>{(profile.upDays * 100).toFixed(1)}%</b></span><span><small>Avg volume</small><b>{Math.round(profile.averageVolume).toLocaleString()}</b></span></div>}
+                        <div className="price-table" role="table" aria-label={`${datasetName} price data`}>
+                          <div className="price-row head" role="row"><span>Date</span><span>Open</span><span>High</span><span>Low</span><span>Close</span><span>Volume</span></div>
+                          {[...rows].reverse().slice(0, 40).map((row) => <div className="price-row" role="row" key={row.date}><span>{row.date}</span><span>{row.open.toFixed(2)}</span><span>{row.high.toFixed(2)}</span><span>{row.low.toFixed(2)}</span><span>{row.close.toFixed(2)}</span><span>{Math.round(row.volume).toLocaleString()}</span></div>)}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {dataTab === "study" && (
+                  <div className="study-workbench">
+                    <div className="study-query">
+                      <label>When<select value={feature} onChange={(event) => { setFeature(event.target.value as Feature); setStudyRan(false); }}><option value="return1d">일간 수익률</option><option value="gap">시가 갭</option><option value="range">일중 변동폭</option><option value="volume20">20일 평균 대비 거래량</option></select><ChevronDown size={13} /></label>
+                      <label>is<select value={operator} onChange={(event) => { setOperator(event.target.value as Operator); setStudyRan(false); }}><option value="gt">greater than</option><option value="lt">less than</option></select><ChevronDown size={13} /></label>
+                      <label>Threshold<input type="number" step="0.1" value={threshold} onChange={(event) => { setThreshold(Number(event.target.value)); setStudyRan(false); }} /><span>{feature === "volume20" ? "×" : "%"}</span></label>
+                      <label>Forward<input type="number" min="1" max="252" value={horizon} onChange={(event) => { setHorizon(Number(event.target.value)); setStudyRan(false); }} /><span>days</span></label>
+                      <button className="run-button" disabled={!rows.length} onClick={executeStudy}><Play size={13} fill="currentColor" />Run</button>
+                    </div>
+                    {!rows.length ? <div className="study-empty">CSV를 불러오면 이 조건이 과거에 발생한 모든 시점과 이후 수익률을 계산합니다.</div> : studyRan && study ? (
+                      <div className="study-results"><span><small>Occurrences</small><b>{study.occurrences}</b></span><span><small>Positive after {horizon}D</small><b>{(study.positiveRate * 100).toFixed(1)}%</b></span><span><small>Median</small><b className={study.median >= 0 ? "positive" : "negative"}>{formatPercent(study.median)}</b></span><span><small>Average</small><b className={study.average >= 0 ? "positive" : "negative"}>{formatPercent(study.average)}</b></span><span><small>Best / Worst</small><b>{formatPercent(study.best)} / {formatPercent(study.worst)}</b></span></div>
+                    ) : studyRan ? <div className="study-empty">이 조건과 기간에서는 발생 사례가 없습니다.</div> : <div className="study-empty">조건을 정하고 Run을 누르세요. 계산 과정에는 LLM을 사용하지 않습니다.</div>}
+                  </div>
+                )}
+
+                {dataTab === "hypothesis" && (
+                  <div className="hypothesis-editor">
+                    <label>Working hypothesis<textarea value={hypothesis} onChange={(event) => setHypothesis(event.target.value)} placeholder="관찰 → 예상 메커니즘 → 진입/청산 규칙 → 반증 조건" /></label>
+                    <div><span>{hypothesis.length ? "Draft · not backtested" : "No hypothesis"}</span><button className="run-button" disabled={!hypothesis.trim() || !rows.length} onClick={() => setView("backtest")}><FlaskConical size={13} />Prepare backtest</button></div>
+                  </div>
+                )}
+              </article>
+            </section>
+
+            {agentOpen && (
+              <aside className="agent-dock">
+                <div className="agent-head"><div><span className="agent-mark"><Sparkles size={15} /></span><div><strong>Agent</strong><small>{rows.length ? `${datasetName} attached` : "waiting for data"}</small></div></div><Bot size={16} /></div>
+                <div className="agent-context">
+                  <span>{symbol}</span><span>{intervals.find((item) => item.value === interval)?.label}</span><span>{studies.length} studies</span><span className={rows.length ? "connected" : "missing"}>{rows.length ? `${rows.length} rows` : "loading data"}</span>
+                </div>
+                <div className="conversation-log" aria-live="polite">
+                  {!messages.length && <div className="agent-empty"><strong>차트와 데이터를 함께 조작합니다.</strong><p>“RSI와 MACD 추가해줘”처럼 차트를 바꾸거나, “이 조건이 다른 시장 국면에서도 남는지”처럼 데이터를 조사해 달라고 하세요.</p></div>}
+                  {messages.map((message, index) => <div className={`chat-message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === "user" ? "You" : "Agent"}</span><p>{message.text}</p></div>)}
+                  {asking && <div className="agent-thinking"><i /><i /><i /></div>}
+                </div>
+                <form className="agent-composer" onSubmit={askAgent}>
+                  <textarea aria-label="Ask Agent" value={question} onChange={(event) => setQuestion(event.target.value)} disabled={asking} placeholder="RSI와 MACD 추가해줘…" rows={3} />
+                  <div><span>Chart commands · grounded analysis</span><button aria-label="Send" disabled={!question.trim() || asking}><Send size={15} /></button></div>
+                </form>
+              </aside>
+            )}
           </div>
-        </section>}
+        )}
 
-        {activeView === "data" && <section className="data-view">
-          <div className="page-intro"><div><span className="section-kicker">Data foundation</span><h2>Market Data</h2><p>S&amp;P 500 유니버스와 조정 일봉 데이터를 한 곳에서 관리합니다. 증분 작업은 24시간 주기로 설계되어 있습니다.</p></div><button className="primary-button" disabled={syncState === "syncing"} onClick={syncData}><RefreshCw size={16} className={syncState === "syncing" ? "spin" : ""} />{syncState === "syncing" ? "Checking…" : "Update now"}</button></div>
-          <section className="data-metrics"><article className="panel"><Database size={19} /><span><small>Securities</small><strong>503</strong><em>Universe snapshot</em></span></article><article className="panel"><LineChartIcon size={19} /><span><small>Daily price rows</small><strong>1.24M</strong><em>10 years retained</em></span></article><article className="panel"><Clock3 size={19} /><span><small>Next update</small><strong>23h 52m</strong><em>Daily at 06:00 UTC</em></span></article><article className="panel"><ShieldCheck size={19} /><span><small>Data quality</small><strong>99.96%</strong><em>2 flags to review</em></span></article></section>
-          <article className="panel pipeline-panel"><div className="panel-heading"><div><span className="card-label">Daily pipeline</span><h3>Ingestion status</h3></div><span className={`status-pill ${syncState === "demo" ? "warning" : "success"}`}>{syncState === "demo" ? "Provider required" : "Healthy"}</span></div><div className="pipeline"><div className="complete"><span><Check size={14} /></span><b>Universe</b><small>S&amp;P membership</small></div><ChevronRight size={16} /><div className="complete"><span><Check size={14} /></span><b>Prices</b><small>Adjusted OHLCV</small></div><ChevronRight size={16} /><div className="complete"><span><Check size={14} /></span><b>Quality checks</b><small>Gaps & splits</small></div><ChevronRight size={16} /><div><span><Clock3 size={14} /></span><b>Factor build</b><small>18 derived signals</small></div></div></article>
-          <article className="panel source-panel"><div className="panel-heading"><div><span className="card-label">Storage & sources</span><h3>Dataset inventory</h3></div><button className="text-button"><Settings size={14} /> Configure</button></div><div className="data-table" role="table" aria-label="Market data inventory"><div className="table-row table-head" role="row"><span>Dataset</span><span>Source</span><span>Coverage</span><span>Last updated</span><span>Status</span></div>{[
-            ["S&P 500 constituents", "Reference adapter", "503 symbols", "Today, 5:58 AM", "Current"],
-            ["Adjusted daily prices", "Market data adapter", "2016–2026", "Today, 6:07 AM", "Current"],
-            ["Corporate actions", "Market data adapter", "Splits · dividends", "Today, 6:04 AM", "Current"],
-            ["Fundamentals", "Not connected", "—", "—", "Required"],
-          ].map((row) => <div className="table-row" role="row" key={row[0]}>{row.map((cell, index) => <span role="cell" key={cell} data-label={["Dataset", "Source", "Coverage", "Updated", "Status"][index]}>{index === 4 ? <span className={`status-pill ${cell === "Required" ? "warning" : "success"}`}>{cell}</span> : cell}</span>)}</div>)}</div></article>
-        </section>}
+        {view === "backtest" && (
+          <section className="simple-view">
+            <header><div><span>Backtest</span><h1>검증할 규칙을 확정합니다.</h1></div><span className="engine-state"><Check size={13} />No LLM</span></header>
+            <div className="backtest-grid">
+              <article><small>Hypothesis</small><textarea value={hypothesis} onChange={(event) => setHypothesis(event.target.value)} placeholder="Market 화면에서 가설을 작성하세요." /><div className="config-row"><label>Capital<input type="number" defaultValue="100000" /></label><label>Cost (bps)<input type="number" defaultValue="8" /></label><label>Benchmark<select defaultValue="SPY"><option>SPY</option></select></label></div><button className="run-button large" disabled>Data engine not connected</button></article>
+              <aside><strong>아직 실행하지 않습니다.</strong><p>현재는 합성 수익률을 만들지 않습니다. 실제 S&amp;P 500 데이터 공급자와 포인트인타임 유니버스가 연결된 뒤, 확정된 규칙만 백테스트 엔진에 전달합니다.</p></aside>
+            </div>
+          </section>
+        )}
 
-        {activeView === "backtests" && <section className="backtest-view">
-          <div className="page-intro"><div><span className="section-kicker">Deterministic engine</span><h2>Backtests</h2><p>확정된 가설과 저장된 가격 데이터만 사용합니다. 이 단계에서는 LLM 호출이 없습니다.</p></div><button className="primary-button" onClick={() => setShowBacktest(true)}><Play size={15} fill="currentColor" /> New backtest</button></div>
-          {backtestResult && <article className="panel result-card"><div className="result-head"><div><span className="card-label">Latest illustrative run</span><h3>{hypothesis.title}</h3><p>{backtestResult.periodStart} → {backtestResult.periodEnd} · ${capital.toLocaleString()} initial capital</p></div><span className="no-ai-badge"><ShieldCheck size={15} /> No LLM used</span></div><div className="result-metrics"><div><small>Annual return</small><strong className="positive">+{(backtestResult.annualReturn * 100).toFixed(1)}%</strong></div><div><small>Sharpe ratio</small><strong>{backtestResult.sharpe}</strong></div><div><small>Max drawdown</small><strong className="negative">{(backtestResult.maxDrawdown * 100).toFixed(1)}%</strong></div><div><small>Win rate</small><strong>{(backtestResult.winRate * 100).toFixed(1)}%</strong></div><div><small>Final value</small><strong>${backtestResult.finalValue.toLocaleString()}</strong></div></div><div className="equity-wrap"><div className="equity-legend"><span><i className="strategy-key" />Strategy</span><span><i className="benchmark-key" />S&amp;P 500</span></div><MiniLine points={backtestResult.equity.map((point) => point.strategy)} className="result-line" /><MiniLine points={backtestResult.equity.map((point) => point.benchmark)} className="benchmark-line" /></div><p className="prototype-note"><FlaskConical size={14} /> 현재 결과는 엔진 연결을 검증하기 위한 합성 수익률입니다. 실제 매매 판단에는 사용할 수 없습니다.</p></article>}
-          <article className="panel history-card"><div className="panel-heading"><div><span className="card-label">Run history</span><h3>All backtests</h3></div><div className="search-field"><Search size={14} /><input aria-label="Search backtests" placeholder="Search" /></div></div><div className="run-list detailed">{sampleRuns.map((run) => <button className="run-row" key={run.name}><div className="run-icon"><FlaskConical size={16} /></div><div><strong>{run.name}</strong><small>{run.range} · {run.date}</small></div><span className="run-return">{run.returnValue}</span><span>{run.sharpe}</span><span className={`status-pill ${run.status === "Completed" ? "success" : "muted"}`}>{run.status === "Completed" && <Check size={11} />}{run.status}</span><ChevronRight size={15} /></button>)}</div></article>
-        </section>}
+        {view === "settings" && (
+          <section className="simple-view">
+            <header><div><span>Connections</span><h1>데이터와 모델 연결</h1></div></header>
+            <div className="settings-list">
+              <article><div><strong>TradingView Advanced Chart</strong><p>차트, 드로잉, 보조지표</p></div><span className="connected"><i />Connected</span></article>
+              <article><div><strong>Analysis dataset</strong><p>조정 일봉 10년 · 자동 갱신 캐시 24시간</p></div><span className={rows.length ? "connected" : "missing"}><i />{rows.length ? dataSource : "Loading"}</span></article>
+              <article><div><strong>Claude</strong><p>사용자가 요청할 때만 데이터 해석</p></div><span className="missing"><i />Server key required</span></article>
+            </div>
+          </section>
+        )}
       </section>
-
-      {showBacktest && <div className="modal-backdrop"><button className="modal-dismiss" aria-label="Close backtest settings" onClick={() => setShowBacktest(false)} /><section className="backtest-sheet" role="dialog" aria-modal="true" aria-labelledby="backtest-title"><div className="sheet-head"><div><span className="card-label">Ready to test</span><h2 id="backtest-title">Configure backtest</h2><p>과최적화를 줄이기 위해 최소 7년을 권장합니다.</p></div><button className="icon-button" aria-label="Close" onClick={() => setShowBacktest(false)}><X size={17} /></button></div><div className="sheet-hypothesis"><Target size={17} /><span><strong>{hypothesis.title}</strong><small>{hypothesis.symbolUniverse}</small></span><span className="status-pill ready">3 rules</span></div><div className="form-grid"><label>Test period<select value={years} onChange={(event) => setYears(Number(event.target.value))}><option value={5}>5 years</option><option value={7}>7 years</option><option value={10}>10 years · Recommended</option><option value={15}>15 years</option></select><small>Covers multiple market regimes</small></label><label>Initial capital<div className="money-input"><span>$</span><input type="number" min={1000} step={1000} value={capital} onChange={(event) => setCapital(Number(event.target.value))} /></div><small>Strategy allocation only</small></label><label>Benchmark<select><option>S&amp;P 500 (SPY)</option><option>Equal-weight S&amp;P 500</option></select></label><label>Transaction cost<div className="money-input"><input type="number" min={0} max={100} value={costBps} onChange={(event) => setCostBps(Number(event.target.value))} /><span>bps</span></div><small>Applied on each trade</small></label></div><div className="recommendation"><Bot size={17} /><span><strong>Agent recommendation</strong><p>10년, $100,000, 거래비용 8bps로 시작하고 시장 폭 임계값 ±5% 민감도 테스트를 추가하세요.</p></span></div><div className="sheet-note"><ShieldCheck size={15} /><span><strong>The AI stops here.</strong><small>백테스트 엔진은 고정된 규칙과 가격 데이터만 사용합니다.</small></span></div><div className="sheet-actions"><button className="ghost-button" onClick={() => setShowBacktest(false)}>Cancel</button><button className="primary-button" disabled={isBacktesting} onClick={runBacktest}>{isBacktesting ? <RefreshCw size={16} className="spin" /> : <Play size={15} fill="currentColor" />}{isBacktesting ? "Running…" : "Run backtest"}</button></div></section></div>}
-
-      {toast && <div className="toast" role="status"><Check size={15} /><span>{toast}</span><button aria-label="Dismiss" onClick={() => setToast("")}><X size={14} /></button></div>}
     </main>
   );
 }

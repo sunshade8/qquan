@@ -19,9 +19,10 @@ test("server-renders the QQuant product shell", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
   const html = await response.text();
   assert.match(html, /QQuant/);
-  assert.match(html, /From signal to evidence\./);
-  assert.match(html, /Tactic Agent/);
-  assert.match(html, /Backtests/);
+  assert.match(html, /TradingView/);
+  assert.match(html, /CSV fallback/);
+  assert.match(html, /Chart commands/);
+  assert.match(html, /Backtest/);
   assert.match(html, /aria-label="Primary navigation"/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
 });

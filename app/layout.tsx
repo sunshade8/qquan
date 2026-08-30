@@ -19,8 +19,8 @@ export async function generateMetadata(): Promise<Metadata> {
   const protocol = incoming.get("x-forwarded-proto") ?? (host.startsWith("localhost") ? "http" : "https");
   const metadataBase = new URL(`${protocol}://${host}`);
   const socialImage = new URL("/og.png", metadataBase).toString();
-  const title = "QQuant — Research. Reason. Test.";
-  const description = "AI-guided quantitative hypotheses with deterministic, no-LLM backtests.";
+  const title = "QQuant — Market Research Workspace";
+  const description = "TradingView charts, inspectable market data, deterministic studies, and evidence-grounded research conversations.";
   return {
     metadataBase,
     title,
