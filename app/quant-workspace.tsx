@@ -32,6 +32,29 @@ type PriceRow = {
   volume: number;
 };
 
+type ProviderReport = {
+  primary: "toss" | "yahoo";
+  toss: { status: "connected" | "unavailable" | "not_configured"; bars?: number; start?: string; end?: string; reason?: string };
+  yahoo: { status: "connected" | "unavailable"; bars?: number; start?: string; end?: string; reason?: string };
+  validation: { overlap: number; latestDate: string | null; latestCloseDeltaPct: number | null } | null;
+};
+
+type BrokerSnapshot = {
+  available: boolean;
+  provider: "Toss Securities";
+  symbol: string;
+  price?: number;
+  timestamp?: string;
+  currency?: string;
+  bid?: number | null;
+  ask?: number | null;
+  spreadPct?: number | null;
+  recentTrades?: Array<{ price: number; volume: number; timestamp: string }>;
+  session?: { code: "day" | "pre" | "regular" | "after" | "closed"; label: string; nextOpen?: string };
+  reason?: string;
+  code?: string;
+};
+
 type StudyResult = {
   occurrences: number;
   positiveRate: number;
@@ -173,6 +196,8 @@ export function QuantWorkspace() {
   const [rows, setRows] = useState<PriceRow[]>([]);
   const [datasetName, setDatasetName] = useState("");
   const [dataSource, setDataSource] = useState("");
+  const [providers, setProviders] = useState<ProviderReport | null>(null);
+  const [brokerSnapshot, setBrokerSnapshot] = useState<BrokerSnapshot | null>(null);
   const [loadingData, setLoadingData] = useState(true);
   const [importError, setImportError] = useState("");
   const [feature, setFeature] = useState<Feature>("return1d");
@@ -193,23 +218,36 @@ export function QuantWorkspace() {
     const ticker = symbol.split(":").at(-1) ?? symbol;
     setLoadingData(true);
     setImportError("");
+    setBrokerSnapshot(null);
     fetch(`/api/market/history?symbol=${encodeURIComponent(ticker)}`, { signal: controller.signal })
       .then(async (response) => {
-        const data = await response.json() as { rows?: PriceRow[]; source?: string; error?: string };
+        const data = await response.json() as { rows?: PriceRow[]; source?: string; providers?: ProviderReport; error?: string };
         if (!response.ok || !data.rows?.length) throw new Error(data.error || "가격 데이터를 가져오지 못했습니다.");
         setRows(data.rows);
         setDatasetName(`${ticker} · 10Y daily`);
         setDataSource(data.source ?? "Market data");
+        setProviders(data.providers ?? null);
       })
       .catch((error: unknown) => {
         if (error instanceof DOMException && error.name === "AbortError") return;
         setRows([]);
         setDatasetName("");
         setDataSource("");
+        setProviders(null);
         setImportError(error instanceof Error ? error.message : "가격 데이터를 가져오지 못했습니다.");
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoadingData(false);
+      });
+    fetch(`/api/market/snapshot?symbol=${encodeURIComponent(ticker)}`, { signal: controller.signal })
+      .then(async (response) => {
+        const data = await response.json() as BrokerSnapshot & { error?: string };
+        if (!response.ok) throw new Error(data.error || "토스 현재가를 가져오지 못했습니다.");
+        setBrokerSnapshot(data);
+      })
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setBrokerSnapshot({ available: false, provider: "Toss Securities", symbol: ticker, reason: error instanceof Error ? error.message : "토스 현재가를 가져오지 못했습니다." });
       });
     return () => controller.abort();
   }, [symbol]);
@@ -233,6 +271,8 @@ export function QuantWorkspace() {
     setRows([]);
     setDatasetName("");
     setDataSource("");
+    setProviders(null);
+    setBrokerSnapshot(null);
     setStudy(null);
     setStudyRan(false);
     setMessages([]);
@@ -256,6 +296,7 @@ export function QuantWorkspace() {
     setRows(parsed);
     setDatasetName(file.name);
     setDataSource("Imported CSV");
+    setProviders(null);
     setImportError("");
     setStudy(null);
     setStudyRan(false);
@@ -302,6 +343,8 @@ export function QuantWorkspace() {
             name: datasetName,
             profile,
             rows: rows.slice(-400),
+            providers,
+            brokerSnapshot,
             study: study ? { feature: featureLabels[feature], operator, threshold, horizon, result: study } : null,
           },
         }),
@@ -346,7 +389,7 @@ export function QuantWorkspace() {
           <div className="watchlist" aria-label="Watchlist">
             {symbols.map((item) => <button key={item.value} className={symbol === item.value ? "active" : ""} onClick={() => selectSymbol(item.value)}>{item.label}</button>)}
           </div>
-          <div className="connection-state"><span className="live-dot" />TradingView{dataSource ? ` · ${dataSource}` : ""}</div>
+          <div className="connection-state"><span className="live-dot" />TradingView · {brokerSnapshot?.available ? "Toss" : "Yahoo"}{providers?.yahoo.status === "connected" ? " · Yahoo" : ""}</div>
         </header>
 
         {view === "market" && (
@@ -354,7 +397,7 @@ export function QuantWorkspace() {
             <section className="market-stack">
               <article className="chart-surface">
                 <div className="chart-toolbar">
-                  <div><strong>{symbol}</strong><span>{studies.length ? `${studies.length} studies` : "TradingView"}</span></div>
+                  <div><strong>{symbol}</strong><span>{brokerSnapshot?.available && brokerSnapshot.price !== undefined ? `${brokerSnapshot.currency ?? "USD"} ${brokerSnapshot.price.toLocaleString("en-US", { maximumFractionDigits: 4 })} · ${brokerSnapshot.session?.label ?? "Toss"}${studies.length ? ` · ${studies.length} studies` : ""}` : `${studies.length ? `${studies.length} studies · ` : ""}TradingView`}</span></div>
                   <div className="intervals" aria-label="Chart interval">
                     {intervals.map((item) => <button key={item.value} className={interval === item.value ? "active" : ""} onClick={() => setInterval(item.value)}>{item.label}</button>)}
                   </div>
@@ -372,7 +415,7 @@ export function QuantWorkspace() {
                   </div>
                   <div className="dataset-actions">
                     {datasetName && <span>{datasetName} · {rows.length.toLocaleString()} rows</span>}
-                    {rows.length > 0 && <button className="icon-text" onClick={() => { setRows([]); setDatasetName(""); setDataSource(""); setStudy(null); }}><Trash2 size={13} />Clear</button>}
+                    {rows.length > 0 && <button className="icon-text" onClick={() => { setRows([]); setDatasetName(""); setDataSource(""); setProviders(null); setStudy(null); }}><Trash2 size={13} />Clear</button>}
                     <label className="import-button"><FileUp size={14} />CSV fallback<input type="file" accept=".csv,text/csv" onChange={importCsv} /></label>
                   </div>
                 </div>
@@ -383,7 +426,7 @@ export function QuantWorkspace() {
                       <div className="empty-data"><Database size={19} /><div><strong>{loadingData ? "OHLCV를 가져오는 중입니다" : "분석 데이터가 없습니다"}</strong><p>{loadingData ? `${symbol}의 조정 일봉 10년치를 불러오고 있습니다.` : "자동 수집에 실패하면 CSV를 대체 입력으로 사용할 수 있습니다."}</p>{importError && <em>{importError}</em>}</div></div>
                     ) : (
                       <div className="rows-view">
-                        {profile && <div className="dataset-profile"><span><small>Period</small><b>{profile.start} — {profile.end}</b></span><span><small>Total change</small><b className={profile.change >= 0 ? "positive" : "negative"}>{formatPercent(profile.change)}</b></span><span><small>Up days</small><b>{(profile.upDays * 100).toFixed(1)}%</b></span><span><small>Avg volume</small><b>{Math.round(profile.averageVolume).toLocaleString()}</b></span></div>}
+                        {profile && <div className="dataset-profile"><span><small>Period</small><b>{profile.start} — {profile.end}</b></span><span><small>Total change</small><b className={profile.change >= 0 ? "positive" : "negative"}>{formatPercent(profile.change)}</b></span><span><small>Up days</small><b>{(profile.upDays * 100).toFixed(1)}%</b></span><span><small>Avg volume</small><b>{Math.round(profile.averageVolume).toLocaleString()}</b></span><span><small>Source check</small><b>{providers?.validation?.latestCloseDeltaPct !== null && providers?.validation?.latestCloseDeltaPct !== undefined ? `Δ ${providers.validation.latestCloseDeltaPct.toFixed(3)}%` : dataSource}</b></span></div>}
                         <div className="price-table" role="table" aria-label={`${datasetName} price data`}>
                           <div className="price-row head" role="row"><span>Date</span><span>Open</span><span>High</span><span>Low</span><span>Close</span><span>Volume</span></div>
                           {[...rows].reverse().slice(0, 40).map((row) => <div className="price-row" role="row" key={row.date}><span>{row.date}</span><span>{row.open.toFixed(2)}</span><span>{row.high.toFixed(2)}</span><span>{row.low.toFixed(2)}</span><span>{row.close.toFixed(2)}</span><span>{Math.round(row.volume).toLocaleString()}</span></div>)}
@@ -421,7 +464,7 @@ export function QuantWorkspace() {
               <aside className="agent-dock">
                 <div className="agent-head"><div><span className="agent-mark"><Sparkles size={15} /></span><div><strong>Agent</strong><small>{rows.length ? `${datasetName} attached` : "waiting for data"}</small></div></div><Bot size={16} /></div>
                 <div className="agent-context">
-                  <span>{symbol}</span><span>{intervals.find((item) => item.value === interval)?.label}</span><span>{studies.length} studies</span><span className={rows.length ? "connected" : "missing"}>{rows.length ? `${rows.length} rows` : "loading data"}</span>
+                  <span>{symbol}</span><span>{intervals.find((item) => item.value === interval)?.label}</span><span>{studies.length} studies</span><span className={rows.length ? "connected" : "missing"}>{rows.length ? `${rows.length} rows` : "loading data"}</span><span className={brokerSnapshot?.available ? "connected" : "missing"}>{brokerSnapshot?.available ? `Toss ${brokerSnapshot.session?.label ?? "quote"}` : "Toss fallback"}</span>
                 </div>
                 <div className="conversation-log" aria-live="polite">
                   {!messages.length && <div className="agent-empty"><strong>차트와 데이터를 함께 조작합니다.</strong><p>“RSI와 MACD 추가해줘”처럼 차트를 바꾸거나, “이 조건이 다른 시장 국면에서도 남는지”처럼 데이터를 조사해 달라고 하세요.</p></div>}
@@ -454,8 +497,10 @@ export function QuantWorkspace() {
             <header><div><span>Connections</span><h1>데이터와 모델 연결</h1></div></header>
             <div className="settings-list">
               <article><div><strong>TradingView Advanced Chart</strong><p>차트, 드로잉, 보조지표</p></div><span className="connected"><i />Connected</span></article>
-              <article><div><strong>Analysis dataset</strong><p>조정 일봉 10년 · 자동 갱신 캐시 24시간</p></div><span className={rows.length ? "connected" : "missing"}><i />{rows.length ? dataSource : "Loading"}</span></article>
-              <article><div><strong>Claude</strong><p>사용자가 요청할 때만 데이터 해석</p></div><span className="missing"><i />Server key required</span></article>
+              <article><div><strong>Toss Securities</strong><p>브로커 현재가·호가·최근 체결·장 시간 · 읽기 전용</p></div><span className={brokerSnapshot?.available ? "connected" : "missing"}><i />{brokerSnapshot?.available ? "Connected" : brokerSnapshot?.code === "ip_allowlist" ? "IP allowlist" : "Fallback"}</span></article>
+              <article><div><strong>Yahoo Finance</strong><p>조정 일봉 10년 · 토스 교차검증 및 자동 폴백</p></div><span className={providers?.yahoo.status === "connected" ? "connected" : "missing"}><i />{providers?.yahoo.status === "connected" ? "Connected" : "Unavailable"}</span></article>
+              <article><div><strong>Analysis dataset</strong><p>우선순위 Toss → Yahoo · 자동 갱신 캐시 24시간</p></div><span className={rows.length ? "connected" : "missing"}><i />{rows.length ? dataSource : "Loading"}</span></article>
+              <article><div><strong>Claude</strong><p>사용자가 요청할 때만 데이터 해석</p></div><span className="connected"><i />Connected</span></article>
             </div>
           </section>
         )}

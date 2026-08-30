@@ -17,6 +17,8 @@ type AnalysisPayload = {
     profile?: unknown;
     rows?: PriceRow[];
     study?: unknown;
+    providers?: unknown;
+    brokerSnapshot?: unknown;
   };
 };
 
@@ -41,7 +43,8 @@ export async function POST(request: Request) {
 
 Hard rules:
 - Analyze only the dataset and deterministic study result supplied below.
-- Never imply that you can read the TradingView widget, live markets, or any data not included here.
+- Never imply that you can read the TradingView widget or any data not included here.
+- The broker snapshot is a timestamped Toss Securities observation, not a continuous live feed. State its timestamp when it matters.
 - Separate observations, hypotheses, and unsupported possibilities.
 - Quantify claims with dates, values, sample size, and forward horizon when possible.
 - Look beyond technical indicators: consider price structure, volume, volatility, gaps, regime changes, and data limitations when relevant.
@@ -51,6 +54,8 @@ Hard rules:
 Symbol: ${payload.symbol ?? "unknown"}
 Dataset name: ${payload.dataset?.name ?? "uploaded CSV"}
 Dataset profile: ${JSON.stringify(payload.dataset?.profile ?? null)}
+Data providers and cross-check: ${JSON.stringify(payload.dataset?.providers ?? null)}
+Toss broker snapshot: ${JSON.stringify(payload.dataset?.brokerSnapshot ?? null)}
 Deterministic study: ${JSON.stringify(payload.dataset?.study ?? null)}
 Recent OHLCV rows (oldest to newest): ${JSON.stringify(rows.slice(-400))}
 
