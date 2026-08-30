@@ -1,0 +1,106 @@
+import { env } from "cloudflare:workers";
+import { fetchYahooHistory, type PriceRow } from "../../../../lib/market-data";
+import { MARKET_CALENDAR_2026 } from "../../../market-calendar-data";
+
+type NewsArticle = { id: string; title: string; source: string; publishedAt: string; topic?: string };
+type Payload = { date?: string; start?: string; articles?: NewsArticle[] };
+
+function marketWindow(rows: PriceRow[], date: string) {
+  let anchor = -1;
+  for (let index = 0; index < rows.length; index += 1) if (rows[index].date <= date) anchor = index;
+  if (anchor < 0) return null;
+  const change = (from: number, to: number) => from >= 0 && to < rows.length ? Number((((rows[to].close / rows[from].close) - 1) * 100).toFixed(3)) : null;
+  return {
+    anchorDate: rows[anchor].date,
+    close: rows[anchor].close,
+    prior1D: change(anchor - 1, anchor),
+    prior5D: change(anchor - 5, anchor),
+    forward1D: change(anchor, anchor + 1),
+    forward5D: change(anchor, anchor + 5),
+  };
+}
+
+function upcomingEvents(date: string) {
+  const end = new Date(`${date}T00:00:00Z`);
+  end.setUTCDate(end.getUTCDate() + 3);
+  const endDate = end.toISOString().slice(0, 10);
+  return MARKET_CALENDAR_2026.filter((event) => event.date >= date && event.date <= endDate && event.category !== "market")
+    .map((event) => ({ date: event.date, timeET: event.time, title: event.title, importance: event.importance }));
+}
+
+function parseJson(text: string) {
+  const cleaned = text.replace(/^```json\s*|\s*```$/g, "").trim();
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  try {
+    return JSON.parse(start >= 0 && end > start ? cleaned.slice(start, end + 1) : cleaned) as unknown;
+  } catch {
+    return { raw: text };
+  }
+}
+
+function normalizeAnalysis(value: unknown, articleCount: number) {
+  if (!value || typeof value !== "object" || "raw" in value) return value;
+  const analysis = value as Record<string, unknown>;
+  if (typeof analysis.confidence === "number" && analysis.confidence <= 1) analysis.confidence = Math.round(analysis.confidence * 100);
+  if (analysis.distribution && typeof analysis.distribution === "object") {
+    const distribution = analysis.distribution as Record<string, unknown>;
+    const values = [distribution.positive, distribution.neutral, distribution.negative];
+    if (values.every((item) => typeof item === "number" && item <= 1)) {
+      distribution.positive = Math.round(Number(distribution.positive) * articleCount);
+      distribution.neutral = Math.round(Number(distribution.neutral) * articleCount);
+      distribution.negative = Math.max(0, articleCount - Number(distribution.positive) - Number(distribution.neutral));
+    }
+  }
+  return analysis;
+}
+
+export async function POST(request: Request) {
+  const payload = await request.json() as Payload;
+  const date = payload.date ?? "";
+  const start = payload.start ?? date;
+  const articles = (payload.articles ?? []).slice(0, 40).filter((article) => article.title?.trim() && article.source?.trim());
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !articles.length) return Response.json({ error: "분석 날짜와 뉴스가 필요합니다." }, { status: 400 });
+
+  const bindings = env as unknown as Record<string, string | undefined>;
+  const apiKey = bindings.ANTHROPIC_API_KEY ?? process.env.ANTHROPIC_API_KEY;
+  const model = bindings.ANTHROPIC_MODEL ?? process.env.ANTHROPIC_MODEL ?? "claude-opus-4-7";
+  if (!apiKey) return Response.json({ error: "Claude 서버 키가 연결되지 않았습니다." }, { status: 503 });
+
+  const [spyResult, qqqResult] = await Promise.allSettled([fetchYahooHistory("SPY"), fetchYahooHistory("QQQ")]);
+  const market = {
+    SPY: spyResult.status === "fulfilled" ? marketWindow(spyResult.value, date) : null,
+    QQQ: qqqResult.status === "fulfilled" ? marketWindow(qqqResult.value, date) : null,
+  };
+  const events = upcomingEvents(date);
+  const headlines = articles.map((article) => ({ id: article.id, title: article.title.slice(0, 240), source: article.source.slice(0, 80), publishedAt: article.publishedAt }));
+
+  const prompt = `You are a quantitative macro news research assistant. Analyze the supplied headline corpus only.
+
+Rules:
+- These are headlines and publisher names, not full article bodies. Do not invent article details.
+- Separate economic-outlook tone from expected US equity risk sentiment. Strong growth or jobs can be economically positive but equity-bearish if it raises rate expectations.
+- Score equity risk sentiment from -100 (strongly bearish) to +100 (strongly bullish).
+- Explain whether the market was already moving before the selected date using the deterministic SPY/QQQ returns. Forward returns are outcomes for research, never evidence that was available at the time.
+- Treat repeated syndicated headlines as correlated evidence, not independent votes.
+- Suggest a falsifiable event-study specification. Do not give a trade instruction.
+- Keep every field concise. distribution values must be integer article counts that sum to ${articles.length}.
+- Respond in Korean as strict JSON with this shape:
+{"score":number,"label":"강한 부정|부정|중립|긍정|강한 긍정","macroTone":"부정|중립|긍정","confidence":number,"distribution":{"positive":number,"neutral":number,"negative":number},"summary":string,"themes":[{"name":string,"tone":"부정|중립|긍정","evidence":string}],"marketRead":string,"hypotheses":[string],"nextTest":string,"limitations":[string],"articleSignals":[{"id":string,"label":"부정|중립|긍정","score":number}]}
+
+News window (KST): ${start} through ${date}
+Scheduled US events on or just after the end date: ${JSON.stringify(events)}
+Deterministic adjusted-close market window: ${JSON.stringify(market)}
+Headline corpus: ${JSON.stringify(headlines)}`;
+
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+    body: JSON.stringify({ model, max_tokens: 3600, messages: [{ role: "user", content: prompt }] }),
+  });
+  if (!response.ok) return Response.json({ error: "Claude 뉴스 분석 호출에 실패했습니다." }, { status: response.status });
+  const result = await response.json() as { content?: Array<{ type: string; text?: string }> };
+  const text = result.content?.filter((item) => item.type === "text").map((item) => item.text).join("\n").trim();
+  if (!text) return Response.json({ error: "Claude 뉴스 분석 결과가 비어 있습니다." }, { status: 502 });
+  return Response.json({ analysis: normalizeAnalysis(parseJson(text), articles.length), market, events, model, articleCount: articles.length });
+}

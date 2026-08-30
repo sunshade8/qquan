@@ -10,6 +10,7 @@ import FileUp from "lucide-react/dist/esm/icons/file-up";
 import FlaskConical from "lucide-react/dist/esm/icons/flask-conical";
 import PanelRight from "lucide-react/dist/esm/icons/panel-right";
 import Play from "lucide-react/dist/esm/icons/play";
+import Newspaper from "lucide-react/dist/esm/icons/newspaper";
 import Send from "lucide-react/dist/esm/icons/send";
 import Settings from "lucide-react/dist/esm/icons/settings";
 import Sparkles from "lucide-react/dist/esm/icons/sparkles";
@@ -17,8 +18,9 @@ import Trash2 from "lucide-react/dist/esm/icons/trash-2";
 import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
 import { TradingViewChart } from "./tradingview-chart";
 import { MarketCalendar } from "./market-calendar";
+import { MarketNews } from "./market-news";
 
-type View = "market" | "backtest" | "calendar" | "settings";
+type View = "market" | "backtest" | "calendar" | "news" | "settings";
 type DataTab = "rows" | "study" | "hypothesis";
 type Feature = "return1d" | "gap" | "range" | "volume20";
 type Operator = "gt" | "lt";
@@ -363,6 +365,7 @@ export function QuantWorkspace() {
     { id: "market" as View, label: "Market", icon: ChartCandlestick },
     { id: "backtest" as View, label: "Backtest", icon: FlaskConical },
     { id: "calendar" as View, label: "Calendar", icon: CalendarDays },
+    { id: "news" as View, label: "News", icon: Newspaper },
     { id: "settings" as View, label: "Settings", icon: Settings },
   ];
 
@@ -491,6 +494,8 @@ export function QuantWorkspace() {
         )}
 
         {view === "calendar" && <MarketCalendar />}
+
+        {view === "news" && <MarketNews />}
 
         {view === "settings" && (
           <section className="simple-view">
