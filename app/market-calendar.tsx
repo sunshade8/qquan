@@ -21,6 +21,24 @@ const YEAR = 2026;
 const monthNames = ["1월", "2월", "3월", "4월", "5월", "6월", "7월", "8월", "9월", "10월", "11월", "12월"];
 const weekNames = ["일", "월", "화", "수", "목", "금", "토"];
 const categoryOrder: MarketEventCategory[] = ["fed", "inflation", "labor", "growth", "business", "market"];
+const easternFormatter = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
+const koreaFormatter = new Intl.DateTimeFormat("en-US", {
+  timeZone: "Asia/Seoul",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
 
 const icons = {
   fed: Landmark,
@@ -40,6 +58,38 @@ function dayLabel(value: string) {
   return `${date.getMonth() + 1}월 ${date.getDate()}일 ${weekNames[date.getDay()]}요일`;
 }
 
+function timeParts(formatter: Intl.DateTimeFormat, date: Date) {
+  const parts = formatter.formatToParts(date);
+  const value = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((part) => part.type === type)?.value ?? 0);
+  return { year: value("year"), month: value("month"), day: value("day"), hour: value("hour"), minute: value("minute") };
+}
+
+function easternTimeToDate(date: string, time: string) {
+  const [year, month, day] = date.split("-").map(Number);
+  const [hour, minute] = time.split(":").map(Number);
+  const guess = new Date(Date.UTC(year, month - 1, day, hour, minute));
+  const eastern = timeParts(easternFormatter, guess);
+  const easternAsUtc = Date.UTC(eastern.year, eastern.month - 1, eastern.day, eastern.hour, eastern.minute);
+  return new Date(guess.getTime() - (easternAsUtc - guess.getTime()));
+}
+
+type KoreaMarketEvent = MarketEvent & { calendarDate: string; koreaTime: string; easternDate: string };
+
+const KOREA_MARKET_CALENDAR_2026: KoreaMarketEvent[] = MARKET_CALENDAR_2026.map((event) => {
+  if (event.time === "종일") return { ...event, calendarDate: event.date, koreaTime: "휴장", easternDate: event.date };
+  const korea = timeParts(koreaFormatter, easternTimeToDate(event.date, event.time));
+  return {
+    ...event,
+    calendarDate: `${korea.year}-${String(korea.month).padStart(2, "0")}-${String(korea.day).padStart(2, "0")}`,
+    koreaTime: `${String(korea.hour).padStart(2, "0")}:${String(korea.minute).padStart(2, "0")}`,
+    easternDate: event.date,
+  };
+}).sort((a, b) => a.calendarDate.localeCompare(b.calendarDate) || a.koreaTime.localeCompare(b.koreaTime));
+
+function easternDateLabel(value: string) {
+  return `${Number(value.slice(5, 7))}.${String(Number(value.slice(8, 10))).padStart(2, "0")}`;
+}
+
 export function MarketCalendar() {
   const [today, setToday] = useState("");
   const [month, setMonth] = useState(7);
@@ -55,13 +105,13 @@ export function MarketCalendar() {
     setSelectedDate(currentDate);
   }, []);
 
-  const monthEvents = useMemo(() => MARKET_CALENDAR_2026.filter((event) => {
-    const matchesMonth = Number(event.date.slice(5, 7)) === month + 1;
+  const monthEvents = useMemo(() => KOREA_MARKET_CALENDAR_2026.filter((event) => {
+    const matchesMonth = Number(event.calendarDate.slice(5, 7)) === month + 1;
     return matchesMonth && (activeCategory === "all" || event.category === activeCategory);
   }), [activeCategory, month]);
 
-  const eventsByDate = useMemo(() => monthEvents.reduce<Record<string, MarketEvent[]>>((groups, event) => {
-    (groups[event.date] ??= []).push(event);
+  const eventsByDate = useMemo(() => monthEvents.reduce<Record<string, KoreaMarketEvent[]>>((groups, event) => {
+    (groups[event.calendarDate] ??= []).push(event);
     return groups;
   }, {}), [monthEvents]);
 
@@ -84,8 +134,8 @@ export function MarketCalendar() {
   function moveMonth(next: number) {
     if (next < 0 || next > 11) return;
     setMonth(next);
-    const firstEvent = MARKET_CALENDAR_2026.find((event) => Number(event.date.slice(5, 7)) === next + 1);
-    setSelectedDate(firstEvent?.date ?? dateKey(next, 1));
+    const firstEvent = KOREA_MARKET_CALENDAR_2026.find((event) => Number(event.calendarDate.slice(5, 7)) === next + 1);
+    setSelectedDate(firstEvent?.calendarDate ?? dateKey(next, 1));
   }
 
   return (
@@ -97,7 +147,7 @@ export function MarketCalendar() {
         </div>
         <div className="calendar-meta">
           <strong>{MARKET_CALENDAR_2026.length}</strong>
-          <span>연간 주요 일정 · ET</span>
+          <span>연간 주요 일정 · KST 기준</span>
         </div>
       </header>
 
@@ -149,7 +199,7 @@ export function MarketCalendar() {
         <aside className="calendar-agenda">
           <div className="agenda-head">
             <div><span>{monthNames[month]}</span><strong>주요 일정</strong></div>
-            <small>Eastern Time</small>
+            <small>Korea Standard Time</small>
           </div>
           <div className="agenda-scroll">
             {!groupedDays.length && <div className="agenda-empty">이 필터에 해당하는 일정이 없습니다.</div>}
@@ -165,7 +215,10 @@ export function MarketCalendar() {
                         <div>
                           <strong>{event.title}</strong>
                           <p>{event.note}</p>
-                          <span><Clock3 size={11} />{event.time} ET · <a href={event.sourceUrl} target="_blank" rel="noreferrer">{event.source}</a></span>
+                          <div className="event-time">
+                            <span className="event-time-primary"><Clock3 size={11} />{event.koreaTime} KST</span>
+                            <small>{easternDateLabel(event.easternDate)} · {event.time} ET · <a href={event.sourceUrl} target="_blank" rel="noreferrer">{event.source}</a></small>
+                          </div>
                         </div>
                         {event.importance === "high" && <i className="impact-dot" title="High impact" />}
                       </article>
@@ -175,7 +228,7 @@ export function MarketCalendar() {
               </section>
             ))}
           </div>
-          <footer>발표 일정은 기관 사정에 따라 변경될 수 있습니다.</footer>
+          <footer>날짜·첫 시간은 KST, 아래 원문 일정은 ET입니다.</footer>
         </aside>
       </div>
     </section>
