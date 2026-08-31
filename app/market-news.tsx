@@ -126,6 +126,7 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
   const [topic, setTopic] = useState<NewsTopic>("macro");
   const [articles, setArticles] = useState<NewsArticle[]>([]);
   const [sources, setSources] = useState<NewsSource[]>([]);
+  const [provider, setProvider] = useState("Google News RSS");
   const [retrieved, setRetrieved] = useState<RetrievedQuery | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
@@ -174,8 +175,9 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
     try {
       const params = new URLSearchParams({ start: startDate, end: endDate, topic });
       const response = await fetch(`/api/news?${params}`, { cache: "no-store" });
-      const data = await response.json() as { articles?: NewsArticle[]; sources?: NewsSource[]; error?: string };
+      const data = await response.json() as { articles?: NewsArticle[]; sources?: NewsSource[]; provider?: string; error?: string };
       setSources(data.sources ?? []);
+      setProvider(data.provider ?? "Google News RSS");
       if (!response.ok) throw new Error(data.error || "뉴스를 가져오지 못했습니다.");
       const next = data.articles ?? [];
       setArticles(next);
@@ -333,7 +335,7 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
               );
             })}
           </div>
-          <footer>{queryChanged ? "필터가 변경되었습니다 · 뉴스 가져오기로 적용" : retrieved ? `Google News · 신뢰 매체 ${sources.length}곳 중 ${activeSourceCount}곳 검색됨` : "Google News · 지정 신뢰 매체 10곳"} · 제목/출처만 수집</footer>
+          <footer>{queryChanged ? "필터가 변경되었습니다 · 뉴스 가져오기로 적용" : retrieved ? `${provider} · 신뢰 매체 ${sources.length}곳 중 ${activeSourceCount}곳 검색됨` : "Google News · 지정 신뢰 매체 10곳"} · 제목/출처만 수집</footer>
         </article>
 
         <aside className="news-analysis">

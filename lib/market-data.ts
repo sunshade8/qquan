@@ -23,6 +23,7 @@ export class MarketProviderError extends Error {
 type YahooChart = {
   chart?: {
     result?: Array<{
+      meta?: { gmtoffset?: number };
       timestamp?: number[];
       indicators?: {
         quote?: Array<{
@@ -37,6 +38,16 @@ type YahooChart = {
     }>;
     error?: { description?: string } | null;
   };
+};
+
+export type EventWindow = {
+  symbol: string;
+  name: string;
+  eventDate: string;
+  previousSession: { date: string; openToClosePct: number } | null;
+  eventSession: { date: string; gapPct: number | null; openToClosePct: number } | null;
+  preOpen1H: { startET: "08:30"; endET: "09:30"; returnPct: number; interval: "30m" } | null;
+  limitation: string | null;
 };
 
 type TossToken = { access_token?: string; expires_in?: number; error?: string; error_description?: string };
@@ -186,6 +197,66 @@ export async function fetchYahooHistory(symbol: string) {
       volume: volume!,
     }];
   });
+}
+
+function percentChange(from: number, to: number) {
+  return Number((((to / from) - 1) * 100).toFixed(3));
+}
+
+function newYorkDateTime(timestamp: number) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(new Date(timestamp * 1000));
+  const pick = (type: string) => parts.find((part) => part.type === type)?.value ?? "";
+  return { date: `${pick("year")}-${pick("month")}-${pick("day")}`, time: `${pick("hour")}:${pick("minute")}` };
+}
+
+async function fetchYahooPreOpen(symbol: string, eventDate: string) {
+  const start = new Date(`${eventDate}T00:00:00Z`);
+  start.setUTCDate(start.getUTCDate() - 1);
+  const end = new Date(`${eventDate}T00:00:00Z`);
+  end.setUTCDate(end.getUTCDate() + 2);
+  const sourceUrl = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`);
+  sourceUrl.searchParams.set("period1", String(Math.floor(start.getTime() / 1000)));
+  sourceUrl.searchParams.set("period2", String(Math.floor(end.getTime() / 1000)));
+  sourceUrl.searchParams.set("interval", "30m");
+  sourceUrl.searchParams.set("includePrePost", "true");
+  const response = await fetch(sourceUrl, { headers: { "user-agent": "Mozilla/5.0 QQuant personal research" } });
+  if (!response.ok) return null;
+  const payload = await response.json() as YahooChart;
+  const result = payload.chart?.result?.[0];
+  const timestamps = result?.timestamp ?? [];
+  const closes = result?.indicators?.quote?.[0]?.close ?? [];
+  let at830: number | null = null;
+  let at930: number | null = null;
+  timestamps.forEach((timestamp, index) => {
+    const point = newYorkDateTime(timestamp);
+    const close = closes[index];
+    if (point.date !== eventDate || close === null || close === undefined) return;
+    if (point.time === "08:00") at830 = close;
+    if (point.time === "09:00") at930 = close;
+  });
+  return at830 && at930 ? percentChange(at830, at930) : null;
+}
+
+export async function fetchYahooEventWindow(symbol: string, name: string, eventDate: string): Promise<EventWindow> {
+  const [dailyResult, preOpenResult] = await Promise.allSettled([
+    fetchYahooHistory(symbol),
+    fetchYahooPreOpen(symbol, eventDate),
+  ]);
+  const rows = dailyResult.status === "fulfilled" ? dailyResult.value : [];
+  const eventIndex = rows.findIndex((row) => row.date === eventDate);
+  const event = eventIndex >= 0 ? rows[eventIndex] : null;
+  const previous = eventIndex > 0 ? rows[eventIndex - 1] : null;
+  const preOpen = preOpenResult.status === "fulfilled" ? preOpenResult.value : null;
+  return {
+    symbol, name, eventDate,
+    previousSession: previous ? { date: previous.date, openToClosePct: percentChange(previous.open, previous.close) } : null,
+    eventSession: event ? { date: event.date, gapPct: previous ? percentChange(previous.close, event.open) : null, openToClosePct: percentChange(event.open, event.close) } : null,
+    preOpen1H: preOpen === null ? null : { startET: "08:30", endET: "09:30", returnPct: preOpen, interval: "30m" },
+    limitation: event ? (preOpen === null ? "해당 날짜의 확장시간 30분봉이 없어 개장 전 1시간 수익률은 계산하지 못했습니다." : null) : "해당 날짜가 비거래일이거나 일봉 데이터가 아직 없습니다.",
+  };
 }
 
 export async function fetchTossHistory(symbol: string) {
