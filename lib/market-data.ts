@@ -199,6 +199,87 @@ export async function fetchYahooHistory(symbol: string) {
   });
 }
 
+// Yahoo throttles by egress IP and the deployed Worker shares that IP with
+// other traffic, so a 429 there is effectively permanent for the request.
+// Keeping each call to the window we actually need — instead of ten years of
+// daily bars — is what keeps us under the limit.
+const YAHOO_HOSTS = ["query2", "query1"] as const;
+const YAHOO_HEADERS = {
+  accept: "application/json,text/plain,*/*",
+  "accept-language": "en-US,en;q=0.9",
+  "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+};
+
+function epochSeconds(date: string, dayOffset = 0) {
+  const value = new Date(`${date}T00:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + dayOffset);
+  return Math.floor(value.getTime() / 1000);
+}
+
+function rowsFromChart(payload: YahooChart): PriceRow[] {
+  const result = payload.chart?.result?.[0];
+  const timestamps = result?.timestamp ?? [];
+  const quote = result?.indicators?.quote?.[0];
+  const adjusted = result?.indicators?.adjclose?.[0]?.adjclose ?? [];
+  if (!quote || !timestamps.length) return [];
+
+  return timestamps.flatMap((timestamp, index): PriceRow[] => {
+    const rawOpen = quote.open?.[index];
+    const rawHigh = quote.high?.[index];
+    const rawLow = quote.low?.[index];
+    const rawClose = quote.close?.[index];
+    const rawVolume = quote.volume?.[index];
+    if ([rawOpen, rawHigh, rawLow, rawClose].some((value) => value === null || value === undefined)) return [];
+    const adjustment = adjusted[index] && rawClose ? adjusted[index]! / rawClose : 1;
+    return [{
+      date: new Date(timestamp * 1000).toISOString().slice(0, 10),
+      open: Number((rawOpen! * adjustment).toFixed(6)),
+      high: Number((rawHigh! * adjustment).toFixed(6)),
+      low: Number((rawLow! * adjustment).toFixed(6)),
+      close: Number((rawClose! * adjustment).toFixed(6)),
+      // Index symbols report a null volume on some sessions; that must not
+      // discard an otherwise complete bar.
+      volume: rawVolume ?? 0,
+    }];
+  });
+}
+
+/** Daily bars for one bounded window. Far cheaper than `fetchYahooHistory`. */
+export async function fetchYahooWindow(symbol: string, from: string, to: string) {
+  let lastError: MarketProviderError | null = null;
+
+  for (const host of YAHOO_HOSTS) {
+    const sourceUrl = new URL(`https://${host}.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`);
+    sourceUrl.searchParams.set("period1", String(epochSeconds(from)));
+    sourceUrl.searchParams.set("period2", String(epochSeconds(to, 1)));
+    sourceUrl.searchParams.set("interval", "1d");
+    sourceUrl.searchParams.set("includeAdjustedClose", "true");
+
+    let response: Response;
+    try {
+      response = await fetch(sourceUrl, { headers: YAHOO_HEADERS });
+    } catch {
+      lastError = new MarketProviderError("yahoo", "upstream", "Yahoo Finance에 연결하지 못했습니다.", 502);
+      continue;
+    }
+    if (response.status === 429) {
+      lastError = new MarketProviderError("yahoo", "rate_limit", "Yahoo Finance 호출 한도를 초과했습니다.", 429);
+      continue;
+    }
+    if (!response.ok) {
+      lastError = new MarketProviderError("yahoo", "upstream", "Yahoo Finance 데이터를 가져오지 못했습니다.", response.status);
+      continue;
+    }
+
+    const payload = await response.json().catch(() => ({})) as YahooChart;
+    const rows = rowsFromChart(payload);
+    if (rows.length) return rows;
+    lastError = new MarketProviderError("yahoo", "not_found", payload.chart?.error?.description ?? "Yahoo Finance에 해당 구간 데이터가 없습니다.", 404);
+  }
+
+  throw lastError ?? new MarketProviderError("yahoo", "upstream", "Yahoo Finance 데이터를 가져오지 못했습니다.");
+}
+
 function percentChange(from: number, to: number) {
   return Number((((to / from) - 1) * 100).toFixed(3));
 }

@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
-import { fetchYahooHistory, type PriceRow } from "../../../../lib/market-data";
+import { type PriceRow } from "../../../../lib/market-data";
+import { loadDailyRows } from "../../../../lib/price-cache";
 import { MARKET_CALENDAR_2026 } from "../../../market-calendar-data";
 
 type NewsArticle = { id: string; title: string; source: string; publishedAt: string; topic?: string };
@@ -34,6 +35,24 @@ function rangeReturn(rows: PriceRow[], start: string, end: string, symbol: strin
     endClose: last.close,
     returnPct: Number((((last.close / first.close) - 1) * 100).toFixed(3)),
   };
+}
+
+function shiftDays(date: string, days: number) {
+  const value = new Date(`${date}T00:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+
+type Benchmark = ReturnType<typeof rangeReturn> & object;
+type BenchmarkResult = (Benchmark & { origin: string }) | { unavailable: string };
+
+function benchmarkFrom(load: Awaited<ReturnType<typeof loadDailyRows>>, start: string, end: string, symbol: string, name: string): BenchmarkResult {
+  const value = rangeReturn(load.rows, start, end, symbol, name);
+  if (value) return { ...value, origin: load.origin };
+  const reason = load.reason
+    ? `${name} 데이터를 불러오지 못했습니다 · ${load.reason}`
+    : `${name}에 해당 기간(${start} → ${end})의 거래일 데이터가 없습니다.`;
+  return { unavailable: reason };
 }
 
 function upcomingEvents(date: string) {
@@ -83,20 +102,30 @@ export async function POST(request: Request) {
   const model = bindings.ANTHROPIC_MODEL ?? process.env.ANTHROPIC_MODEL ?? "claude-opus-4-7";
   if (!apiKey) return Response.json({ error: "Claude 서버 키가 연결되지 않았습니다." }, { status: 503 });
 
-  const [spyResult, qqqResult, nasdaqResult, nyseResult] = await Promise.allSettled([
-    fetchYahooHistory("SPY"),
-    fetchYahooHistory("QQQ"),
-    fetchYahooHistory("^IXIC"),
-    fetchYahooHistory("^NYA"),
-  ]);
+  // Only the bars around the selected range are needed. Requesting ten years
+  // for four symbols at once is what tripped Yahoo's per-IP rate limit and left
+  // every benchmark null. Fetch sequentially over a padded window instead.
+  const windowStart = shiftDays(start, -20);
+  const windowEnd = shiftDays(date, 20);
+  const [spyLoad, qqqLoad, nasdaqLoad, nyseLoad] = [
+    await loadDailyRows("SPY", windowStart, windowEnd),
+    await loadDailyRows("QQQ", windowStart, windowEnd),
+    await loadDailyRows("^IXIC", windowStart, windowEnd),
+    await loadDailyRows("^NYA", windowStart, windowEnd),
+  ];
   const market = {
-    SPY: spyResult.status === "fulfilled" ? marketWindow(spyResult.value, date) : null,
-    QQQ: qqqResult.status === "fulfilled" ? marketWindow(qqqResult.value, date) : null,
+    SPY: marketWindow(spyLoad.rows, date),
+    QQQ: marketWindow(qqqLoad.rows, date),
   };
   const benchmarks = {
-    NASDAQ: nasdaqResult.status === "fulfilled" ? rangeReturn(nasdaqResult.value, start, date, "^IXIC", "NASDAQ Composite") : null,
-    NYSE: nyseResult.status === "fulfilled" ? rangeReturn(nyseResult.value, start, date, "^NYA", "NYSE Composite") : null,
+    NASDAQ: benchmarkFrom(nasdaqLoad, start, date, "^IXIC", "NASDAQ Composite"),
+    NYSE: benchmarkFrom(nyseLoad, start, date, "^NYA", "NYSE Composite"),
   };
+  console.log("[news/analyze] price windows", {
+    window: `${windowStart}..${windowEnd}`,
+    loads: { SPY: spyLoad.origin, QQQ: qqqLoad.origin, IXIC: nasdaqLoad.origin, NYA: nyseLoad.origin },
+    reasons: [spyLoad, qqqLoad, nasdaqLoad, nyseLoad].map((load) => load.reason).filter(Boolean),
+  });
   const events = upcomingEvents(date);
   const headlines = articles.map((article) => ({ id: article.id, title: article.title.slice(0, 240), source: article.source.slice(0, 80), publishedAt: article.publishedAt }));
 

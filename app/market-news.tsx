@@ -25,7 +25,8 @@ type NewsSource = { id: string; name: string; count: number; status: "ok" | "err
 type RetrievedQuery = { start: string; end: string; topic: NewsTopic };
 type MarketWindow = { anchorDate: string; close: number; prior1D: number | null; prior5D: number | null; forward1D: number | null; forward5D: number | null } | null;
 type SegmentSentiment = { score: number; label: string; rationale: string };
-type RangeBenchmark = { symbol: string; name: string; startDate: string; endDate: string; startClose: number; endClose: number; returnPct: number } | null;
+type BenchmarkValue = { symbol: string; name: string; startDate: string; endDate: string; startClose: number; endClose: number; returnPct: number; origin?: string };
+type RangeBenchmark = BenchmarkValue | { unavailable: string } | null;
 type SentimentAnalysis = {
   score?: number;
   label?: string;
@@ -104,6 +105,18 @@ function toneClass(value?: string | number) {
   if (value === "긍정" || value === "강한 긍정") return "positive";
   if (value === "부정" || value === "강한 부정") return "negative";
   return "neutral";
+}
+
+function benchmarkValue(value: RangeBenchmark): BenchmarkValue | null {
+  return value && "returnPct" in value ? value : null;
+}
+
+// A missing index return is a data-supply problem, not a zero. Say which.
+function benchmarkNote(value: RangeBenchmark) {
+  const resolved = benchmarkValue(value);
+  if (resolved) return `${resolved.startDate} → ${resolved.endDate}${resolved.origin === "cache-stale" ? " · 캐시" : ""}`;
+  if (value && "unavailable" in value) return value.unavailable;
+  return "지수 데이터를 가져오지 못했습니다.";
 }
 
 function returnClass(value: number | null | undefined) {
@@ -406,8 +419,8 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
                 <span><b className={toneClass(test.overallScore)}>{test.overallScore > 0 ? "+" : ""}{test.overallScore}</b><small>{test.overallLabel}</small></span>
                 <span><b className={toneClass(test.techScore)}>{test.techScore > 0 ? "+" : ""}{test.techScore}</b><small>{test.techLabel}</small></span>
                 <span><b className={toneClass(test.valueScore)}>{test.valueScore > 0 ? "+" : ""}{test.valueScore}</b><small>{test.valueLabel}</small></span>
-                <span><b className={returnClass(test.nasdaq?.returnPct)}>{formatReturn(test.nasdaq?.returnPct ?? null)}</b><small>{test.nasdaq ? `${test.nasdaq.startDate} → ${test.nasdaq.endDate}` : "data unavailable"}</small></span>
-                <span><b className={returnClass(test.nyse?.returnPct)}>{formatReturn(test.nyse?.returnPct ?? null)}</b><small>{test.nyse ? `${test.nyse.startDate} → ${test.nyse.endDate}` : "data unavailable"}</small></span>
+                <span><b className={returnClass(benchmarkValue(test.nasdaq)?.returnPct)}>{formatReturn(benchmarkValue(test.nasdaq)?.returnPct ?? null)}</b><small>{benchmarkNote(test.nasdaq)}</small></span>
+                <span><b className={returnClass(benchmarkValue(test.nyse)?.returnPct)}>{formatReturn(benchmarkValue(test.nyse)?.returnPct ?? null)}</b><small>{benchmarkNote(test.nyse)}</small></span>
               </div>
             ))}
           </div>
