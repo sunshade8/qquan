@@ -20,6 +20,22 @@ function marketWindow(rows: PriceRow[], date: string) {
   };
 }
 
+function rangeReturn(rows: PriceRow[], start: string, end: string, symbol: string, name: string) {
+  const first = rows.find((row) => row.date >= start && row.date <= end);
+  let last: PriceRow | undefined;
+  for (const row of rows) if (row.date >= start && row.date <= end) last = row;
+  if (!first || !last) return null;
+  return {
+    symbol,
+    name,
+    startDate: first.date,
+    endDate: last.date,
+    startClose: first.close,
+    endClose: last.close,
+    returnPct: Number((((last.close / first.close) - 1) * 100).toFixed(3)),
+  };
+}
+
 function upcomingEvents(date: string) {
   const end = new Date(`${date}T00:00:00Z`);
   end.setUTCDate(end.getUTCDate() + 3);
@@ -67,10 +83,19 @@ export async function POST(request: Request) {
   const model = bindings.ANTHROPIC_MODEL ?? process.env.ANTHROPIC_MODEL ?? "claude-opus-4-7";
   if (!apiKey) return Response.json({ error: "Claude 서버 키가 연결되지 않았습니다." }, { status: 503 });
 
-  const [spyResult, qqqResult] = await Promise.allSettled([fetchYahooHistory("SPY"), fetchYahooHistory("QQQ")]);
+  const [spyResult, qqqResult, nasdaqResult, nyseResult] = await Promise.allSettled([
+    fetchYahooHistory("SPY"),
+    fetchYahooHistory("QQQ"),
+    fetchYahooHistory("^IXIC"),
+    fetchYahooHistory("^NYA"),
+  ]);
   const market = {
     SPY: spyResult.status === "fulfilled" ? marketWindow(spyResult.value, date) : null,
     QQQ: qqqResult.status === "fulfilled" ? marketWindow(qqqResult.value, date) : null,
+  };
+  const benchmarks = {
+    NASDAQ: nasdaqResult.status === "fulfilled" ? rangeReturn(nasdaqResult.value, start, date, "^IXIC", "NASDAQ Composite") : null,
+    NYSE: nyseResult.status === "fulfilled" ? rangeReturn(nyseResult.value, start, date, "^NYA", "NYSE Composite") : null,
   };
   const events = upcomingEvents(date);
   const headlines = articles.map((article) => ({ id: article.id, title: article.title.slice(0, 240), source: article.source.slice(0, 80), publishedAt: article.publishedAt }));
@@ -81,16 +106,18 @@ Rules:
 - These are headlines and publisher names, not full article bodies. Do not invent article details.
 - Separate economic-outlook tone from expected US equity risk sentiment. Strong growth or jobs can be economically positive but equity-bearish if it raises rate expectations.
 - Score equity risk sentiment from -100 (strongly bearish) to +100 (strongly bullish).
+- Score the same corpus separately for technology/growth stocks and value stocks. Technology/growth is more rate-duration, AI capex, and long-duration earnings sensitive; value is more bank, energy, industrial, commodity, and cyclical sensitive. The two scores may have different signs.
 - Explain whether the market was already moving before the selected date using the deterministic SPY/QQQ returns. Forward returns are outcomes for research, never evidence that was available at the time.
 - Treat repeated syndicated headlines as correlated evidence, not independent votes.
 - Suggest a falsifiable event-study specification. Do not give a trade instruction.
 - Keep every field concise. distribution values must be integer article counts that sum to ${articles.length}.
 - Respond in Korean as strict JSON with this shape:
-{"score":number,"label":"강한 부정|부정|중립|긍정|강한 긍정","macroTone":"부정|중립|긍정","confidence":number,"distribution":{"positive":number,"neutral":number,"negative":number},"summary":string,"themes":[{"name":string,"tone":"부정|중립|긍정","evidence":string}],"marketRead":string,"hypotheses":[string],"nextTest":string,"limitations":[string],"articleSignals":[{"id":string,"label":"부정|중립|긍정","score":number}]}
+{"score":number,"label":"강한 부정|부정|중립|긍정|강한 긍정","macroTone":"부정|중립|긍정","confidence":number,"segments":{"tech":{"score":number,"label":"강한 부정|부정|중립|긍정|강한 긍정","rationale":string},"value":{"score":number,"label":"강한 부정|부정|중립|긍정|강한 긍정","rationale":string}},"distribution":{"positive":number,"neutral":number,"negative":number},"summary":string,"themes":[{"name":string,"tone":"부정|중립|긍정","evidence":string}],"marketRead":string,"hypotheses":[string],"nextTest":string,"limitations":[string],"articleSignals":[{"id":string,"label":"부정|중립|긍정","score":number}]}
 
 News window (KST): ${start} through ${date}
 Scheduled US events on or just after the end date: ${JSON.stringify(events)}
 Deterministic adjusted-close market window: ${JSON.stringify(market)}
+Selected-range index outcomes (first to last available close; outcome data, not input evidence): ${JSON.stringify(benchmarks)}
 Headline corpus: ${JSON.stringify(headlines)}`;
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
@@ -102,5 +129,5 @@ Headline corpus: ${JSON.stringify(headlines)}`;
   const result = await response.json() as { content?: Array<{ type: string; text?: string }> };
   const text = result.content?.filter((item) => item.type === "text").map((item) => item.text).join("\n").trim();
   if (!text) return Response.json({ error: "Claude 뉴스 분석 결과가 비어 있습니다." }, { status: 502 });
-  return Response.json({ analysis: normalizeAnalysis(parseJson(text), articles.length), market, events, model, articleCount: articles.length });
+  return Response.json({ analysis: normalizeAnalysis(parseJson(text), articles.length), market, benchmarks, events, model, articleCount: articles.length });
 }

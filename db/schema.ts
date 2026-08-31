@@ -62,3 +62,33 @@ export const backtestRuns = sqliteTable("backtest_runs", {
   index("idx_backtest_runs_hypothesis_id").on(table.hypothesisId),
   index("idx_backtest_runs_created_at").on(table.createdAt),
 ]);
+
+export const newsTests = sqliteTable("news_tests", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull(),
+  periodStart: text("period_start").notNull(),
+  periodEnd: text("period_end").notNull(),
+  topic: text("topic").notNull(),
+  articleCount: integer("article_count").notNull(),
+  overallScore: real("overall_score").notNull(),
+  overallLabel: text("overall_label").notNull(),
+  techScore: real("tech_score").notNull(),
+  techLabel: text("tech_label").notNull(),
+  valueScore: real("value_score").notNull(),
+  valueLabel: text("value_label").notNull(),
+  nasdaqPayload: text("nasdaq_payload").notNull(),
+  nysePayload: text("nyse_payload").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => [
+  index("idx_news_tests_owner_created").on(table.ownerId, table.createdAt),
+]);
+
+export const newsAgentMessages = sqliteTable("news_agent_messages", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull(),
+  role: text("role").notNull(),
+  content: text("content").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => [
+  index("idx_news_agent_owner_created").on(table.ownerId, table.createdAt),
+]);
