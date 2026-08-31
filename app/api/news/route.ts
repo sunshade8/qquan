@@ -1,5 +1,12 @@
 type NewsTopic = "macro" | "fed" | "inflation" | "labor" | "markets";
 
+type TrustedSource = {
+  id: string;
+  name: string;
+  domains: string[];
+  queryDomain: string;
+};
+
 const topicQueries: Record<NewsTopic, string> = {
   macro: '("Federal Reserve" OR inflation OR employment OR GDP OR recession OR "economic growth" OR "bond yields" OR "stock market")',
   fed: '("Federal Reserve" OR FOMC OR "interest rates" OR Powell OR "rate cut" OR "rate hike")',
@@ -8,12 +15,35 @@ const topicQueries: Record<NewsTopic, string> = {
   markets: '("stock market" OR S&P OR Nasdaq OR "bond yields" OR Treasury OR dollar)',
 };
 
-const topicKeywords: Array<[NewsTopic, RegExp]> = [
-  ["fed", /\bfed(?:eral reserve)?\b|\bfomc\b|powell|interest rate|rate cut|rate hike/i],
-  ["inflation", /inflation|\bcpi\b|\bpce\b|\bppi\b|consumer prices?|tariffs?/i],
-  ["labor", /employment|jobs?|payrolls?|unemployment|wages?|\bjolts\b/i],
-  ["markets", /stock market|s&p|nasdaq|bond yields?|treasur(?:y|ies)|\bdollar\b/i],
+const trustedSources: TrustedSource[] = [
+  { id: "reuters", name: "Reuters", queryDomain: "reuters.com", domains: ["reuters.com"] },
+  { id: "ap", name: "AP News", queryDomain: "apnews.com", domains: ["apnews.com"] },
+  { id: "bloomberg", name: "Bloomberg", queryDomain: "bloomberg.com", domains: ["bloomberg.com"] },
+  { id: "ft", name: "Financial Times", queryDomain: "ft.com", domains: ["ft.com"] },
+  { id: "wsj", name: "The Wall Street Journal", queryDomain: "wsj.com", domains: ["wsj.com"] },
+  { id: "cnbc", name: "CNBC", queryDomain: "cnbc.com", domains: ["cnbc.com"] },
+  { id: "bbc", name: "BBC", queryDomain: "bbc.com", domains: ["bbc.com", "bbc.co.uk"] },
+  { id: "nyt", name: "The New York Times", queryDomain: "nytimes.com", domains: ["nytimes.com"] },
+  { id: "washpost", name: "The Washington Post", queryDomain: "washingtonpost.com", domains: ["washingtonpost.com"] },
+  { id: "guardian", name: "The Guardian", queryDomain: "theguardian.com", domains: ["theguardian.com"] },
 ];
+
+const topicTitlePatterns: Record<NewsTopic, RegExp> = {
+  fed: /\bfed(?:eral reserve)?\b|\bfomc\b|\bpowell\b|interest rates?|rate cuts?|rate hikes?|central bank/i,
+  inflation: /inflation|\bcpi\b|\bpce\b|\bppi\b|consumer prices?|price pressures?|tariffs?/i,
+  labor: /employment|payrolls?|unemployment|labor market|jobs? (?:report|data|growth|market|numbers|openings|cuts)|jobless claims?|hiring|layoffs?|wages? (?:growth|pressure|data|rise|rises|fall|falls|increase|increases|decline|declines)/i,
+  markets: /stock markets?|wall street|s&p|nasdaq|dow jones|bond yields?|treasur(?:y|ies)|\bdollar\b|equities|shares|oil prices?|gold prices?|market rally|market selloff/i,
+  macro: /\bfed(?:eral reserve)?\b|\bfomc\b|\bpowell\b|interest rates?|rate cuts?|rate hikes?|central bank|inflation|\bcpi\b|\bpce\b|\bppi\b|consumer prices?|tariffs?|employment|payrolls?|unemployment|labor market|jobs? (?:report|data|growth|market|numbers|openings|cuts)|jobless claims?|hiring|layoffs?|wages? (?:growth|pressure|data|rise|rises|fall|falls|increase|increases|decline|declines)|stock markets?|wall street|s&p|nasdaq|bond yields?|treasur(?:y|ies)|\bdollar\b|equities|\bgdp\b|recession|economic growth|\beconom(?:y|ic)\b/i,
+};
+
+const topicKeywords: Array<[NewsTopic, RegExp]> = [
+  ["fed", topicTitlePatterns.fed],
+  ["inflation", topicTitlePatterns.inflation],
+  ["labor", topicTitlePatterns.labor],
+  ["markets", topicTitlePatterns.markets],
+];
+
+const noisyHeadlinePattern = /\bjob with\b|company announcement|newsletter(?: signup)?|print edition|trending news, latest updates, analysis|sector & industry performance|^(?:interviews|economics?|business|shows|style(?:\s*-\s*page \d+)?|united states|ap|minute by minute|bonds headlines|opinion \+ politics|us news \+ business|business \+ economics|economics \+ business)$/i;
 
 function shiftDate(date: string, days: number) {
   const value = new Date(`${date}T00:00:00Z`);
@@ -23,6 +53,10 @@ function shiftDate(date: string, days: number) {
 
 function validDate(value: string) {
   return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(new Date(`${value}T00:00:00Z`).getTime());
+}
+
+function daysBetween(start: string, end: string) {
+  return Math.round((new Date(`${end}T00:00:00Z`).getTime() - new Date(`${start}T00:00:00Z`).getTime()) / 86_400_000);
 }
 
 function decodeXml(value: string) {
@@ -53,54 +87,115 @@ function shortId(value: string) {
   return `n_${(hash >>> 0).toString(36)}`;
 }
 
-export async function GET(request: Request) {
-  const url = new URL(request.url);
-  const end = url.searchParams.get("date") ?? new Date().toISOString().slice(0, 10);
-  const lookback = Math.min(7, Math.max(1, Number(url.searchParams.get("lookback") ?? 1)));
-  const requestedTopic = url.searchParams.get("topic") as NewsTopic | null;
-  const topic = requestedTopic && requestedTopic in topicQueries ? requestedTopic : "macro";
-  if (!validDate(end)) return Response.json({ error: "날짜 형식이 올바르지 않습니다." }, { status: 400 });
+function sourceMatches(sourceUrl: string, source: TrustedSource) {
+  try {
+    const hostname = new URL(sourceUrl).hostname.toLowerCase().replace(/^www\./, "");
+    return source.domains.some((domain) => hostname === domain || hostname.endsWith(`.${domain}`));
+  } catch {
+    return false;
+  }
+}
 
-  const start = shiftDate(end, -(lookback - 1));
-  const query = `${topicQueries[topic]} after:${shiftDate(start, -1)} before:${shiftDate(end, 1)}`;
+function koreaDate(value: Date) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(value);
+}
+
+async function fetchSource(source: TrustedSource, topic: NewsTopic, start: string, end: string) {
+  const query = `${topicQueries[topic]} site:${source.queryDomain} after:${shiftDate(start, -1)} before:${shiftDate(end, 1)}`;
   const feedUrl = new URL("https://news.google.com/rss/search");
   feedUrl.searchParams.set("q", query);
   feedUrl.searchParams.set("hl", "en-US");
   feedUrl.searchParams.set("gl", "US");
   feedUrl.searchParams.set("ceid", "US:en");
 
-  const response = await fetch(feedUrl, { headers: { "user-agent": "QQuant personal research feed/1.0" } });
-  if (!response.ok) return Response.json({ error: "뉴스 피드를 가져오지 못했습니다." }, { status: 502 });
-  const xml = await response.text();
-  const rawItems = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)].map((match) => match[1]);
-  const seen = new Set<string>();
-  const articles = rawItems.flatMap((item) => {
-    const sourceMatch = item.match(/<source(?:\s+url="([^"]*)")?>([\s\S]*?)<\/source>/i);
-    const source = sourceMatch ? decodeXml(sourceMatch[2]) : "Unknown";
-    const sourceUrl = sourceMatch?.[1] ? decodeXml(sourceMatch[1]) : "";
-    const rawTitle = tag(item, "title");
-    const title = rawTitle.endsWith(` - ${source}`) ? rawTitle.slice(0, -(source.length + 3)).trim() : rawTitle;
-    const published = new Date(tag(item, "pubDate"));
-    const link = tag(item, "link");
-    const key = title.toLowerCase().replaceAll(/[^a-z0-9]/g, "");
-    if (!title || !link || Number.isNaN(published.getTime()) || seen.has(key)) return [];
-    seen.add(key);
-    return [{
-      id: shortId(tag(item, "guid") || link),
-      title,
+  try {
+    const response = await fetch(feedUrl, {
+      headers: { "user-agent": "QQuant personal research feed/1.0" },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) return { source, status: "error" as const, articles: [] };
+    const xml = await response.text();
+    const articles = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)].flatMap((match) => {
+      const item = match[1];
+      const sourceMatch = item.match(/<source(?:\s+url="([^"]*)")?>([\s\S]*?)<\/source>/i);
+      const sourceUrl = sourceMatch?.[1] ? decodeXml(sourceMatch[1]) : "";
+      if (!sourceMatches(sourceUrl, source)) return [];
+
+      const rawTitle = tag(item, "title");
+      const feedSourceName = sourceMatch ? decodeXml(sourceMatch[2]) : source.name;
+      const title = rawTitle.endsWith(` - ${feedSourceName}`) ? rawTitle.slice(0, -(feedSourceName.length + 3)).trim() : rawTitle;
+      if (noisyHeadlinePattern.test(title) || !topicTitlePatterns[topic].test(title)) return [];
+      const published = new Date(tag(item, "pubDate"));
+      const link = tag(item, "link");
+      if (!title || !link || Number.isNaN(published.getTime())) return [];
+      const publishedDate = koreaDate(published);
+      if (publishedDate < start || publishedDate > end) return [];
+
+      return [{
+        id: shortId(tag(item, "guid") || link),
+        title,
+        source: source.name,
+        sourceId: source.id,
+        sourceUrl,
+        url: link,
+        publishedAt: published.toISOString(),
+        topic: classify(title),
+      }];
+    });
+    return {
       source,
-      sourceUrl,
-      url: link,
-      publishedAt: published.toISOString(),
-      topic: classify(title),
-    }];
-  }).filter((article) => {
-    const kstDate = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(article.publishedAt));
-    return kstDate >= start && kstDate <= end;
-  }).slice(0, 75);
+      status: "ok" as const,
+      articles: articles.sort((left, right) => right.publishedAt.localeCompare(left.publishedAt)).slice(0, 10),
+    };
+  } catch {
+    return { source, status: "error" as const, articles: [] };
+  }
+}
+
+export async function GET(request: Request) {
+  const url = new URL(request.url);
+  const legacyEnd = url.searchParams.get("date") ?? new Date().toISOString().slice(0, 10);
+  const parsedLookback = Number(url.searchParams.get("lookback") ?? 1);
+  const legacyLookback = Number.isFinite(parsedLookback) ? Math.min(31, Math.max(1, parsedLookback)) : 1;
+  const start = url.searchParams.get("start") ?? shiftDate(legacyEnd, -(legacyLookback - 1));
+  const end = url.searchParams.get("end") ?? legacyEnd;
+  const requestedTopic = url.searchParams.get("topic") as NewsTopic | null;
+  const topic = requestedTopic && requestedTopic in topicQueries ? requestedTopic : "macro";
+
+  if (!validDate(start) || !validDate(end)) return Response.json({ error: "날짜 형식이 올바르지 않습니다." }, { status: 400 });
+  const rangeDays = daysBetween(start, end);
+  if (rangeDays < 0) return Response.json({ error: "시작일은 종료일보다 늦을 수 없습니다." }, { status: 400 });
+  if (rangeDays > 30) return Response.json({ error: "뉴스 수집 기간은 최대 31일까지 선택할 수 있습니다." }, { status: 400 });
+
+  const results = await Promise.all(trustedSources.map((source) => fetchSource(source, topic, start, end)));
+  const seen = new Set<string>();
+  const articles = results
+    .flatMap((result) => result.articles)
+    .sort((left, right) => right.publishedAt.localeCompare(left.publishedAt))
+    .filter((article) => {
+      const key = article.title.toLowerCase().replaceAll(/[^a-z0-9]/g, "");
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 100);
+
+  const sourceCounts = new Map<string, number>();
+  for (const article of articles) sourceCounts.set(article.sourceId, (sourceCounts.get(article.sourceId) ?? 0) + 1);
+  const sources = results.map((result) => ({
+    id: result.source.id,
+    name: result.source.name,
+    count: sourceCounts.get(result.source.id) ?? 0,
+    status: result.status,
+  }));
 
   return Response.json(
-    { provider: "Google News RSS", topic, start, end, articles },
-    { headers: { "cache-control": "public, max-age=300, s-maxage=900, stale-while-revalidate=3600" } },
+    { provider: "Google News RSS", topic, start, end, sources, articles },
+    { headers: { "cache-control": "no-store" } },
   );
 }

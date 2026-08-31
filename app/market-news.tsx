@@ -5,18 +5,21 @@ import ExternalLink from "lucide-react/dist/esm/icons/external-link";
 import Newspaper from "lucide-react/dist/esm/icons/newspaper";
 import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw";
 import Sparkles from "lucide-react/dist/esm/icons/sparkles";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 type NewsTopic = "macro" | "fed" | "inflation" | "labor" | "markets";
 type NewsArticle = {
   id: string;
   title: string;
   source: string;
+  sourceId: string;
   sourceUrl: string;
   url: string;
   publishedAt: string;
   topic: NewsTopic;
 };
+type NewsSource = { id: string; name: string; count: number; status: "ok" | "error" };
+type RetrievedQuery = { start: string; end: string; topic: NewsTopic };
 type MarketWindow = { anchorDate: string; close: number; prior1D: number | null; prior5D: number | null; forward1D: number | null; forward5D: number | null } | null;
 type SentimentAnalysis = {
   score?: number;
@@ -56,6 +59,12 @@ function koreaDate() {
   return `${get("year")}-${get("month")}-${get("day")}`;
 }
 
+function shiftDate(date: string, days: number) {
+  const value = new Date(`${date}T00:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+
 function formatKoreaTime(value: string) {
   return new Intl.DateTimeFormat("ko-KR", { timeZone: "Asia/Seoul", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(value));
 }
@@ -78,41 +87,46 @@ function returnClass(value: number | null | undefined) {
 }
 
 export function MarketNews() {
-  const [date, setDate] = useState(koreaDate);
-  const [lookback, setLookback] = useState(1);
+  const today = koreaDate();
+  const [startDate, setStartDate] = useState(() => shiftDate(today, -2));
+  const [endDate, setEndDate] = useState(today);
   const [topic, setTopic] = useState<NewsTopic>("macro");
   const [articles, setArticles] = useState<NewsArticle[]>([]);
+  const [sources, setSources] = useState<NewsSource[]>([]);
+  const [retrieved, setRetrieved] = useState<RetrievedQuery | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [refreshKey, setRefreshKey] = useState(0);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [analysisError, setAnalysisError] = useState("");
 
-  useEffect(() => {
-    const controller = new AbortController();
+  async function retrieveNews() {
+    if (loading) return;
     setLoading(true);
     setError("");
     setAnalysis(null);
     setAnalysisError("");
-    fetch(`/api/news?date=${date}&lookback=${lookback}&topic=${topic}`, { signal: controller.signal })
-      .then(async (response) => {
-        const data = await response.json() as { articles?: NewsArticle[]; error?: string };
-        if (!response.ok) throw new Error(data.error || "뉴스를 가져오지 못했습니다.");
-        const next = data.articles ?? [];
-        setArticles(next);
-        setSelected(new Set(next.slice(0, 40).map((article) => article.id)));
-      })
-      .catch((reason: unknown) => {
-        if (reason instanceof DOMException && reason.name === "AbortError") return;
-        setArticles([]);
-        setSelected(new Set());
-        setError(reason instanceof Error ? reason.message : "뉴스를 가져오지 못했습니다.");
-      })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
-    return () => controller.abort();
-  }, [date, lookback, refreshKey, topic]);
+    try {
+      const params = new URLSearchParams({ start: startDate, end: endDate, topic });
+      const response = await fetch(`/api/news?${params}`, { cache: "no-store" });
+      const data = await response.json() as { articles?: NewsArticle[]; sources?: NewsSource[]; error?: string };
+      if (!response.ok) throw new Error(data.error || "뉴스를 가져오지 못했습니다.");
+      const next = data.articles ?? [];
+      setArticles(next);
+      setSources(data.sources ?? []);
+      setRetrieved({ start: startDate, end: endDate, topic });
+      setSelected(new Set(next.slice(0, 40).map((article) => article.id)));
+    } catch (reason) {
+      setArticles([]);
+      setSources([]);
+      setRetrieved(null);
+      setSelected(new Set());
+      setError(reason instanceof Error ? reason.message : "뉴스를 가져오지 못했습니다.");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   const signalById = useMemo(() => new Map(analysis?.analysis.articleSignals?.map((signal) => [signal.id, signal]) ?? []), [analysis]);
 
@@ -127,7 +141,7 @@ export function MarketNews() {
   }
 
   async function runAnalysis() {
-    if (!selected.size || analyzing) return;
+    if (!selected.size || analyzing || !retrieved) return;
     setAnalyzing(true);
     setAnalysisError("");
     try {
@@ -135,7 +149,7 @@ export function MarketNews() {
       const response = await fetch("/api/news/analyze", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ date, start: lookback === 1 ? date : new Date(new Date(`${date}T00:00:00Z`).getTime() - (lookback - 1) * 86400000).toISOString().slice(0, 10), articles: chosen }),
+        body: JSON.stringify({ date: retrieved.end, start: retrieved.start, articles: chosen }),
       });
       const data = await response.json() as AnalysisResult & { error?: string };
       if (!response.ok) throw new Error(data.error || "뉴스 분석에 실패했습니다.");
@@ -148,15 +162,17 @@ export function MarketNews() {
   }
 
   const score = Math.max(-100, Math.min(100, analysis?.analysis.score ?? 0));
+  const activeSourceCount = sources.filter((source) => source.count > 0).length;
+  const queryChanged = Boolean(retrieved && (retrieved.start !== startDate || retrieved.end !== endDate || retrieved.topic !== topic));
 
   return (
     <section className="news-view">
       <header className="news-page-head">
         <div><span>ECONOMIC NEWS</span><h1>News Research</h1></div>
         <div className="news-controls">
-          <label>기준일 · KST<input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
-          <label>수집 기간<select value={lookback} onChange={(event) => setLookback(Number(event.target.value))}><option value={1}>당일</option><option value={3}>이전 3일</option><option value={7}>이전 7일</option></select></label>
-          <button onClick={() => setRefreshKey((value) => value + 1)} aria-label="뉴스 새로고침"><RefreshCw size={15} /></button>
+          <label>시작일 · KST<input type="date" value={startDate} max={endDate} onChange={(event) => setStartDate(event.target.value)} /></label>
+          <label>종료일 · KST<input type="date" value={endDate} min={startDate} max={today} onChange={(event) => setEndDate(event.target.value)} /></label>
+          <button className="retrieve-button" onClick={retrieveNews} disabled={loading} aria-label="뉴스 가져오기"><RefreshCw size={14} className={loading ? "spin" : ""} /><span>{loading ? "수집 중" : queryChanged ? "변경 적용" : "뉴스 가져오기"}</span></button>
         </div>
       </header>
 
@@ -169,10 +185,15 @@ export function MarketNews() {
             <div><span>{articles.length} articles</span><button onClick={() => setSelected(selected.size ? new Set() : new Set(articles.slice(0, 40).map((article) => article.id)))}>{selected.size ? "선택 해제" : "최대 40개 선택"}</button></div>
           </div>
 
+          <div className="news-source-strip" aria-label="신뢰 언론사 수집 현황">
+            {sources.length ? sources.map((source) => <span key={source.id} className={source.status === "error" ? "error" : source.count ? "active" : ""}>{source.name} <b>{source.status === "error" ? "!" : source.count}</b></span>) : <small>Reuters, AP, Bloomberg, FT, WSJ, CNBC, BBC, NYT, Washington Post, Guardian</small>}
+          </div>
+
           <div className="news-scroll">
             {loading && <div className="news-empty"><RefreshCw size={19} className="spin" /><strong>뉴스를 불러오는 중</strong></div>}
             {!loading && error && <div className="news-empty"><Newspaper size={19} /><strong>{error}</strong></div>}
-            {!loading && !error && !articles.length && <div className="news-empty"><Newspaper size={19} /><strong>이 날짜에는 검색된 뉴스가 없습니다.</strong></div>}
+            {!loading && !error && !retrieved && <div className="news-empty"><Newspaper size={19} /><strong>날짜 범위를 고른 뒤 뉴스 가져오기를 눌러주세요.</strong></div>}
+            {!loading && !error && retrieved && !articles.length && <div className="news-empty"><Newspaper size={19} /><strong>선택한 범위에는 검색된 뉴스가 없습니다.</strong></div>}
             {!loading && articles.map((article) => {
               const signal = signalById.get(article.id);
               return (
@@ -186,13 +207,13 @@ export function MarketNews() {
               );
             })}
           </div>
-          <footer>Google News 색인 · 제목/출처만 수집 · 원문은 각 언론사 링크</footer>
+          <footer>{queryChanged ? "필터가 변경되었습니다 · 뉴스 가져오기로 적용" : retrieved ? `Google News · 신뢰 매체 ${sources.length}곳 중 ${activeSourceCount}곳 검색됨` : "Google News · 지정 신뢰 매체 10곳"} · 제목/출처만 수집</footer>
         </article>
 
         <aside className="news-analysis">
           <div className="news-analysis-head">
-            <div><span className="agent-mark"><Sparkles size={15} /></span><div><strong>Sentiment</strong><small>{date} · {selected.size}개 선택</small></div></div>
-            <button className="run-button" disabled={!selected.size || analyzing || loading} onClick={runAnalysis}>{analyzing ? "분석 중…" : "LLM 분석"}</button>
+            <div><span className="agent-mark"><Sparkles size={15} /></span><div><strong>Sentiment</strong><small>{retrieved ? `${retrieved.start} – ${retrieved.end}` : "수집 전"} · {selected.size}개 선택</small></div></div>
+            <button className="run-button" disabled={!selected.size || analyzing || loading || !retrieved || queryChanged} onClick={runAnalysis}>{analyzing ? "분석 중…" : "LLM 분석"}</button>
           </div>
 
           <div className="news-analysis-scroll">
