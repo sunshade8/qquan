@@ -42,6 +42,7 @@ type AnalysisResult = {
   events: Array<{ date: string; timeET: string; title: string; importance: string }>;
   articleCount: number;
 };
+type NewsHistoryEvent = { title: string; detail: string };
 
 const topicOptions: Array<{ id: NewsTopic; label: string }> = [
   { id: "macro", label: "전체 거시" },
@@ -86,7 +87,7 @@ function returnClass(value: number | null | undefined) {
   return value > 0 ? "positive" : "negative";
 }
 
-export function MarketNews() {
+export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent) => void }) {
   const today = koreaDate();
   const [startDate, setStartDate] = useState(() => shiftDate(today, -2));
   const [endDate, setEndDate] = useState(today);
@@ -105,21 +106,23 @@ export function MarketNews() {
     if (loading) return;
     setLoading(true);
     setError("");
+    setSources([]);
     setAnalysis(null);
     setAnalysisError("");
     try {
       const params = new URLSearchParams({ start: startDate, end: endDate, topic });
       const response = await fetch(`/api/news?${params}`, { cache: "no-store" });
       const data = await response.json() as { articles?: NewsArticle[]; sources?: NewsSource[]; error?: string };
+      setSources(data.sources ?? []);
       if (!response.ok) throw new Error(data.error || "뉴스를 가져오지 못했습니다.");
       const next = data.articles ?? [];
       setArticles(next);
-      setSources(data.sources ?? []);
       setRetrieved({ start: startDate, end: endDate, topic });
       setSelected(new Set(next.slice(0, 40).map((article) => article.id)));
+      const active = (data.sources ?? []).filter((source) => source.count > 0).length;
+      onHistory?.({ title: "뉴스 수집", detail: `${startDate} – ${endDate} · ${next.length}건 · ${active}/10개 매체` });
     } catch (reason) {
       setArticles([]);
-      setSources([]);
       setRetrieved(null);
       setSelected(new Set());
       setError(reason instanceof Error ? reason.message : "뉴스를 가져오지 못했습니다.");
@@ -154,6 +157,7 @@ export function MarketNews() {
       const data = await response.json() as AnalysisResult & { error?: string };
       if (!response.ok) throw new Error(data.error || "뉴스 분석에 실패했습니다.");
       setAnalysis(data);
+      onHistory?.({ title: "뉴스 감성 분석", detail: `${retrieved.start} – ${retrieved.end} · ${chosen.length}건 · ${data.analysis.label ?? "분석 완료"}` });
     } catch (reason) {
       setAnalysisError(reason instanceof Error ? reason.message : "뉴스 분석에 실패했습니다.");
     } finally {

@@ -1,6 +1,5 @@
 "use client";
 
-import Bot from "lucide-react/dist/esm/icons/bot";
 import CalendarDays from "lucide-react/dist/esm/icons/calendar-days";
 import ChartCandlestick from "lucide-react/dist/esm/icons/chart-candlestick";
 import Check from "lucide-react/dist/esm/icons/check";
@@ -8,6 +7,7 @@ import ChevronDown from "lucide-react/dist/esm/icons/chevron-down";
 import Database from "lucide-react/dist/esm/icons/database";
 import FileUp from "lucide-react/dist/esm/icons/file-up";
 import FlaskConical from "lucide-react/dist/esm/icons/flask-conical";
+import HistoryIcon from "lucide-react/dist/esm/icons/history";
 import PanelRight from "lucide-react/dist/esm/icons/panel-right";
 import Play from "lucide-react/dist/esm/icons/play";
 import Newspaper from "lucide-react/dist/esm/icons/newspaper";
@@ -15,6 +15,7 @@ import Send from "lucide-react/dist/esm/icons/send";
 import Settings from "lucide-react/dist/esm/icons/settings";
 import Sparkles from "lucide-react/dist/esm/icons/sparkles";
 import Trash2 from "lucide-react/dist/esm/icons/trash-2";
+import X from "lucide-react/dist/esm/icons/x";
 import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
 import { TradingViewChart } from "./tradingview-chart";
 import { MarketCalendar } from "./market-calendar";
@@ -66,7 +67,12 @@ type StudyResult = {
   worst: number;
 };
 
-type ChatMessage = { role: "user" | "agent"; text: string };
+type ChatMessage = { id: string; role: "user" | "agent"; text: string; symbol: string; createdAt: string };
+type WorkspaceHistoryItem = { id: string; kind: "chat" | "news"; title: string; detail: string; context: string; createdAt: string };
+type MarketSession = { code: "pre" | "regular" | "after" | "closed"; label: string; time: string; zone: string; schedule: string };
+
+const CHAT_STORAGE_KEY = "qquant.chat.v1";
+const HISTORY_STORAGE_KEY = "qquant.history.v1";
 
 const symbols = [
   { label: "NVDA", value: "NASDAQ:NVDA" },
@@ -189,6 +195,34 @@ function formatPercent(value: number) {
   return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
 }
 
+function itemId(prefix: string) {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function resolveMarketSession(now = new Date()): MarketSession {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+    timeZoneName: "short",
+  }).formatToParts(now);
+  const read = (type: string) => parts.find((part) => part.type === type)?.value ?? "";
+  const weekday = read("weekday");
+  const hour = Number(read("hour")) % 24;
+  const minute = Number(read("minute"));
+  const minutes = hour * 60 + minute;
+  const time = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  const zone = read("timeZoneName");
+  const businessDay = !["Sat", "Sun"].includes(weekday);
+
+  if (businessDay && minutes >= 240 && minutes < 570) return { code: "pre", label: "프리마켓", time, zone, schedule: "04:00–09:30 ET" };
+  if (businessDay && minutes >= 570 && minutes < 960) return { code: "regular", label: "정규장", time, zone, schedule: "09:30–16:00 ET" };
+  if (businessDay && minutes >= 960 && minutes < 1200) return { code: "after", label: "애프터마켓", time, zone, schedule: "16:00–20:00 ET" };
+  return { code: "closed", label: "장 마감", time, zone, schedule: businessDay && minutes < 240 ? "프리마켓 04:00 ET" : "다음 거래일 04:00 ET" };
+}
+
 export function QuantWorkspace() {
   const [view, setView] = useState<View>("market");
   const [symbol, setSymbol] = useState("NASDAQ:NVDA");
@@ -211,16 +245,51 @@ export function QuantWorkspace() {
   const [question, setQuestion] = useState("");
   const [asking, setAsking] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [history, setHistory] = useState<WorkspaceHistoryItem[]>([]);
+  const [historyReady, setHistoryReady] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [marketSession, setMarketSession] = useState(resolveMarketSession);
   const [hypothesis, setHypothesis] = useState("");
   const [agentOpen, setAgentOpen] = useState(true);
   const [studies, setStudies] = useState<string[]>([]);
 
   useEffect(() => {
+    let savedMessages: ChatMessage[] = [];
+    let savedHistory: WorkspaceHistoryItem[] = [];
+    try {
+      const parsedMessages = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY) ?? "[]") as unknown;
+      const parsedHistory = JSON.parse(localStorage.getItem(HISTORY_STORAGE_KEY) ?? "[]") as unknown;
+      if (Array.isArray(parsedMessages)) savedMessages = parsedMessages.filter((item): item is ChatMessage => Boolean(item && typeof item === "object" && "text" in item && "role" in item));
+      if (Array.isArray(parsedHistory)) savedHistory = parsedHistory.filter((item): item is WorkspaceHistoryItem => Boolean(item && typeof item === "object" && "detail" in item && "createdAt" in item));
+    } catch {
+      savedMessages = [];
+      savedHistory = [];
+    }
+    queueMicrotask(() => {
+      setMessages(savedMessages.slice(-200));
+      setHistory(savedHistory.slice(-300));
+      setHistoryReady(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!historyReady) return;
+    try {
+      localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(messages.slice(-200)));
+      localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(history.slice(-300)));
+    } catch {
+      // Storage may be unavailable in private browsing or when the quota is full.
+    }
+  }, [history, historyReady, messages]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setMarketSession(resolveMarketSession()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
     const controller = new AbortController();
     const ticker = symbol.split(":").at(-1) ?? symbol;
-    setLoadingData(true);
-    setImportError("");
-    setBrokerSnapshot(null);
     fetch(`/api/market/history?symbol=${encodeURIComponent(ticker)}`, { signal: controller.signal })
       .then(async (response) => {
         const data = await response.json() as { rows?: PriceRow[]; source?: string; providers?: ProviderReport; error?: string };
@@ -267,6 +336,17 @@ export function QuantWorkspace() {
     };
   }, [rows]);
 
+  function recordHistory(kind: WorkspaceHistoryItem["kind"], title: string, detail: string, context = symbol) {
+    const entry: WorkspaceHistoryItem = { id: itemId(kind), kind, title, detail, context, createdAt: new Date().toISOString() };
+    setHistory((current) => [...current, entry].slice(-300));
+  }
+
+  function appendMessage(role: ChatMessage["role"], text: string) {
+    const message: ChatMessage = { id: itemId(role), role, text, symbol, createdAt: new Date().toISOString() };
+    setMessages((current) => [...current, message].slice(-200));
+    recordHistory("chat", role === "user" ? "질문" : "Agent 응답", text, symbol);
+  }
+
   function selectSymbol(next: string) {
     setSymbol(next);
     setSymbolDraft(next);
@@ -275,9 +355,10 @@ export function QuantWorkspace() {
     setDataSource("");
     setProviders(null);
     setBrokerSnapshot(null);
+    setLoadingData(true);
+    setImportError("");
     setStudy(null);
     setStudyRan(false);
-    setMessages([]);
   }
 
   function submitSymbol(event: FormEvent) {
@@ -302,7 +383,6 @@ export function QuantWorkspace() {
     setImportError("");
     setStudy(null);
     setStudyRan(false);
-    setMessages([]);
     event.target.value = "";
   }
 
@@ -315,7 +395,7 @@ export function QuantWorkspace() {
     event.preventDefault();
     const prompt = question.trim();
     if (!prompt || asking) return;
-    setMessages((current) => [...current, { role: "user", text: prompt }]);
+    appendMessage("user", prompt);
     setQuestion("");
 
     const chartCommand = parseChartCommand(prompt);
@@ -325,12 +405,12 @@ export function QuantWorkspace() {
       if (chartCommand.action === "remove") setStudies((current) => current.filter((id) => !chartCommand.indicators.some((item) => item.id === id)));
       const names = chartCommand.indicators.map((item) => item.label).join(", ");
       const reply = chartCommand.action === "clear" ? "차트의 보조지표를 모두 제거했습니다." : chartCommand.action === "add" ? `${names}를 차트에 추가했습니다.` : `${names}를 차트에서 제거했습니다.`;
-      setMessages((current) => [...current, { role: "agent", text: `${reply} 무료 위젯을 새 설정으로 다시 불러옵니다.` }]);
+      appendMessage("agent", `${reply} 무료 위젯을 새 설정으로 다시 불러옵니다.`);
       return;
     }
 
     if (!rows.length) {
-      setMessages((current) => [...current, { role: "agent", text: "분석 데이터가 아직 없습니다. 자동 수집이 끝난 뒤 다시 물어보세요." }]);
+      appendMessage("agent", "분석 데이터가 아직 없습니다. 자동 수집이 끝난 뒤 다시 물어보세요.");
       return;
     }
     setAsking(true);
@@ -353,9 +433,9 @@ export function QuantWorkspace() {
       });
       const data = await response.json() as { answer?: string; error?: string };
       if (!response.ok) throw new Error(data.error || "Agent unavailable");
-      setMessages((current) => [...current, { role: "agent", text: data.answer ?? "응답이 비어 있습니다." }]);
+      appendMessage("agent", data.answer ?? "응답이 비어 있습니다.");
     } catch (error) {
-      setMessages((current) => [...current, { role: "agent", text: error instanceof Error ? error.message : "에이전트 연결에 실패했습니다." }]);
+      appendMessage("agent", error instanceof Error ? error.message : "에이전트 연결에 실패했습니다.");
     } finally {
       setAsking(false);
     }
@@ -392,8 +472,25 @@ export function QuantWorkspace() {
           <div className="watchlist" aria-label="Watchlist">
             {symbols.map((item) => <button key={item.value} className={symbol === item.value ? "active" : ""} onClick={() => selectSymbol(item.value)}>{item.label}</button>)}
           </div>
-          <div className="connection-state"><span className="live-dot" />TradingView · {brokerSnapshot?.available ? "Toss" : "Yahoo"}{providers?.yahoo.status === "connected" ? " · Yahoo" : ""}</div>
+          <div className="command-tools">
+            <button className="history-toggle" onClick={() => setHistoryOpen(true)} aria-label={`Agent history ${history.length} items`}><HistoryIcon size={13} /><span>History</span>{history.length > 0 && <b>{history.length}</b>}</button>
+            <div className={`market-session ${marketSession.code}`} title={`America/New_York · ${marketSession.schedule} · DST 자동 반영`}>
+              <i /><div><strong>{marketSession.label}</strong><small>{marketSession.time} {marketSession.zone}</small></div>
+            </div>
+            <div className="connection-state"><span className="live-dot" />TradingView · {brokerSnapshot?.available ? "Toss" : "Yahoo"}{providers?.yahoo.status === "connected" ? " · Yahoo" : ""}</div>
+          </div>
         </header>
+
+        {historyOpen && (
+          <aside className="history-drawer" aria-label="Agent history">
+            <header><div><span className="agent-mark"><HistoryIcon size={15} /></span><div><strong>Agent History</strong><small>이 브라우저에 자동 저장</small></div></div><button aria-label="Close history" onClick={() => setHistoryOpen(false)}><X size={15} /></button></header>
+            <div className="history-list">
+              {!history.length && <div className="history-empty"><HistoryIcon size={20} /><strong>아직 기록이 없습니다.</strong><p>질문, Agent 응답, 뉴스 수집과 분석 내역이 여기에 남습니다.</p></div>}
+              {[...history].reverse().map((item) => <article key={item.id} className={item.kind}><div><span>{item.title}</span><time>{new Intl.DateTimeFormat("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(item.createdAt))}</time></div><strong>{item.context}</strong><p>{item.detail}</p></article>)}
+            </div>
+            {history.length > 0 && <footer><span>{history.length}개 기록</span><button onClick={() => { setHistory([]); setMessages([]); }}>기록 지우기</button></footer>}
+          </aside>
+        )}
 
         {view === "market" && (
           <div className={`market-layout ${agentOpen ? "" : "agent-closed"}`}>
@@ -465,13 +562,13 @@ export function QuantWorkspace() {
 
             {agentOpen && (
               <aside className="agent-dock">
-                <div className="agent-head"><div><span className="agent-mark"><Sparkles size={15} /></span><div><strong>Agent</strong><small>{rows.length ? `${datasetName} attached` : "waiting for data"}</small></div></div><Bot size={16} /></div>
+                <div className="agent-head"><div><span className="agent-mark"><Sparkles size={15} /></span><div><strong>Agent</strong><small>{rows.length ? `${datasetName} attached` : "waiting for data"}</small></div></div><button className="agent-history-shortcut" aria-label="Open agent history" onClick={() => setHistoryOpen(true)}><HistoryIcon size={14} /><span>{history.length}</span></button></div>
                 <div className="agent-context">
                   <span>{symbol}</span><span>{intervals.find((item) => item.value === interval)?.label}</span><span>{studies.length} studies</span><span className={rows.length ? "connected" : "missing"}>{rows.length ? `${rows.length} rows` : "loading data"}</span><span className={brokerSnapshot?.available ? "connected" : "missing"}>{brokerSnapshot?.available ? `Toss ${brokerSnapshot.session?.label ?? "quote"}` : "Toss fallback"}</span>
                 </div>
                 <div className="conversation-log" aria-live="polite">
                   {!messages.length && <div className="agent-empty"><strong>차트와 데이터를 함께 조작합니다.</strong><p>“RSI와 MACD 추가해줘”처럼 차트를 바꾸거나, “이 조건이 다른 시장 국면에서도 남는지”처럼 데이터를 조사해 달라고 하세요.</p></div>}
-                  {messages.map((message, index) => <div className={`chat-message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === "user" ? "You" : "Agent"}</span><p>{message.text}</p></div>)}
+                  {messages.map((message) => <div className={`chat-message ${message.role}`} key={message.id}><span>{message.role === "user" ? "You" : "Agent"} · {message.symbol}</span><p>{message.text}</p></div>)}
                   {asking && <div className="agent-thinking"><i /><i /><i /></div>}
                 </div>
                 <form className="agent-composer" onSubmit={askAgent}>
@@ -495,7 +592,7 @@ export function QuantWorkspace() {
 
         {view === "calendar" && <MarketCalendar />}
 
-        {view === "news" && <MarketNews />}
+        {view === "news" && <MarketNews onHistory={(event) => recordHistory("news", event.title, event.detail, "Google News")} />}
 
         {view === "settings" && (
           <section className="simple-view">

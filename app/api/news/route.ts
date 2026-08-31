@@ -105,26 +105,33 @@ function koreaDate(value: Date) {
   }).format(value);
 }
 
-async function fetchSource(source: TrustedSource, topic: NewsTopic, start: string, end: string) {
-  const query = `${topicQueries[topic]} site:${source.queryDomain} after:${shiftDate(start, -1)} before:${shiftDate(end, 1)}`;
+async function fetchGroup(sources: TrustedSource[], topic: NewsTopic, start: string, end: string) {
+  const sourceQuery = sources.map((source) => `site:${source.queryDomain}`).join(" OR ");
+  const query = `${topicQueries[topic]} (${sourceQuery}) after:${shiftDate(start, -1)} before:${shiftDate(end, 1)}`;
   const feedUrl = new URL("https://news.google.com/rss/search");
   feedUrl.searchParams.set("q", query);
   feedUrl.searchParams.set("hl", "en-US");
   feedUrl.searchParams.set("gl", "US");
   feedUrl.searchParams.set("ceid", "US:en");
 
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12_000);
   try {
     const response = await fetch(feedUrl, {
-      headers: { "user-agent": "QQuant personal research feed/1.0" },
-      signal: AbortSignal.timeout(10_000),
+      headers: { accept: "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8" },
+      signal: controller.signal,
     });
-    if (!response.ok) return { source, status: "error" as const, articles: [] };
+    if (!response.ok) {
+      console.warn("Google News RSS request failed", { sources: sources.map((source) => source.id), status: response.status });
+      return { sourceIds: sources.map((source) => source.id), status: "error" as const, error: `HTTP ${response.status}`, articles: [] };
+    }
     const xml = await response.text();
     const articles = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)].flatMap((match) => {
       const item = match[1];
       const sourceMatch = item.match(/<source(?:\s+url="([^"]*)")?>([\s\S]*?)<\/source>/i);
       const sourceUrl = sourceMatch?.[1] ? decodeXml(sourceMatch[1]) : "";
-      if (!sourceMatches(sourceUrl, source)) return [];
+      const source = sources.find((candidate) => sourceMatches(sourceUrl, candidate));
+      if (!source) return [];
 
       const rawTitle = tag(item, "title");
       const feedSourceName = sourceMatch ? decodeXml(sourceMatch[2]) : source.name;
@@ -148,12 +155,17 @@ async function fetchSource(source: TrustedSource, topic: NewsTopic, start: strin
       }];
     });
     return {
-      source,
+      sourceIds: sources.map((source) => source.id),
       status: "ok" as const,
-      articles: articles.sort((left, right) => right.publishedAt.localeCompare(left.publishedAt)).slice(0, 10),
+      error: null,
+      articles,
     };
-  } catch {
-    return { source, status: "error" as const, articles: [] };
+  } catch (error) {
+    const message = error instanceof Error ? `${error.name}: ${error.message}` : "Unknown fetch error";
+    console.warn("Google News RSS request threw", { sources: sources.map((source) => source.id), error: message });
+    return { sourceIds: sources.map((source) => source.id), status: "error" as const, error: message, articles: [] };
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -172,10 +184,15 @@ export async function GET(request: Request) {
   if (rangeDays < 0) return Response.json({ error: "시작일은 종료일보다 늦을 수 없습니다." }, { status: 400 });
   if (rangeDays > 30) return Response.json({ error: "뉴스 수집 기간은 최대 31일까지 선택할 수 있습니다." }, { status: 400 });
 
-  const results = await Promise.all(trustedSources.map((source) => fetchSource(source, topic, start, end)));
-  const seen = new Set<string>();
-  const articles = results
+  const groups = [trustedSources.slice(0, 5), trustedSources.slice(5)];
+  const results = await Promise.all(groups.map((group) => fetchGroup(group, topic, start, end)));
+  const balancedArticles = trustedSources.flatMap((source) => results
     .flatMap((result) => result.articles)
+    .filter((article) => article.sourceId === source.id)
+    .sort((left, right) => right.publishedAt.localeCompare(left.publishedAt))
+    .slice(0, 10));
+  const seen = new Set<string>();
+  const articles = balancedArticles
     .sort((left, right) => right.publishedAt.localeCompare(left.publishedAt))
     .filter((article) => {
       const key = article.title.toLowerCase().replaceAll(/[^a-z0-9]/g, "");
@@ -187,15 +204,21 @@ export async function GET(request: Request) {
 
   const sourceCounts = new Map<string, number>();
   for (const article of articles) sourceCounts.set(article.sourceId, (sourceCounts.get(article.sourceId) ?? 0) + 1);
-  const sources = results.map((result) => ({
-    id: result.source.id,
-    name: result.source.name,
-    count: sourceCounts.get(result.source.id) ?? 0,
-    status: result.status,
-  }));
+  const sources = trustedSources.map((source) => {
+    const result = results.find((candidate) => candidate.sourceIds.includes(source.id));
+    return { id: source.id, name: source.name, count: sourceCounts.get(source.id) ?? 0, status: result?.status ?? "error" };
+  });
+  const retrievalErrors = results.filter((result) => result.status === "error").map((result) => ({ sources: result.sourceIds, error: result.error }));
+
+  if (results.every((result) => result.status === "error")) {
+    return Response.json(
+      { error: "Google News 연결이 거부되었습니다. 잠시 후 다시 시도해 주세요.", provider: "Google News RSS", topic, start, end, sources, articles: [], retrievalErrors },
+      { status: 502, headers: { "cache-control": "no-store" } },
+    );
+  }
 
   return Response.json(
-    { provider: "Google News RSS", topic, start, end, sources, articles },
+    { provider: "Google News RSS", topic, start, end, sources, articles, retrievalErrors },
     { headers: { "cache-control": "no-store" } },
   );
 }
