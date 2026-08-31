@@ -7,6 +7,30 @@ type TrustedSource = {
   queryDomain: string;
 };
 
+type Article = {
+  id: string;
+  title: string;
+  source: string;
+  sourceId: string;
+  sourceUrl: string;
+  url: string;
+  publishedAt: string;
+  topic: NewsTopic;
+};
+
+type AttemptStatus = "ok" | "empty" | "error";
+
+type Attempt = {
+  sourceId: string;
+  provider: string;
+  strategy: string;
+  status: AttemptStatus;
+  error: string | null;
+  items: number;
+  kept: number;
+  articles: Article[];
+};
+
 const topicQueries: Record<NewsTopic, string> = {
   macro: '("Federal Reserve" OR inflation OR employment OR GDP OR recession OR "economic growth" OR "bond yields" OR "stock market")',
   fed: '("Federal Reserve" OR FOMC OR "interest rates" OR Powell OR "rate cut" OR "rate hike")',
@@ -44,6 +68,17 @@ const topicKeywords: Array<[NewsTopic, RegExp]> = [
 ];
 
 const noisyHeadlinePattern = /\bjob with\b|company announcement|newsletter(?: signup)?|print edition|trending news, latest updates, analysis|sector & industry performance|^(?:interviews|economics?|business|shows|style(?:\s*-\s*page \d+)?|united states|ap|minute by minute|bonds headlines|opinion \+ politics|us news \+ business|business \+ economics|economics \+ business)$/i;
+
+// Google and Bing answer datacenter egress differently when no browser-shaped
+// headers are present: an empty channel instead of results. Sending a real
+// user agent keeps the deployed Worker on the same code path as local dev.
+const feedHeaders = {
+  accept: "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.5",
+  "accept-language": "en-US,en;q=0.9",
+  "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+};
+
+const feedTimeoutMs = 8_000;
 
 function shiftDate(date: string, days: number) {
   const value = new Date(`${date}T00:00:00Z`);
@@ -105,69 +140,72 @@ function koreaDate(value: Date) {
   }).format(value);
 }
 
-async function fetchGroup(sources: TrustedSource[], topic: NewsTopic, start: string, end: string) {
-  const sourceQuery = sources.map((source) => `site:${source.queryDomain}`).join(" OR ");
-  const query = `${topicQueries[topic]} (${sourceQuery}) after:${shiftDate(start, -1)} before:${shiftDate(end, 1)}`;
+async function fetchFeed(feedUrl: URL) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), feedTimeoutMs);
+  try {
+    const response = await fetch(feedUrl, { headers: feedHeaders, signal: controller.signal });
+    if (!response.ok) return { xml: "", error: `HTTP ${response.status}` };
+    return { xml: await response.text(), error: null as string | null };
+  } catch (error) {
+    return { xml: "", error: error instanceof Error ? `${error.name}: ${error.message}` : "Unknown fetch error" };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function keepArticle(title: string, topic: NewsTopic, publishedDate: string, start: string, end: string) {
+  if (!title) return false;
+  if (noisyHeadlinePattern.test(title)) return false;
+  if (!topicTitlePatterns[topic].test(title)) return false;
+  return publishedDate >= start && publishedDate <= end;
+}
+
+function googleFeedUrl(query: string) {
   const feedUrl = new URL("https://news.google.com/rss/search");
   feedUrl.searchParams.set("q", query);
   feedUrl.searchParams.set("hl", "en-US");
   feedUrl.searchParams.set("gl", "US");
   feedUrl.searchParams.set("ceid", "US:en");
+  return feedUrl;
+}
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8_000);
-  try {
-    const response = await fetch(feedUrl, {
-      headers: { accept: "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8" },
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      console.error("[news/retrieve] Google News RSS failed", { sources: sources.map((source) => source.id), status: response.status });
-      return { sourceIds: sources.map((source) => source.id), provider: "Google News RSS", status: "error" as const, error: `HTTP ${response.status}`, articles: [] };
-    }
-    const xml = await response.text();
-    const articles = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)].flatMap((match) => {
-      const item = match[1];
-      const sourceMatch = item.match(/<source(?:\s+url="([^"]*)")?>([\s\S]*?)<\/source>/i);
-      const sourceUrl = sourceMatch?.[1] ? decodeXml(sourceMatch[1]) : "";
-      const source = sources.find((candidate) => sourceMatches(sourceUrl, candidate));
-      if (!source) return [];
-
-      const rawTitle = tag(item, "title");
-      const feedSourceName = sourceMatch ? decodeXml(sourceMatch[2]) : source.name;
-      const title = rawTitle.endsWith(` - ${feedSourceName}`) ? rawTitle.slice(0, -(feedSourceName.length + 3)).trim() : rawTitle;
-      if (noisyHeadlinePattern.test(title) || !topicTitlePatterns[topic].test(title)) return [];
-      const published = new Date(tag(item, "pubDate"));
-      const link = tag(item, "link");
-      if (!title || !link || Number.isNaN(published.getTime())) return [];
-      const publishedDate = koreaDate(published);
-      if (publishedDate < start || publishedDate > end) return [];
-
-      return [{
-        id: shortId(tag(item, "guid") || link),
-        title,
-        source: source.name,
-        sourceId: source.id,
-        sourceUrl,
-        url: link,
-        publishedAt: published.toISOString(),
-        topic: classify(title),
-      }];
-    });
-    return {
-      sourceIds: sources.map((source) => source.id),
-      provider: "Google News RSS",
-      status: "ok" as const,
-      error: null,
-      articles,
-    };
-  } catch (error) {
-    const message = error instanceof Error ? `${error.name}: ${error.message}` : "Unknown fetch error";
-    console.error("[news/retrieve] Google News RSS threw", { sources: sources.map((source) => source.id), error: message });
-    return { sourceIds: sources.map((source) => source.id), provider: "Google News RSS", status: "error" as const, error: message, articles: [] };
-  } finally {
-    clearTimeout(timeout);
+async function fetchGoogle(source: TrustedSource, topic: NewsTopic, start: string, end: string, strategy: string, query: string): Promise<Attempt> {
+  const base = { sourceId: source.id, provider: "Google News RSS", strategy };
+  const { xml, error } = await fetchFeed(googleFeedUrl(query));
+  if (error) {
+    console.error("[news/retrieve] google failed", { source: source.id, strategy, error });
+    return { ...base, status: "error", error, items: 0, kept: 0, articles: [] };
   }
+
+  const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)];
+  const articles = items.flatMap((match): Article[] => {
+    const item = match[1];
+    const sourceMatch = item.match(/<source(?:\s+url="([^"]*)")?>([\s\S]*?)<\/source>/i);
+    const sourceUrl = sourceMatch?.[1] ? decodeXml(sourceMatch[1]) : "";
+    if (!sourceMatches(sourceUrl, source)) return [];
+
+    const rawTitle = tag(item, "title");
+    const feedSourceName = sourceMatch ? decodeXml(sourceMatch[2]) : source.name;
+    const title = rawTitle.endsWith(` - ${feedSourceName}`) ? rawTitle.slice(0, -(feedSourceName.length + 3)).trim() : rawTitle;
+    const published = new Date(tag(item, "pubDate"));
+    const link = tag(item, "link");
+    if (!link || Number.isNaN(published.getTime())) return [];
+    if (!keepArticle(title, topic, koreaDate(published), start, end)) return [];
+
+    return [{
+      id: shortId(tag(item, "guid") || link),
+      title,
+      source: source.name,
+      sourceId: source.id,
+      sourceUrl,
+      url: link,
+      publishedAt: published.toISOString(),
+      topic: classify(title),
+    }];
+  });
+
+  return { ...base, status: articles.length ? "ok" : "empty", error: null, items: items.length, kept: articles.length, articles };
 }
 
 function bingTargetUrl(value: string) {
@@ -179,36 +217,73 @@ function bingTargetUrl(value: string) {
   }
 }
 
-async function fetchBingSource(source: TrustedSource, topic: NewsTopic, start: string, end: string) {
+async function fetchBing(source: TrustedSource, topic: NewsTopic, start: string, end: string): Promise<Attempt> {
+  const base = { sourceId: source.id, provider: "Bing News RSS", strategy: "bing" };
   const feedUrl = new URL("https://www.bing.com/news/search");
   feedUrl.searchParams.set("q", `${topicQueries[topic]} site:${source.queryDomain}`);
   feedUrl.searchParams.set("format", "rss");
   feedUrl.searchParams.set("setlang", "en-US");
   feedUrl.searchParams.set("cc", "US");
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 6_000);
-  try {
-    const response = await fetch(feedUrl, { headers: { accept: "application/rss+xml, application/xml;q=0.9" }, signal: controller.signal });
-    if (!response.ok) return { sourceIds: [source.id], provider: "Bing News RSS", status: "error" as const, error: `HTTP ${response.status}`, articles: [] };
-    const xml = await response.text();
-    const articles = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)].flatMap((match) => {
-      const item = match[1];
-      const title = tag(item, "title");
-      const url = bingTargetUrl(tag(item, "link"));
-      const published = new Date(tag(item, "pubDate"));
-      if (!title || !url || !sourceMatches(url, source) || Number.isNaN(published.getTime())) return [];
-      const publishedDate = koreaDate(published);
-      if (publishedDate < start || publishedDate > end || noisyHeadlinePattern.test(title) || !topicTitlePatterns[topic].test(title)) return [];
-      return [{ id: shortId(url), title, source: source.name, sourceId: source.id, sourceUrl: new URL(url).origin, url, publishedAt: published.toISOString(), topic: classify(title) }];
-    });
-    return { sourceIds: [source.id], provider: "Bing News RSS", status: "ok" as const, error: null, articles };
-  } catch (error) {
-    const message = error instanceof Error ? `${error.name}: ${error.message}` : "Unknown fetch error";
-    console.error("[news/retrieve] Bing News RSS threw", { source: source.id, error: message });
-    return { sourceIds: [source.id], provider: "Bing News RSS", status: "error" as const, error: message, articles: [] };
-  } finally {
-    clearTimeout(timeout);
+
+  const { xml, error } = await fetchFeed(feedUrl);
+  if (error) {
+    console.error("[news/retrieve] bing failed", { source: source.id, error });
+    return { ...base, status: "error", error, items: 0, kept: 0, articles: [] };
   }
+
+  const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)];
+  const articles = items.flatMap((match): Article[] => {
+    const item = match[1];
+    const title = tag(item, "title");
+    const url = bingTargetUrl(tag(item, "link"));
+    const published = new Date(tag(item, "pubDate"));
+    if (!url || !sourceMatches(url, source) || Number.isNaN(published.getTime())) return [];
+    if (!keepArticle(title, topic, koreaDate(published), start, end)) return [];
+    return [{
+      id: shortId(url),
+      title,
+      source: source.name,
+      sourceId: source.id,
+      sourceUrl: new URL(url).origin,
+      url,
+      publishedAt: published.toISOString(),
+      topic: classify(title),
+    }];
+  });
+
+  return { ...base, status: articles.length ? "ok" : "empty", error: null, items: items.length, kept: articles.length, articles };
+}
+
+// Google honours `after:`/`before:` inconsistently depending on which serving
+// region answers the request, so an empty range query is not evidence that no
+// news exists. Each source walks the chain until one strategy returns rows.
+function strategiesFor(source: TrustedSource, topic: NewsTopic, start: string, end: string) {
+  const ranged = `${topicQueries[topic]} (site:${source.queryDomain}) after:${shiftDate(start, -1)} before:${shiftDate(end, 1)}`;
+  const today = koreaDate(new Date());
+  const windowDays = daysBetween(start, today) + 1;
+  const recent = windowDays > 0 && windowDays <= 60 && end >= shiftDate(today, -2);
+
+  const chain: Array<() => Promise<Attempt>> = [
+    () => fetchGoogle(source, topic, start, end, "google-range", ranged),
+  ];
+  if (recent) {
+    chain.push(() => fetchGoogle(source, topic, start, end, "google-when", `${topicQueries[topic]} (site:${source.queryDomain}) when:${windowDays}d`));
+  }
+  chain.push(() => fetchGoogle(source, topic, start, end, "google-plain", `${topicQueries[topic]} (site:${source.queryDomain})`));
+  chain.push(() => fetchBing(source, topic, start, end));
+  return chain;
+}
+
+async function collectSource(source: TrustedSource, topic: NewsTopic, start: string, end: string) {
+  const attempts: Attempt[] = [];
+  for (const run of strategiesFor(source, topic, start, end)) {
+    const attempt = await run();
+    attempts.push(attempt);
+    if (attempt.status === "ok") break;
+  }
+  const winner = attempts.find((attempt) => attempt.status === "ok");
+  const reachable = attempts.some((attempt) => attempt.status !== "error");
+  return { source, attempts, winner, status: reachable ? ("ok" as const) : ("error" as const) };
 }
 
 export async function GET(request: Request) {
@@ -220,22 +295,16 @@ export async function GET(request: Request) {
   const end = url.searchParams.get("end") ?? legacyEnd;
   const requestedTopic = url.searchParams.get("topic") as NewsTopic | null;
   const topic = requestedTopic && requestedTopic in topicQueries ? requestedTopic : "macro";
+  const debug = url.searchParams.get("debug") === "1";
 
   if (!validDate(start) || !validDate(end)) return Response.json({ error: "날짜 형식이 올바르지 않습니다." }, { status: 400 });
   const rangeDays = daysBetween(start, end);
   if (rangeDays < 0) return Response.json({ error: "시작일은 종료일보다 늦을 수 없습니다." }, { status: 400 });
   if (rangeDays > 30) return Response.json({ error: "뉴스 수집 기간은 최대 31일까지 선택할 수 있습니다." }, { status: 400 });
 
-  const googleResults = await Promise.all(trustedSources.map((source) => fetchGroup([source], topic, start, end)));
-  const failedSources = trustedSources.filter((source) => googleResults.find((result) => result.sourceIds[0] === source.id)?.status === "error");
-  const bingResults = await Promise.all(failedSources.map((source) => fetchBingSource(source, topic, start, end)));
-  const results = trustedSources.map((source) => {
-    const google = googleResults.find((result) => result.sourceIds[0] === source.id)!;
-    return google.status === "ok" ? google : bingResults.find((result) => result.sourceIds[0] === source.id) ?? google;
-  });
-  const balancedArticles = trustedSources.flatMap((source) => results
-    .flatMap((result) => result.articles)
-    .filter((article) => article.sourceId === source.id)
+  const collected = await Promise.all(trustedSources.map((source) => collectSource(source, topic, start, end)));
+
+  const balancedArticles = collected.flatMap((result) => (result.winner?.articles ?? [])
     .sort((left, right) => right.publishedAt.localeCompare(left.publishedAt))
     .slice(0, 10));
   const seen = new Set<string>();
@@ -251,22 +320,50 @@ export async function GET(request: Request) {
 
   const sourceCounts = new Map<string, number>();
   for (const article of articles) sourceCounts.set(article.sourceId, (sourceCounts.get(article.sourceId) ?? 0) + 1);
-  const sources = trustedSources.map((source) => {
-    const result = results.find((candidate) => candidate.sourceIds.includes(source.id));
-    return { id: source.id, name: source.name, count: sourceCounts.get(source.id) ?? 0, status: result?.status ?? "error" };
-  });
-  const retrievalErrors = [...googleResults, ...bingResults].filter((result) => result.status === "error").map((result) => ({ provider: result.provider, sources: result.sourceIds, error: result.error }));
-  const providers = [...new Set(results.filter((result) => result.status === "ok").map((result) => result.provider))];
+  const sources = collected.map((result) => ({
+    id: result.source.id,
+    name: result.source.name,
+    count: sourceCounts.get(result.source.id) ?? 0,
+    status: result.status,
+  }));
 
-  if (results.every((result) => result.status === "error")) {
+  const allAttempts = collected.flatMap((result) => result.attempts);
+  const retrievalErrors = allAttempts
+    .filter((attempt) => attempt.status === "error")
+    .map((attempt) => ({ provider: attempt.provider, strategy: attempt.strategy, sources: [attempt.sourceId], error: attempt.error }));
+  const providers = [...new Set(collected.flatMap((result) => (result.winner ? [result.winner.provider] : [])))];
+
+  console.log("[news/retrieve] summary", {
+    topic,
+    start,
+    end,
+    articles: articles.length,
+    strategies: allAttempts.reduce<Record<string, number>>((totals, attempt) => {
+      const key = `${attempt.strategy}:${attempt.status}`;
+      totals[key] = (totals[key] ?? 0) + 1;
+      return totals;
+    }, {}),
+  });
+
+  const diagnostics = debug
+    ? allAttempts.map(({ sourceId, provider, strategy, status, error, items, kept }) => ({ sourceId, provider, strategy, status, error, items, kept }))
+    : undefined;
+
+  if (collected.every((result) => result.status === "error")) {
     return Response.json(
-      { error: "뉴스 공급자 연결이 모두 실패했습니다. 잠시 후 다시 시도해 주세요.", provider: "Google News RSS + Bing News RSS", topic, start, end, sources, articles: [], retrievalErrors },
+      { error: "뉴스 공급자 연결이 모두 실패했습니다. 잠시 후 다시 시도해 주세요.", provider: "Google News RSS + Bing News RSS", topic, start, end, sources, articles: [], retrievalErrors, diagnostics },
       { status: 502, headers: { "cache-control": "no-store" } },
     );
   }
 
+  const notice = articles.length
+    ? null
+    : retrievalErrors.length
+      ? "뉴스 공급자 응답이 불안정합니다. 잠시 후 다시 시도해 주세요."
+      : "선택한 범위에서 신뢰 매체의 해당 주제 기사를 찾지 못했습니다. 기간을 넓히거나 다른 주제를 선택해 보세요.";
+
   return Response.json(
-    { provider: providers.join(" + ") || "Google News RSS", topic, start, end, sources, articles, retrievalErrors },
+    { provider: providers.join(" + ") || "Google News RSS", topic, start, end, sources, articles, retrievalErrors, notice, diagnostics },
     { headers: { "cache-control": "no-store" } },
   );
 }

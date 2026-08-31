@@ -41,3 +41,6 @@ yarn-error.log*
 /outputs/
 /work/
 *.tsbuildinfo
+
+# claude code local settings
+.claude/settings.local.json

@@ -128,6 +128,7 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
   const [sources, setSources] = useState<NewsSource[]>([]);
   const [provider, setProvider] = useState("Google News RSS");
   const [retrieved, setRetrieved] = useState<RetrievedQuery | null>(null);
+  const [notice, setNotice] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -169,17 +170,19 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
     if (loading) return;
     setLoading(true);
     setError("");
+    setNotice("");
     setSources([]);
     setAnalysis(null);
     setAnalysisError("");
     try {
       const params = new URLSearchParams({ start: startDate, end: endDate, topic });
       const response = await fetch(`/api/news?${params}`, { cache: "no-store" });
-      const data = await response.json() as { articles?: NewsArticle[]; sources?: NewsSource[]; provider?: string; error?: string };
+      const data = await response.json() as { articles?: NewsArticle[]; sources?: NewsSource[]; provider?: string; error?: string; notice?: string | null };
       setSources(data.sources ?? []);
       setProvider(data.provider ?? "Google News RSS");
       if (!response.ok) throw new Error(data.error || "뉴스를 가져오지 못했습니다.");
       const next = data.articles ?? [];
+      setNotice(data.notice ?? "");
       setArticles(next);
       setRetrieved({ start: startDate, end: endDate, topic });
       setSelected(new Set(next.slice(0, 40).map((article) => article.id)));
@@ -189,6 +192,7 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
       setArticles([]);
       setRetrieved(null);
       setSelected(new Set());
+      setNotice("");
       setError(reason instanceof Error ? reason.message : "뉴스를 가져오지 못했습니다.");
     } finally {
       setLoading(false);
@@ -321,7 +325,7 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
             {loading && <div className="news-empty"><RefreshCw size={19} className="spin" /><strong>뉴스를 불러오는 중</strong></div>}
             {!loading && error && <div className="news-empty"><Newspaper size={19} /><strong>{error}</strong></div>}
             {!loading && !error && !retrieved && <div className="news-empty"><Newspaper size={19} /><strong>날짜 범위를 고른 뒤 뉴스 가져오기를 눌러주세요.</strong></div>}
-            {!loading && !error && retrieved && !articles.length && <div className="news-empty"><Newspaper size={19} /><strong>선택한 범위에는 검색된 뉴스가 없습니다.</strong></div>}
+            {!loading && !error && retrieved && !articles.length && <div className="news-empty"><Newspaper size={19} /><strong>{notice || "선택한 범위에는 검색된 뉴스가 없습니다."}</strong></div>}
             {!loading && articles.map((article) => {
               const signal = signalById.get(article.id);
               return (
