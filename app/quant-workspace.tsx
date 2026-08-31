@@ -199,9 +199,83 @@ function itemId(prefix: string) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function isoUtcDate(date: Date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function nthWeekday(year: number, month: number, weekday: number, occurrence: number) {
+  const first = new Date(Date.UTC(year, month - 1, 1));
+  const day = 1 + ((weekday - first.getUTCDay() + 7) % 7) + (occurrence - 1) * 7;
+  return isoUtcDate(new Date(Date.UTC(year, month - 1, day)));
+}
+
+function lastWeekday(year: number, month: number, weekday: number) {
+  const last = new Date(Date.UTC(year, month, 0));
+  last.setUTCDate(last.getUTCDate() - ((last.getUTCDay() - weekday + 7) % 7));
+  return isoUtcDate(last);
+}
+
+function observedFixedHoliday(year: number, month: number, day: number) {
+  const holiday = new Date(Date.UTC(year, month - 1, day));
+  if (holiday.getUTCDay() === 6) holiday.setUTCDate(holiday.getUTCDate() - 1);
+  if (holiday.getUTCDay() === 0) holiday.setUTCDate(holiday.getUTCDate() + 1);
+  return isoUtcDate(holiday);
+}
+
+function goodFriday(year: number) {
+  const a = year % 19;
+  const b = Math.floor(year / 100);
+  const c = year % 100;
+  const d = Math.floor(b / 4);
+  const e = b % 4;
+  const f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4);
+  const k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31);
+  const day = ((h + l - 7 * m + 114) % 31) + 1;
+  const friday = new Date(Date.UTC(year, month - 1, day));
+  friday.setUTCDate(friday.getUTCDate() - 2);
+  return isoUtcDate(friday);
+}
+
+function usMarketCalendar(year: number) {
+  const thanksgiving = nthWeekday(year, 11, 4, 4);
+  const thanksgivingDate = new Date(`${thanksgiving}T00:00:00Z`);
+  thanksgivingDate.setUTCDate(thanksgivingDate.getUTCDate() + 1);
+  const independenceObserved = observedFixedHoliday(year, 7, 4);
+  const independenceEve = new Date(`${independenceObserved}T00:00:00Z`);
+  independenceEve.setUTCDate(independenceEve.getUTCDate() - 1);
+  return {
+    holidays: new Set([
+      observedFixedHoliday(year, 1, 1),
+      nthWeekday(year, 1, 1, 3),
+      nthWeekday(year, 2, 1, 3),
+      goodFriday(year),
+      lastWeekday(year, 5, 1),
+      observedFixedHoliday(year, 6, 19),
+      independenceObserved,
+      nthWeekday(year, 9, 1, 1),
+      thanksgiving,
+      observedFixedHoliday(year, 12, 25),
+    ]),
+    earlyCloses: new Set([
+      isoUtcDate(independenceEve),
+      isoUtcDate(thanksgivingDate),
+      `${year}-12-24`,
+    ]),
+  };
+}
+
 function resolveMarketSession(now = new Date()): MarketSession {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
     weekday: "short",
     hour: "2-digit",
     minute: "2-digit",
@@ -210,16 +284,22 @@ function resolveMarketSession(now = new Date()): MarketSession {
   }).formatToParts(now);
   const read = (type: string) => parts.find((part) => part.type === type)?.value ?? "";
   const weekday = read("weekday");
+  const year = Number(read("year"));
+  const date = `${read("year")}-${read("month")}-${read("day")}`;
   const hour = Number(read("hour")) % 24;
   const minute = Number(read("minute"));
   const minutes = hour * 60 + minute;
   const time = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
   const zone = read("timeZoneName");
   const businessDay = !["Sat", "Sun"].includes(weekday);
+  const calendar = usMarketCalendar(year);
+  const holiday = calendar.holidays.has(date);
+  const earlyClose = calendar.earlyCloses.has(date);
 
+  if (holiday) return { code: "closed", label: "미국장 휴장", time, zone, schedule: "다음 거래일 04:00 ET" };
   if (businessDay && minutes >= 240 && minutes < 570) return { code: "pre", label: "프리마켓", time, zone, schedule: "04:00–09:30 ET" };
-  if (businessDay && minutes >= 570 && minutes < 960) return { code: "regular", label: "정규장", time, zone, schedule: "09:30–16:00 ET" };
-  if (businessDay && minutes >= 960 && minutes < 1200) return { code: "after", label: "애프터마켓", time, zone, schedule: "16:00–20:00 ET" };
+  if (businessDay && minutes >= 570 && minutes < (earlyClose ? 780 : 960)) return { code: "regular", label: "정규장", time, zone, schedule: earlyClose ? "09:30–13:00 ET · 조기 마감" : "09:30–16:00 ET" };
+  if (businessDay && minutes >= (earlyClose ? 780 : 960) && minutes < 1200) return { code: "after", label: "애프터마켓", time, zone, schedule: earlyClose ? "13:00–20:00 ET · 조기 마감" : "16:00–20:00 ET" };
   return { code: "closed", label: "장 마감", time, zone, schedule: businessDay && minutes < 240 ? "프리마켓 04:00 ET" : "다음 거래일 04:00 ET" };
 }
 
