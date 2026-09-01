@@ -15,6 +15,13 @@
       "when": 1788210486193,
       "tag": "0001_flashy_rick_jones",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1788249571350,
+      "tag": "0002_big_quasimodo",
+      "breakpoints": true
     }
   ]
 }

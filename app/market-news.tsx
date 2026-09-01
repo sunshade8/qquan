@@ -10,7 +10,7 @@ import Send from "lucide-react/dist/esm/icons/send";
 import Sparkles from "lucide-react/dist/esm/icons/sparkles";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
-type NewsTopic = "macro" | "fed" | "inflation" | "labor" | "markets";
+type NewsTopic = "macro" | "forecast" | "fed" | "inflation" | "labor" | "markets";
 type NewsArticle = {
   id: string;
   title: string;
@@ -20,11 +20,17 @@ type NewsArticle = {
   url: string;
   publishedAt: string;
   topic: NewsTopic;
+  eventId?: string;
+  eventTitle?: string;
+  eventDate?: string;
+  eventTimeET?: string;
+  stage?: "pre_release_forecast";
 };
 type NewsSource = { id: string; name: string; count: number; status: "ok" | "error" };
 type RetrievedQuery = { start: string; end: string; topic: NewsTopic };
 type MarketWindow = { anchorDate: string; close: number; prior1D: number | null; prior5D: number | null; forward1D: number | null; forward5D: number | null } | null;
 type SegmentSentiment = { score: number; label: string; rationale: string };
+type ForecastEvent = { indicator: string; scheduledReleaseDate: string | null; scheduledTimeET: string | null; consensus: string | null; previous: string | null; expectationDirection: string; evidenceIds: string[]; caveat: string };
 type BenchmarkValue = { symbol: string; name: string; startDate: string; endDate: string; startClose: number; endClose: number; returnPct: number; origin?: string };
 type RangeBenchmark = BenchmarkValue | { unavailable: string } | null;
 type SentimentAnalysis = {
@@ -33,6 +39,7 @@ type SentimentAnalysis = {
   macroTone?: string;
   confidence?: number;
   segments?: { tech?: SegmentSentiment; value?: SegmentSentiment };
+  forecastEvents?: ForecastEvent[];
   distribution?: { positive: number; neutral: number; negative: number };
   summary?: string;
   themes?: Array<{ name: string; tone: string; evidence: string }>;
@@ -64,6 +71,7 @@ type NewsTest = {
   valueLabel: string;
   nasdaq: RangeBenchmark;
   nyse: RangeBenchmark;
+  forecastEvents?: ForecastEvent[];
   createdAt: string;
 };
 type NewsAgentMessage = { id: string; role: "user" | "agent"; content: string; createdAt: string };
@@ -71,13 +79,14 @@ type NewsHistoryEvent = { title: string; detail: string };
 
 const topicOptions: Array<{ id: NewsTopic; label: string }> = [
   { id: "macro", label: "전체 거시" },
+  { id: "forecast", label: "지표 예측" },
   { id: "fed", label: "연준·금리" },
   { id: "inflation", label: "물가" },
   { id: "labor", label: "고용" },
   { id: "markets", label: "시장" },
 ];
 
-const topicLabels: Record<NewsTopic, string> = { macro: "Macro", fed: "Fed", inflation: "Inflation", labor: "Labor", markets: "Markets" };
+const topicLabels: Record<NewsTopic, string> = { macro: "Macro", forecast: "Forecast", fed: "Fed", inflation: "Inflation", labor: "Labor", markets: "Markets" };
 
 function koreaDate() {
   const parts = new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts();
@@ -243,7 +252,8 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
         articleCount: data.articleCount, overallScore: numericScore(data.analysis.score), overallLabel: data.analysis.label ?? "중립",
         techScore: numericScore(data.analysis.segments?.tech?.score), techLabel: data.analysis.segments?.tech?.label ?? "중립",
         valueScore: numericScore(data.analysis.segments?.value?.score), valueLabel: data.analysis.segments?.value?.label ?? "중립",
-        nasdaq: data.benchmarks?.NASDAQ ?? null, nyse: data.benchmarks?.NYSE ?? null, createdAt: new Date().toISOString(),
+        nasdaq: data.benchmarks?.NASDAQ ?? null, nyse: data.benchmarks?.NYSE ?? null,
+        forecastEvents: data.analysis.forecastEvents ?? [], createdAt: new Date().toISOString(),
       };
       setTests((current) => [...current, test].slice(-100));
       void persistRecord("test", test);
@@ -287,7 +297,7 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
     setAgentThinking(true);
     try {
       const chosen = articles.filter((article) => selected.has(article.id)).slice(0, 40)
-        .map(({ id, title, source, publishedAt, topic: articleTopic }) => ({ id, title, source, publishedAt, topic: articleTopic }));
+        .map(({ id, title, source, publishedAt, topic: articleTopic, eventId, eventTitle, eventDate, eventTimeET, stage }) => ({ id, title, source, publishedAt, topic: articleTopic, eventId, eventTitle, eventDate, eventTimeET, stage }));
       const response = await fetch("/api/news/agent", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -345,7 +355,7 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
                 <article className={`news-row ${selected.has(article.id) ? "selected" : ""}`} key={article.id}>
                   <label aria-label={`${article.title} 분석 포함`}><input type="checkbox" checked={selected.has(article.id)} onChange={() => toggleArticle(article.id)} /><span /></label>
                   <div className="news-row-body">
-                    <div className="news-row-meta"><span className={`news-topic ${article.topic}`}>{topicLabels[article.topic]}</span><span>{article.source}</span><time>{formatKoreaTime(article.publishedAt)} KST</time>{signal && <span className={`article-tone ${toneClass(signal.label)}`}>{signal.label} {signal.score > 0 ? "+" : ""}{signal.score}</span>}</div>
+                    <div className="news-row-meta"><span className={`news-topic ${article.topic}`}>{topicLabels[article.topic]}</span>{article.eventId && <span className="forecast-event-chip">{article.eventId.toUpperCase()}{article.eventDate ? ` · ${article.eventDate}` : ""}</span>}<span>{article.source}</span><time>{formatKoreaTime(article.publishedAt)} KST</time>{signal && <span className={`article-tone ${toneClass(signal.label)}`}>{signal.label} {signal.score > 0 ? "+" : ""}{signal.score}</span>}</div>
                     <a href={article.url} target="_blank" rel="noreferrer"><strong>{article.title}</strong><ExternalLink size={12} /></a>
                   </div>
                 </article>
@@ -388,6 +398,8 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
                   {analysis.analysis.distribution && <div className="sentiment-distribution"><span><i className="positive" />긍정 <b>{analysis.analysis.distribution.positive}</b></span><span><i className="neutral" />중립 <b>{analysis.analysis.distribution.neutral}</b></span><span><i className="negative" />부정 <b>{analysis.analysis.distribution.negative}</b></span></div>}
                   <p className="analysis-summary">{analysis.analysis.summary}</p>
 
+                  {!!analysis.analysis.forecastEvents?.length && <section className="forecast-analysis"><header><CalendarClock size={13} /><strong>발표 전 컨센서스</strong></header>{analysis.analysis.forecastEvents.map((event) => <article key={`${event.indicator}-${event.scheduledReleaseDate ?? "unknown"}`}><div><strong>{event.indicator}</strong><span>{event.scheduledReleaseDate ?? "발표일 미확인"}{event.scheduledTimeET ? ` · ${event.scheduledTimeET} ET` : ""}</span></div><dl><div><dt>CONSENSUS</dt><dd>{event.consensus ?? "헤드라인에 수치 없음"}</dd></div><div><dt>PREVIOUS</dt><dd>{event.previous ?? "확인 불가"}</dd></div><div><dt>DIRECTION</dt><dd>{event.expectationDirection}</dd></div></dl><p>{event.caveat}</p></article>)}</section>}
+
                   <section className="market-reaction"><header><CalendarClock size={13} /><strong>시장 전후 움직임</strong></header><div>{(["SPY", "QQQ"] as const).map((ticker) => { const item = analysis.market[ticker]; return <article key={ticker}><strong>{ticker}</strong><span><small>이전 1D</small><b className={returnClass(item?.prior1D)}>{formatReturn(item?.prior1D ?? null)}</b></span><span><small>이전 5D</small><b className={returnClass(item?.prior5D)}>{formatReturn(item?.prior5D ?? null)}</b></span><span><small>이후 5D</small><b className={returnClass(item?.forward5D)}>{formatReturn(item?.forward5D ?? null)}</b></span></article>; })}</div></section>
 
                   {analysis.events.length > 0 && <section className="nearby-events"><h3>근접 주요 일정</h3>{analysis.events.map((event) => <div key={`${event.date}-${event.title}`}><span>{event.date} · {event.timeET} ET</span><strong>{event.title}</strong></div>)}</section>}
@@ -415,7 +427,7 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
             {stateReady && !tests.length && <div className="research-empty"><FlaskConical size={18} /><strong>아직 Test가 없습니다.</strong><p>Sentiment에서 LLM 분석을 실행하면 같은 날짜 범위의 NASDAQ·NYSE 수익률과 함께 한 행이 자동 생성됩니다.</p></div>}
             {[...tests].reverse().map((test) => (
               <div className="test-row" role="row" key={test.id}>
-                <span><strong>{test.periodStart}</strong><small>→ {test.periodEnd} · {test.articleCount} news</small></span>
+                <span><strong>{test.periodStart}</strong><small>→ {test.periodEnd} · {test.articleCount} news</small>{Boolean(test.forecastEvents?.length) && <em>{test.forecastEvents![0].indicator} forecast · {test.forecastEvents!.length} event</em>}</span>
                 <span><b className={toneClass(test.overallScore)}>{test.overallScore > 0 ? "+" : ""}{test.overallScore}</b><small>{test.overallLabel}</small></span>
                 <span><b className={toneClass(test.techScore)}>{test.techScore > 0 ? "+" : ""}{test.techScore}</b><small>{test.techLabel}</small></span>
                 <span><b className={toneClass(test.valueScore)}>{test.valueScore > 0 ? "+" : ""}{test.valueScore}</b><small>{test.valueLabel}</small></span>
@@ -434,7 +446,7 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
           </header>
           <div className="news-agent-context"><span>{retrieved ? `${retrieved.start} → ${retrieved.end}` : "no range"}</span><span>{selected.size} news</span><span>{tests.length} tests</span></div>
           <div className="news-agent-prompts">
-            {["기술주와 가치주 차이 설명", "Test 결과 해석", "다음 이벤트 윈도우 제안"].map((prompt) => <button key={prompt} onClick={() => setAgentQuestion(prompt)}>{prompt}</button>)}
+            {["기술주와 가치주 차이 설명", "Test 결과 해석", "예측→실제치 이벤트 연구 설계"].map((prompt) => <button key={prompt} onClick={() => setAgentQuestion(prompt)}>{prompt}</button>)}
           </div>
           <div className="news-agent-log" aria-live="polite">
             {stateReady && !agentMessages.length && <div className="research-empty"><Sparkles size={18} /><strong>세 영역을 함께 조사합니다.</strong><p>현재 뉴스 선택, 감성 분석, 누적 Test를 비교하거나 “부정 뉴스만 선택해줘”처럼 뉴스 선택을 바꿔보세요.</p></div>}

@@ -10,12 +10,18 @@ function ensureNewsSchema() {
   if (schemaReady) return schemaReady;
   const binding = (env as unknown as { DB?: D1Database }).DB;
   if (!binding) return Promise.reject(new Error("D1 unavailable"));
-  schemaReady = binding.batch([
-    binding.prepare("CREATE TABLE IF NOT EXISTS news_tests (id text PRIMARY KEY NOT NULL, owner_id text NOT NULL, period_start text NOT NULL, period_end text NOT NULL, topic text NOT NULL, article_count integer NOT NULL, overall_score real NOT NULL, overall_label text NOT NULL, tech_score real NOT NULL, tech_label text NOT NULL, value_score real NOT NULL, value_label text NOT NULL, nasdaq_payload text NOT NULL, nyse_payload text NOT NULL, created_at integer NOT NULL)"),
-    binding.prepare("CREATE INDEX IF NOT EXISTS idx_news_tests_owner_created ON news_tests (owner_id, created_at)"),
-    binding.prepare("CREATE TABLE IF NOT EXISTS news_agent_messages (id text PRIMARY KEY NOT NULL, owner_id text NOT NULL, role text NOT NULL, content text NOT NULL, created_at integer NOT NULL)"),
-    binding.prepare("CREATE INDEX IF NOT EXISTS idx_news_agent_owner_created ON news_agent_messages (owner_id, created_at)"),
-  ]).then(() => undefined).catch((error) => {
+  schemaReady = (async () => {
+    await binding.batch([
+      binding.prepare("CREATE TABLE IF NOT EXISTS news_tests (id text PRIMARY KEY NOT NULL, owner_id text NOT NULL, period_start text NOT NULL, period_end text NOT NULL, topic text NOT NULL, article_count integer NOT NULL, overall_score real NOT NULL, overall_label text NOT NULL, tech_score real NOT NULL, tech_label text NOT NULL, value_score real NOT NULL, value_label text NOT NULL, nasdaq_payload text NOT NULL, nyse_payload text NOT NULL, forecast_payload text NOT NULL DEFAULT '[]', created_at integer NOT NULL)"),
+      binding.prepare("CREATE INDEX IF NOT EXISTS idx_news_tests_owner_created ON news_tests (owner_id, created_at)"),
+      binding.prepare("CREATE TABLE IF NOT EXISTS news_agent_messages (id text PRIMARY KEY NOT NULL, owner_id text NOT NULL, role text NOT NULL, content text NOT NULL, created_at integer NOT NULL)"),
+      binding.prepare("CREATE INDEX IF NOT EXISTS idx_news_agent_owner_created ON news_agent_messages (owner_id, created_at)"),
+    ]);
+    const columns = await binding.prepare("PRAGMA table_info(news_tests)").all<{ name: string }>();
+    if (!columns.results.some((column) => column.name === "forecast_payload")) {
+      await binding.prepare("ALTER TABLE news_tests ADD COLUMN forecast_payload text NOT NULL DEFAULT '[]'").run();
+    }
+  })().catch((error) => {
     schemaReady = undefined;
     throw error;
   });
@@ -50,7 +56,7 @@ export async function GET(request: Request) {
         id: item.id, periodStart: item.periodStart, periodEnd: item.periodEnd, topic: item.topic,
         articleCount: item.articleCount, overallScore: item.overallScore, overallLabel: item.overallLabel,
         techScore: item.techScore, techLabel: item.techLabel, valueScore: item.valueScore, valueLabel: item.valueLabel,
-        nasdaq: parsePayload(item.nasdaqPayload), nyse: parsePayload(item.nysePayload), createdAt: item.createdAt,
+        nasdaq: parsePayload(item.nasdaqPayload), nyse: parsePayload(item.nysePayload), forecastEvents: parsePayload(item.forecastPayload), createdAt: item.createdAt,
       })),
       messages: messages.map((item) => ({ id: item.id, role: item.role, content: item.content, createdAt: item.createdAt })),
     }, { headers: { "set-cookie": cookie(ownerId) } });
@@ -77,6 +83,7 @@ export async function POST(request: Request) {
         techScore: Number(test.techScore) || 0, techLabel: String(test.techLabel || "중립"),
         valueScore: Number(test.valueScore) || 0, valueLabel: String(test.valueLabel || "중립"),
         nasdaqPayload: JSON.stringify(test.nasdaq ?? null), nysePayload: JSON.stringify(test.nyse ?? null),
+        forecastPayload: JSON.stringify(Array.isArray(test.forecastEvents) ? test.forecastEvents : []),
         createdAt: new Date(typeof test.createdAt === "string" ? test.createdAt : Date.now()),
       };
       await getDb().insert(newsTests).values(row).onConflictDoNothing();

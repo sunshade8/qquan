@@ -1,4 +1,6 @@
-type NewsTopic = "macro" | "fed" | "inflation" | "labor" | "markets";
+import { MARKET_CALENDAR_2026 } from "../../market-calendar-data";
+
+type NewsTopic = "macro" | "forecast" | "fed" | "inflation" | "labor" | "markets";
 
 type TrustedSource = {
   id: string;
@@ -16,6 +18,11 @@ type Article = {
   url: string;
   publishedAt: string;
   topic: NewsTopic;
+  eventId?: string;
+  eventTitle?: string;
+  eventDate?: string;
+  eventTimeET?: string;
+  stage?: "pre_release_forecast";
 };
 
 type AttemptStatus = "ok" | "empty" | "error";
@@ -33,6 +40,7 @@ type Attempt = {
 
 const topicQueries: Record<NewsTopic, string> = {
   macro: '("Federal Reserve" OR inflation OR employment OR GDP OR recession OR "economic growth" OR "bond yields" OR "stock market")',
+  forecast: '(US OR "U.S." OR "United States" OR "Federal Reserve" OR Fed) (CPI OR PCE OR PPI OR payrolls OR "jobs report" OR unemployment OR GDP OR ISM OR PMI OR FOMC OR "retail sales") (forecast OR consensus OR expected OR expectations OR economists OR estimate OR preview OR "what to expect" OR "ahead of")',
   fed: '("Federal Reserve" OR FOMC OR "interest rates" OR Powell OR "rate cut" OR "rate hike")',
   inflation: '(inflation OR CPI OR PCE OR PPI OR prices OR tariffs)',
   labor: '(employment OR jobs OR payrolls OR unemployment OR wages OR JOLTS)',
@@ -53,6 +61,7 @@ const trustedSources: TrustedSource[] = [
 ];
 
 const topicTitlePatterns: Record<NewsTopic, RegExp> = {
+  forecast: /^(?=.*(?:\bcpi\b|consumer prices?|\bpce\b|personal consumption expenditures?|\bppi\b|producer prices?|nonfarm payrolls?|\bnfp\b|jobs? report|unemployment|\bgdp\b|\bism\b|\bpmi\b|fomc|fed (?:decision|meeting)|retail sales))(?=.*(?:forecast|consensus|expect(?:ed|ation|ations)?|economists? (?:see|expect|predict|estimate)|estimated?|preview|what to expect|ahead of|likely|seen(?: at)?|projected?)).*$/i,
   fed: /\bfed(?:eral reserve)?\b|\bfomc\b|\bpowell\b|interest rates?|rate cuts?|rate hikes?|central bank/i,
   inflation: /inflation|\bcpi\b|\bpce\b|\bppi\b|consumer prices?|price pressures?|tariffs?/i,
   labor: /employment|payrolls?|unemployment|labor market|jobs? (?:report|data|growth|market|numbers|openings|cuts)|jobless claims?|hiring|layoffs?|wages? (?:growth|pressure|data|rise|rises|fall|falls|increase|increases|decline|declines)/i,
@@ -61,13 +70,35 @@ const topicTitlePatterns: Record<NewsTopic, RegExp> = {
 };
 
 const topicKeywords: Array<[NewsTopic, RegExp]> = [
+  ["forecast", topicTitlePatterns.forecast],
   ["fed", topicTitlePatterns.fed],
   ["inflation", topicTitlePatterns.inflation],
   ["labor", topicTitlePatterns.labor],
   ["markets", topicTitlePatterns.markets],
 ];
 
+const forecastSearches = [
+  "US inflation forecast",
+  "US jobs report forecast",
+  "US economic data preview",
+  "FOMC preview",
+] as const;
+
+const googleSourceNames: Record<string, string> = {
+  reuters: "Reuters",
+  ap: "Associated Press",
+  bloomberg: "Bloomberg",
+  ft: "Financial Times",
+  wsj: "The Wall Street Journal",
+  cnbc: "CNBC",
+  bbc: "BBC",
+  nyt: "The New York Times",
+  washpost: "The Washington Post",
+  guardian: "The Guardian",
+};
+
 const noisyHeadlinePattern = /\bjob with\b|company announcement|newsletter(?: signup)?|print edition|trending news, latest updates, analysis|sector & industry performance|^(?:interviews|economics?|business|shows|style(?:\s*-\s*page \d+)?|united states|ap|minute by minute|bonds headlines|opinion \+ politics|us news \+ business|business \+ economics|economics \+ business)$/i;
+const releasedResultPattern = /(?:meets?|met|beat|beats|missed?|above|below|tops?|topped|rose|fell|increased|decreased).{0,48}(?:expectations?|forecast|consensus)|(?:expectations?|forecast|consensus).{0,48}(?:met|beat|missed?|above|below|topped)/i;
 
 // Google and Bing answer datacenter egress differently when no browser-shaped
 // headers are present: an empty channel instead of results. Sending a real
@@ -116,6 +147,34 @@ function classify(title: string): NewsTopic {
   return topicKeywords.find(([, pattern]) => pattern.test(title))?.[0] ?? "macro";
 }
 
+function forecastEventRoot(title: string) {
+  if (/\bcpi\b|consumer prices?/i.test(title)) return "cpi";
+  if (/\bpce\b|personal consumption expenditures?/i.test(title)) return "pce";
+  if (/\bppi\b|producer prices?/i.test(title)) return "ppi";
+  if (/\bjolts\b|job openings?/i.test(title)) return "jolts";
+  if (/\badp\b/i.test(title)) return "adp";
+  if (/nonfarm payrolls?|\bnfp\b|jobs? report|payrolls?|unemployment/i.test(title)) return "nfp";
+  if (/ism.*services|services.*(?:ism|pmi)/i.test(title)) return "ism-services";
+  if (/\bism\b|manufacturing.*pmi|pmi.*manufacturing/i.test(title)) return "ism-manufacturing";
+  if (/\bgdp\b/i.test(title)) return "gdp";
+  if (/fomc|fed (?:decision|meeting)/i.test(title)) return "fomc";
+  return null;
+}
+
+function forecastMetadata(title: string, publishedAt: string) {
+  const root = forecastEventRoot(title);
+  if (!root) return {};
+  const publishedDate = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(publishedAt));
+  const latest = shiftDate(publishedDate, 14);
+  const event = MARKET_CALENDAR_2026.find((item) => item.id.startsWith(`${root}-`) && item.date >= publishedDate && item.date <= latest);
+  return event ? { eventId: root, eventTitle: event.title, eventDate: event.date, eventTimeET: event.time, stage: "pre_release_forecast" as const } : { eventId: root, stage: "pre_release_forecast" as const };
+}
+
 function shortId(value: string) {
   let hash = 2166136261;
   for (let index = 0; index < value.length; index += 1) hash = Math.imul(hash ^ value.charCodeAt(index), 16777619);
@@ -158,6 +217,8 @@ function keepArticle(title: string, topic: NewsTopic, publishedDate: string, sta
   if (!title) return false;
   if (noisyHeadlinePattern.test(title)) return false;
   if (!topicTitlePatterns[topic].test(title)) return false;
+  if (topic === "forecast" && !/(?:\bU\.S\.\b|\bUS\b|United States|American?|Federal Reserve|\bFed\b|FOMC|nonfarm|\bNFP\b|jobs? report|payrolls?)/i.test(title)) return false;
+  if (topic === "forecast" && releasedResultPattern.test(title)) return false;
   return publishedDate >= start && publishedDate <= end;
 }
 
@@ -202,6 +263,7 @@ async function fetchGoogle(source: TrustedSource, topic: NewsTopic, start: strin
       url: link,
       publishedAt: published.toISOString(),
       topic: classify(title),
+      ...(topic === "forecast" ? forecastMetadata(title, published.toISOString()) : {}),
     }];
   });
 
@@ -248,6 +310,7 @@ async function fetchBing(source: TrustedSource, topic: NewsTopic, start: string,
       url,
       publishedAt: published.toISOString(),
       topic: classify(title),
+      ...(topic === "forecast" ? forecastMetadata(title, published.toISOString()) : {}),
     }];
   });
 
@@ -258,7 +321,7 @@ async function fetchBing(source: TrustedSource, topic: NewsTopic, start: string,
 // region answers the request, so an empty range query is not evidence that no
 // news exists. Each source walks the chain until one strategy returns rows.
 function strategiesFor(source: TrustedSource, topic: NewsTopic, start: string, end: string) {
-  const ranged = `${topicQueries[topic]} (site:${source.queryDomain}) after:${shiftDate(start, -1)} before:${shiftDate(end, 1)}`;
+  const ranged = `${topicQueries[topic]} site:${source.queryDomain} after:${shiftDate(start, -1)} before:${shiftDate(end, 1)}`;
   const today = koreaDate(new Date());
   const windowDays = daysBetween(start, today) + 1;
   const recent = windowDays > 0 && windowDays <= 60 && end >= shiftDate(today, -2);
@@ -267,14 +330,15 @@ function strategiesFor(source: TrustedSource, topic: NewsTopic, start: string, e
     () => fetchGoogle(source, topic, start, end, "google-range", ranged),
   ];
   if (recent) {
-    chain.push(() => fetchGoogle(source, topic, start, end, "google-when", `${topicQueries[topic]} (site:${source.queryDomain}) when:${windowDays}d`));
+    chain.push(() => fetchGoogle(source, topic, start, end, "google-when", `${topicQueries[topic]} site:${source.queryDomain} when:${windowDays}d`));
   }
-  chain.push(() => fetchGoogle(source, topic, start, end, "google-plain", `${topicQueries[topic]} (site:${source.queryDomain})`));
+  chain.push(() => fetchGoogle(source, topic, start, end, "google-plain", `${topicQueries[topic]} site:${source.queryDomain}`));
   chain.push(() => fetchBing(source, topic, start, end));
   return chain;
 }
 
 async function collectSource(source: TrustedSource, topic: NewsTopic, start: string, end: string) {
+  if (topic === "forecast") return collectForecastSource(source, start, end);
   const attempts: Attempt[] = [];
   for (const run of strategiesFor(source, topic, start, end)) {
     const attempt = await run();
@@ -283,6 +347,36 @@ async function collectSource(source: TrustedSource, topic: NewsTopic, start: str
   }
   const winner = attempts.find((attempt) => attempt.status === "ok");
   const reachable = attempts.some((attempt) => attempt.status !== "error");
+  return { source, attempts, winner, status: reachable ? ("ok" as const) : ("error" as const) };
+}
+
+async function collectForecastSource(source: TrustedSource, start: string, end: string) {
+  const attempts: Attempt[] = [];
+  const sourceName = googleSourceNames[source.id] ?? source.name;
+  const suffix = `source:${JSON.stringify(sourceName)}`;
+  const today = koreaDate(new Date());
+  const windowDays = daysBetween(start, today) + 1;
+  const recent = windowDays > 0 && windowDays <= 60 && end >= shiftDate(today, -2);
+
+  const runGoogleRound = async (strategy: string, dateClause: string) => {
+    const round = await Promise.all(forecastSearches.map((query) =>
+      fetchGoogle(source, "forecast", start, end, `${strategy}:${query}`, `${query} ${suffix} ${dateClause}`.trim())));
+    attempts.push(...round);
+    return round.flatMap((attempt) => attempt.articles);
+  };
+
+  let articles = await runGoogleRound("google-range", `after:${shiftDate(start, -1)} before:${shiftDate(end, 1)}`);
+  if (!articles.length && recent) articles = await runGoogleRound("google-when", `when:${windowDays}d`);
+  if (!articles.length) articles = await runGoogleRound("google-plain", "");
+  if (!articles.length) {
+    const bing = await fetchBing(source, "forecast", start, end);
+    attempts.push(bing);
+    articles = bing.articles;
+  }
+
+  const reachable = attempts.some((attempt) => attempt.status !== "error");
+  const winningAttempt = attempts.find((attempt) => attempt.status === "ok");
+  const winner = winningAttempt ? { ...winningAttempt, kept: articles.length, articles } : undefined;
   return { source, attempts, winner, status: reachable ? ("ok" as const) : ("error" as const) };
 }
 

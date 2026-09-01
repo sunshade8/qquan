@@ -78,6 +78,7 @@ export const newsTests = sqliteTable("news_tests", {
   valueLabel: text("value_label").notNull(),
   nasdaqPayload: text("nasdaq_payload").notNull(),
   nysePayload: text("nyse_payload").notNull(),
+  forecastPayload: text("forecast_payload").notNull().default("[]"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 }, (table) => [
   index("idx_news_tests_owner_created").on(table.ownerId, table.createdAt),

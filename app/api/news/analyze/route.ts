@@ -3,7 +3,7 @@ import { type PriceRow } from "../../../../lib/market-data";
 import { loadDailyRows } from "../../../../lib/price-cache";
 import { MARKET_CALENDAR_2026 } from "../../../market-calendar-data";
 
-type NewsArticle = { id: string; title: string; source: string; publishedAt: string; topic?: string };
+type NewsArticle = { id: string; title: string; source: string; publishedAt: string; topic?: string; eventId?: string; eventTitle?: string; eventDate?: string; eventTimeET?: string; stage?: string };
 type Payload = { date?: string; start?: string; articles?: NewsArticle[] };
 
 function marketWindow(rows: PriceRow[], date: string) {
@@ -127,7 +127,10 @@ export async function POST(request: Request) {
     reasons: [spyLoad, qqqLoad, nasdaqLoad, nyseLoad].map((load) => load.reason).filter(Boolean),
   });
   const events = upcomingEvents(date);
-  const headlines = articles.map((article) => ({ id: article.id, title: article.title.slice(0, 240), source: article.source.slice(0, 80), publishedAt: article.publishedAt }));
+  const headlines = articles.map((article) => ({
+    id: article.id, title: article.title.slice(0, 240), source: article.source.slice(0, 80), publishedAt: article.publishedAt,
+    topic: article.topic, eventId: article.eventId, eventTitle: article.eventTitle, eventDate: article.eventDate, eventTimeET: article.eventTimeET, stage: article.stage,
+  }));
 
   const prompt = `You are a quantitative macro news research assistant. Analyze the supplied headline corpus only.
 
@@ -138,10 +141,11 @@ Rules:
 - Score the same corpus separately for technology/growth stocks and value stocks. Technology/growth is more rate-duration, AI capex, and long-duration earnings sensitive; value is more bank, energy, industrial, commodity, and cyclical sensitive. The two scores may have different signs.
 - Explain whether the market was already moving before the selected date using the deterministic SPY/QQQ returns. Forward returns are outcomes for research, never evidence that was available at the time.
 - Treat repeated syndicated headlines as correlated evidence, not independent votes.
+- For pre-release forecast headlines, extract only numeric consensus/forecast and prior values explicitly present in a headline. Never infer a number from general wording. Group articles by scheduled indicator and preserve their evidence ids.
 - Suggest a falsifiable event-study specification. Do not give a trade instruction.
 - Keep every field concise. distribution values must be integer article counts that sum to ${articles.length}.
 - Respond in Korean as strict JSON with this shape:
-{"score":number,"label":"강한 부정|부정|중립|긍정|강한 긍정","macroTone":"부정|중립|긍정","confidence":number,"segments":{"tech":{"score":number,"label":"강한 부정|부정|중립|긍정|강한 긍정","rationale":string},"value":{"score":number,"label":"강한 부정|부정|중립|긍정|강한 긍정","rationale":string}},"distribution":{"positive":number,"neutral":number,"negative":number},"summary":string,"themes":[{"name":string,"tone":"부정|중립|긍정","evidence":string}],"marketRead":string,"hypotheses":[string],"nextTest":string,"limitations":[string],"articleSignals":[{"id":string,"label":"부정|중립|긍정","score":number}]}
+{"score":number,"label":"강한 부정|부정|중립|긍정|강한 긍정","macroTone":"부정|중립|긍정","confidence":number,"segments":{"tech":{"score":number,"label":"강한 부정|부정|중립|긍정|강한 긍정","rationale":string},"value":{"score":number,"label":"강한 부정|부정|중립|긍정|강한 긍정","rationale":string}},"forecastEvents":[{"indicator":string,"scheduledReleaseDate":string|null,"scheduledTimeET":string|null,"consensus":string|null,"previous":string|null,"expectationDirection":"상승|하락|보합|불명확","evidenceIds":[string],"caveat":string}],"distribution":{"positive":number,"neutral":number,"negative":number},"summary":string,"themes":[{"name":string,"tone":"부정|중립|긍정","evidence":string}],"marketRead":string,"hypotheses":[string],"nextTest":string,"limitations":[string],"articleSignals":[{"id":string,"label":"부정|중립|긍정","score":number}]}
 
 News window (KST): ${start} through ${date}
 Scheduled US events on or just after the end date: ${JSON.stringify(events)}

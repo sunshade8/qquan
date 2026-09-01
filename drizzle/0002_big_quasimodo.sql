@@ -1,0 +1,1 @@
+ALTER TABLE `news_tests` ADD `forecast_payload` text DEFAULT '[]' NOT NULL;
