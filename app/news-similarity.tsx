@@ -39,6 +39,7 @@ type MarketReaction = {
 };
 type ComparisonRow = SimilarityTest & {
   anchorDate: string;
+  anchorTime: string;
   anchorLabel: string;
   markets: { nasdaq: MarketReaction | null; nyse: MarketReaction | null };
 };
@@ -48,6 +49,21 @@ type ComparisonResponse = {
   sources: Record<"nasdaq" | "nyse", { origin: string; reason: string | null }>;
 };
 type MarketKey = "nasdaq" | "nyse";
+type ChartInterval = "1d" | "5m" | "15m" | "60m";
+type IntradayReaction = {
+  baseTime: string;
+  pre60Pct: number | null;
+  post60Pct: number | null;
+  toRegularClosePct: number | null;
+  normalizedPath: Array<{ offsetMinutes: number; time: string; value: number }>;
+};
+type IntradayResponse = {
+  market: MarketKey;
+  symbol: "QQQ" | "SPY";
+  interval: Exclude<ChartInterval, "1d">;
+  results: Array<{ id: string; anchorDate: string; anchorTime: string; reaction: IntradayReaction | null; unavailable: string | null }>;
+  methodology: string;
+};
 
 const offsets = [-3, -2, -1, 0, 1, 2, 3];
 
@@ -66,8 +82,8 @@ function comparisonAnchor(test: SimilarityTest) {
   const inside = candidates.filter((event) => event.scheduledReleaseDate >= test.periodStart && event.scheduledReleaseDate <= test.periodEnd).at(-1);
   const chosen = nearFuture ?? inside;
   return chosen
-    ? { anchorDate: chosen.scheduledReleaseDate, anchorLabel: chosen.indicator }
-    : { anchorDate: test.periodEnd, anchorLabel: "뉴스 범위 종료일" };
+    ? { anchorDate: chosen.scheduledReleaseDate, anchorTime: chosen.scheduledTimeET ?? "08:30", anchorLabel: chosen.indicator }
+    : { anchorDate: test.periodEnd, anchorTime: "09:30", anchorLabel: "뉴스 범위 종료일" };
 }
 
 function median(values: number[]) {
@@ -199,6 +215,61 @@ function OverlayChart({ rows, market }: { rows: ComparisonRow[]; market: MarketK
   );
 }
 
+function intradaySummary(data: IntradayResponse | null) {
+  const usable = data?.results.filter((row) => row.reaction) ?? [];
+  return {
+    usable,
+    coverage: data?.results.length ? (usable.length / data.results.length) * 100 : null,
+    medianPre60: median(usable.flatMap((row) => row.reaction?.pre60Pct === null || row.reaction?.pre60Pct === undefined ? [] : [row.reaction.pre60Pct])),
+    medianPost60: median(usable.flatMap((row) => row.reaction?.post60Pct === null || row.reaction?.post60Pct === undefined ? [] : [row.reaction.post60Pct])),
+    medianToClose: median(usable.flatMap((row) => row.reaction?.toRegularClosePct === null || row.reaction?.toRegularClosePct === undefined ? [] : [row.reaction.toRegularClosePct])),
+  };
+}
+
+function IntradayOverlayChart({ data }: { data: IntradayResponse }) {
+  const series = data.results.flatMap((row) => row.reaction ? [{ id: row.id, label: `${row.anchorDate} ${row.anchorTime}`, points: row.reaction.normalizedPath }] : []);
+  if (!series.length) return <div className="similarity-chart-empty">이 주기로 표시할 수 있는 과거 분봉이 없습니다.</div>;
+  const values = series.flatMap((item) => item.points.map((point) => point.value));
+  const rawMin = Math.min(100, ...values);
+  const rawMax = Math.max(100, ...values);
+  const buffer = Math.max((rawMax - rawMin) * .14, .25);
+  const min = rawMin - buffer;
+  const max = rawMax + buffer;
+  const width = 920;
+  const height = 270;
+  const pad = { top: 20, right: 24, bottom: 38, left: 58 };
+  const x = (minute: number) => pad.left + ((minute + 120) / 570) * (width - pad.left - pad.right);
+  const y = (value: number) => pad.top + ((max - value) / (max - min)) * (height - pad.top - pad.bottom);
+  const path = (points: IntradayReaction["normalizedPath"]) => points.map((point, index) => `${index ? "L" : "M"}${x(point.offsetMinutes).toFixed(2)},${y(point.value).toFixed(2)}`).join(" ");
+  const yTicks = [0, .25, .5, .75, 1].map((ratio) => max - ratio * (max - min));
+  const xTicks = [-120, -60, 0, 60, 180, 300, 450];
+  const medianPoints = xTicks.map((offsetMinutes) => {
+    const nearest = series.flatMap((item) => {
+      const point = item.points.reduce<{ distance: number; value: number } | null>((best, candidate) => {
+        const distance = Math.abs(candidate.offsetMinutes - offsetMinutes);
+        return !best || distance < best.distance ? { distance, value: candidate.value } : best;
+      }, null);
+      return point && point.distance <= 65 ? [point.value] : [];
+    });
+    const value = median(nearest);
+    return value === null ? null : { offsetMinutes, value };
+  }).filter((point): point is { offsetMinutes: number; value: number } => point !== null);
+
+  return <div className="similarity-overlay-chart">
+    <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${data.symbol} ${data.interval} 발표 전후 정규화 경로`}>
+      <rect className="similarity-event-zone" x={x(-6)} y={pad.top} width={x(6) - x(-6)} height={height - pad.top - pad.bottom} />
+      {yTicks.map((tick) => <g key={tick}><line className="similarity-grid" x1={pad.left} x2={width - pad.right} y1={y(tick)} y2={y(tick)} /><text className="similarity-axis" x={pad.left - 9} y={y(tick) + 4} textAnchor="end">{tick.toFixed(1)}</text></g>)}
+      <line className="similarity-base" x1={pad.left} x2={width - pad.right} y1={y(100)} y2={y(100)} />
+      {series.map((item) => <path className="similarity-series" d={path(item.points)} key={item.id}><title>{item.label}</title></path>)}
+      <path className="similarity-median" d={path(medianPoints.map((point) => ({ ...point, time: "" })))} />
+      {medianPoints.map((point) => <circle className="similarity-median-dot" key={point.offsetMinutes} cx={x(point.offsetMinutes)} cy={y(point.value)} r="3.3" />)}
+      {xTicks.map((tick) => <text className="similarity-axis" key={tick} x={x(tick)} y={height - 11} textAnchor="middle">{tick === 0 ? "T0" : tick > 0 ? `+${tick}m` : `${tick}m`}</text>)}
+      <text className="similarity-event-label" x={x(0)} y={pad.top + 12} textAnchor="middle">RELEASE</text>
+    </svg>
+    <div className="similarity-legend"><span><i className="runs" />각 날짜 범위</span><span><i className="median" />중앙값 경로</span><small>T0 직전 가격 = 100</small></div>
+  </div>;
+}
+
 export function NewsSimilarity({ tests, excludedDuplicates, onClose, onAskAgent }: {
   tests: SimilarityTest[];
   excludedDuplicates: number;
@@ -207,6 +278,10 @@ export function NewsSimilarity({ tests, excludedDuplicates, onClose, onAskAgent 
 }) {
   const [data, setData] = useState<ComparisonResponse | null>(null);
   const [market, setMarket] = useState<MarketKey>("nasdaq");
+  const [interval, setInterval] = useState<ChartInterval>("1d");
+  const [intradayCache, setIntradayCache] = useState<Record<string, IntradayResponse>>({});
+  const [intradayLoadingKey, setIntradayLoadingKey] = useState("");
+  const [intradayError, setIntradayError] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
@@ -238,6 +313,40 @@ export function NewsSimilarity({ tests, excludedDuplicates, onClose, onAskAgent 
 
   const summary = useMemo(() => summaryFor(data?.results ?? [], market), [data, market]);
   const marketName = market === "nasdaq" ? "NASDAQ" : "NYSE";
+  const activeIntradayKey = interval === "1d" ? "" : `${market}:${interval}`;
+  const activeIntraday = activeIntradayKey ? intradayCache[activeIntradayKey] ?? null : null;
+  const activeIntradaySummary = useMemo(() => intradaySummary(activeIntraday), [activeIntraday]);
+
+  async function loadIntraday(nextInterval: Exclude<ChartInterval, "1d">, nextMarket: MarketKey) {
+    const key = `${nextMarket}:${nextInterval}`;
+    if (intradayCache[key] || intradayLoadingKey === key) return;
+    setIntradayLoadingKey(key);
+    setIntradayError("");
+    try {
+      const response = await fetch("/api/news/compare-intraday", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ interval: nextInterval, market: nextMarket, tests: prepared }),
+      });
+      const value = await response.json() as IntradayResponse & { error?: string };
+      if (!response.ok) throw new Error(value.error || "분봉 데이터를 만들지 못했습니다.");
+      setIntradayCache((current) => ({ ...current, [key]: value }));
+    } catch (reason) {
+      setIntradayError(reason instanceof Error ? reason.message : "분봉 데이터를 만들지 못했습니다.");
+    } finally {
+      setIntradayLoadingKey("");
+    }
+  }
+
+  function selectInterval(next: ChartInterval) {
+    setInterval(next);
+    if (next !== "1d") void loadIntraday(next, market);
+  }
+
+  function selectMarket(next: MarketKey) {
+    setMarket(next);
+    if (interval !== "1d") void loadIntraday(interval, next);
+  }
 
   function conversationBrief() {
     return [
@@ -245,7 +354,8 @@ export function NewsSimilarity({ tests, excludedDuplicates, onClose, onAskAgent 
       `독립 날짜 범위 ${summary.sampleSize}개${excludedDuplicates ? `, 중복 분석 ${excludedDuplicates}개 제외` : ""}`,
       `이벤트 전일 중앙값 ${percent(summary.medianPre)} / 이벤트 당일 중앙값 ${percent(summary.medianEvent)} / 전일 대비 변화 중앙값 ${percent(summary.medianShift)}`,
       `당일 방향 일치율 ${percent(summary.directionConsistency, 1)} (${summary.majorityDirection}) / 감성 방향 적중률 ${percent(summary.sentimentHitRate, 1)} (n=${summary.sentimentPairCount})`,
-      `감성-당일수익률 상관 r=${signed(summary.sentimentCorrelation, 3)} / 경로 유사도 중앙값 r=${signed(summary.pathSimilarity, 3)} / 당일 수익률 표준편차 ${percent(summary.eventStdDev)}`,
+      `감성-당일수익률 상관 r=${signed(summary.sentimentCorrelation, 3)} / 일봉 경로 유사도 중앙값 r=${signed(summary.pathSimilarity, 3)} / 당일 수익률 표준편차 ${percent(summary.eventStdDev)}`,
+      ...(activeIntraday ? [`${activeIntraday.symbol} ${activeIntraday.interval}: 커버리지 ${percent(activeIntradaySummary.coverage, 1)}, 발표 전 60분 중앙값 ${percent(activeIntradaySummary.medianPre60)}, 발표 후 60분 중앙값 ${percent(activeIntradaySummary.medianPost60)}, 발표→정규장 종가 ${percent(activeIntradaySummary.medianToClose)}`] : []),
       "기준: 전일=D-2 종가→D-1 종가, 이벤트 당일=D-1 종가→D0 종가, 경로=D-1 종가 100 정규화.",
     ].join("\n");
   }
@@ -257,7 +367,12 @@ export function NewsSimilarity({ tests, excludedDuplicates, onClose, onAskAgent 
       reaction.preDayPct ?? "", reaction.eventGapPct ?? "", reaction.eventIntradayPct ?? "", reaction.eventDayPct ?? "", reaction.changeVsPrePct ?? "", reaction.next1DPct ?? "", reaction.post3DPct ?? "",
       Math.abs(row.overallScore) < 10 || reaction.eventDayPct === null ? "neutral" : row.overallScore * reaction.eventDayPct > 0 ? "match" : "mismatch",
     ].join("\t"));
-    return `${conversationBrief()}\n\n${header.join("\t")}\n${lines.join("\n")}`;
+    const intradayBlock = activeIntraday ? [
+      "",
+      ["anchor_date", "anchor_time", "symbol", "interval", "pre_60m_pct", "post_60m_pct", "to_regular_close_pct", "availability"].join("\t"),
+      ...activeIntraday.results.map((row) => [row.anchorDate, row.anchorTime, activeIntraday.symbol, activeIntraday.interval, row.reaction?.pre60Pct ?? "", row.reaction?.post60Pct ?? "", row.reaction?.toRegularClosePct ?? "", row.unavailable ?? "ok"].join("\t")),
+    ].join("\n") : "";
+    return `${conversationBrief()}\n\n${header.join("\t")}\n${lines.join("\n")}${intradayBlock ? `\n${intradayBlock}` : ""}`;
   }
 
   async function copyData() {
@@ -288,7 +403,10 @@ export function NewsSimilarity({ tests, excludedDuplicates, onClose, onAskAgent 
           {!loading && error && <div className="similarity-loading error"><ChartNoAxesCombined size={20} /><strong>{error}</strong></div>}
           {!loading && data && <>
             <div className="similarity-toolbar">
-              <div role="tablist" aria-label="비교 지수"><button role="tab" aria-selected={market === "nasdaq"} className={market === "nasdaq" ? "active" : ""} onClick={() => setMarket("nasdaq")}>NASDAQ</button><button role="tab" aria-selected={market === "nyse"} className={market === "nyse" ? "active" : ""} onClick={() => setMarket("nyse")}>NYSE</button></div>
+              <div className="similarity-switches">
+                <div role="tablist" aria-label="비교 지수"><button role="tab" aria-selected={market === "nasdaq"} className={market === "nasdaq" ? "active" : ""} onClick={() => selectMarket("nasdaq")}>{interval === "1d" ? "NASDAQ" : "QQQ"}</button><button role="tab" aria-selected={market === "nyse"} className={market === "nyse" ? "active" : ""} onClick={() => selectMarket("nyse")}>{interval === "1d" ? "NYSE" : "SPY"}</button></div>
+                <div role="tablist" aria-label="차트 봉 주기">{(["5m", "15m", "60m", "1d"] as ChartInterval[]).map((item) => <button role="tab" aria-selected={interval === item} className={interval === item ? "active" : ""} key={item} onClick={() => selectInterval(item)}>{item === "60m" ? "1H" : item === "1d" ? "1D" : item}</button>)}</div>
+              </div>
               <p>그림은 패턴 확인용이며, 아래 숫자가 대화·판정 기준입니다.</p>
             </div>
 
@@ -304,9 +422,18 @@ export function NewsSimilarity({ tests, excludedDuplicates, onClose, onAskAgent 
             </section>
 
             <section className="similarity-visual">
-              <header><div><span>NORMALIZED PATHS</span><h3>{marketName} 이벤트 정렬 경로</h3></div><p>각 선은 한 날짜 범위입니다. D-1 종가를 100으로 맞춰 절대 지수 수준의 영향을 제거했습니다.</p></header>
-              <OverlayChart rows={data.results} market={market} />
+              <header><div><span>NORMALIZED PATHS</span><h3>{interval === "1d" ? `${marketName} 이벤트 정렬 경로` : `${market === "nasdaq" ? "QQQ" : "SPY"} ${interval === "60m" ? "1시간" : interval} 발표 전후 경로`}</h3></div><p>{interval === "1d" ? "각 선은 한 날짜 범위입니다. D-1 종가를 100으로 맞춰 절대 지수 수준의 영향을 제거했습니다." : "발표 시각 직전 가격을 100으로 맞추고 확장시간을 포함해 발표 전후를 비교합니다."}</p></header>
+              {interval === "1d" && <OverlayChart rows={data.results} market={market} />}
+              {interval !== "1d" && intradayLoadingKey === activeIntradayKey && <div className="similarity-chart-empty"><RefreshCw size={18} className="spin" />분봉 데이터를 불러오는 중</div>}
+              {interval !== "1d" && intradayLoadingKey !== activeIntradayKey && intradayError && !activeIntraday && <div className="similarity-chart-empty error">{intradayError}</div>}
+              {interval !== "1d" && activeIntraday && <><IntradayOverlayChart data={activeIntraday} /><div className="intraday-kpis"><span><small>데이터 커버리지</small><b>{percent(activeIntradaySummary.coverage, 1)}</b><em>{activeIntradaySummary.usable.length}/{activeIntraday.results.length} events</em></span><span><small>발표 전 60분</small><b className={returnClass(activeIntradaySummary.medianPre60)}>{percent(activeIntradaySummary.medianPre60)}</b><em>중앙값</em></span><span><small>발표 후 60분</small><b className={returnClass(activeIntradaySummary.medianPost60)}>{percent(activeIntradaySummary.medianPost60)}</b><em>중앙값</em></span><span><small>발표 → 정규장 종가</small><b className={returnClass(activeIntradaySummary.medianToClose)}>{percent(activeIntradaySummary.medianToClose)}</b><em>중앙값</em></span></div></>}
             </section>
+
+            {interval !== "1d" && activeIntraday && <section className="similarity-data-section intraday-data-section">
+              <header><div><span>INTRADAY DATA</span><h3>발표 시각 기준 분봉 숫자</h3></div><p>공급 범위를 벗어난 이벤트는 제외 사유를 그대로 남깁니다.</p></header>
+              <div className="similarity-table-wrap"><table className="similarity-table intraday-table"><thead><tr><th>EVENT</th><th>기준 봉</th><th>발표 전 60분</th><th>발표 후 60분</th><th>발표→정규장 종가</th><th>상태</th></tr></thead><tbody>{activeIntraday.results.map((row) => <tr key={row.id}><td><strong>{row.anchorDate} · {row.anchorTime} ET</strong><span>{activeIntraday.symbol} · {activeIntraday.interval}</span></td><td>{row.reaction?.baseTime ?? "—"}</td><td className={returnClass(row.reaction?.pre60Pct)}>{percent(row.reaction?.pre60Pct)}</td><td className={returnClass(row.reaction?.post60Pct)}>{percent(row.reaction?.post60Pct)}</td><td className={returnClass(row.reaction?.toRegularClosePct)}>{percent(row.reaction?.toRegularClosePct)}</td><td>{row.unavailable ? <span className="intraday-unavailable">{row.unavailable}</span> : <span className="similarity-match">사용 가능</span>}</td></tr>)}</tbody></table></div>
+              <footer>{activeIntraday.methodology}</footer>
+            </section>}
 
             <section className="similarity-data-section">
               <header><div><span>COMPARABLE DATA</span><h3>기간별 숫자 비교</h3></div><p>갭과 장중 반응을 분리해 당일 움직임이 언제 발생했는지 확인합니다.</p></header>

@@ -457,6 +457,13 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .news-agent-prompts { padding: 8px 10px; display: flex; gap: 5px; overflow-x: auto; border-bottom: 1px solid var(--line); }
 .news-agent-prompts button { flex: 0 0 auto; padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; color: var(--secondary); background: transparent; font-size: 7.5px; }
 .news-agent-prompts button:hover { color: var(--blue); border-color: rgba(8,122,255,.3); }
+.batch-progress { width: 100%; min-width: 280px; display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 2px 10px; }
+.batch-progress > span { min-width: 0; display: grid; gap: 1px; }
+.batch-progress b { overflow: hidden; color: var(--blue); font-size: 7.5px; text-overflow: ellipsis; white-space: nowrap; }
+.batch-progress small { overflow: hidden; color: var(--tertiary); font-size: 6.5px; text-overflow: ellipsis; white-space: nowrap; }
+.batch-progress > strong { color: var(--text); font-size: 8px; font-variant-numeric: tabular-nums; }
+.batch-progress > i { grid-column: 1 / -1; height: 2px; display: block; overflow: hidden; border-radius: 2px; background: var(--line); }
+.batch-progress > i > em { height: 100%; display: block; background: var(--blue); transition: width .25s ease; }
 .news-agent-log { min-height: 0; padding: 11px; display: grid; align-content: start; gap: 9px; overflow-y: auto; }
 .news-agent-log .research-empty { min-height: 100%; }
 .news-agent-log article { max-width: 91%; display: grid; gap: 4px; }
@@ -489,6 +496,7 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .similarity-loading p { margin: 0; font-size: 9px; }
 .similarity-loading.error strong { color: var(--red); }
 .similarity-toolbar { margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.similarity-switches { display: flex; align-items: center; gap: 7px; }
 .similarity-toolbar [role="tablist"] { padding: 3px; display: flex; align-items: center; gap: 2px; border-radius: 9px; background: var(--panel-alt); }
 .similarity-toolbar [role="tab"] { height: 28px; padding: 0 13px; border: 0; border-radius: 7px; color: var(--secondary); background: transparent; font-size: 8px; font-weight: 720; }
 .similarity-toolbar [role="tab"].active { color: var(--text); background: var(--panel); box-shadow: 0 1px 4px rgba(0,0,0,.08); }
@@ -520,6 +528,16 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .similarity-legend i.median { height: 3px; }
 .similarity-legend small { color: var(--tertiary); font-size: 7.5px; }
 .similarity-chart-empty { min-height: 260px; display: grid; place-content: center; color: var(--tertiary); font-size: 9px; }
+.similarity-chart-empty.error { color: var(--red); }
+.intraday-kpis { padding: 10px 14px 13px; display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; border-top: 1px solid var(--line); }
+.intraday-kpis span { min-width: 0; display: grid; gap: 3px; }
+.intraday-kpis small { color: var(--tertiary); font-size: 7px; }
+.intraday-kpis b { font-size: 11px; font-variant-numeric: tabular-nums; }
+.intraday-kpis em { color: var(--secondary); font-size: 6.5px; font-style: normal; }
+.intraday-data-section > footer { padding: 10px 14px; border-top: 1px solid var(--line); color: var(--tertiary); font-size: 7.5px; line-height: 1.45; }
+.intraday-table { min-width: 850px; }
+.intraday-table td:last-child { max-width: 240px; }
+.intraday-table .intraday-unavailable { max-width: 230px; margin-left: auto; overflow: hidden; color: var(--tertiary); text-overflow: ellipsis; white-space: nowrap; }
 .similarity-table-wrap { width: 100%; max-height: 420px; overflow: auto; }
 .similarity-table { width: 100%; min-width: 1140px; border-collapse: collapse; font-size: 8.5px; font-variant-numeric: tabular-nums; }
 .similarity-table th { position: sticky; top: 0; z-index: 1; height: 34px; padding: 0 10px; color: var(--tertiary); background: var(--panel); font-size: 7px; font-weight: 760; letter-spacing: .035em; text-align: right; white-space: nowrap; }
@@ -710,7 +728,10 @@ button:disabled { cursor: not-allowed; opacity: .42; }
   .similarity-head-actions button:not(.similarity-close) { width: 34px; padding: 0; justify-content: center; font-size: 0; }
   .similarity-scroll { padding: 12px 9px 80px; }
   .similarity-toolbar p { display: none; }
+  .similarity-switches { width: 100%; justify-content: space-between; gap: 4px; }
+  .similarity-toolbar [role="tab"] { padding-inline: 9px; }
   .similarity-kpis { grid-template-columns: repeat(2,1fr); }
+  .intraday-kpis { grid-template-columns: repeat(2,1fr); }
   .similarity-visual > header, .similarity-data-section > header { align-items: flex-start; }
   .similarity-visual > header p, .similarity-data-section > header p { max-width: 180px; }
   .similarity-overlay-chart { padding-inline: 4px; overflow-x: auto; }

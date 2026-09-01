@@ -9,6 +9,7 @@ type ComparisonInput = {
   periodStart: string;
   periodEnd: string;
   anchorDate: string;
+  anchorTime: string;
   anchorLabel: string;
   overallScore: number;
   overallLabel: string;
@@ -73,6 +74,7 @@ function validInput(value: unknown): value is ComparisonInput {
   const item = value as Record<string, unknown>;
   return typeof item.id === "string"
     && typeof item.anchorLabel === "string"
+    && typeof item.anchorTime === "string"
     && DATE_PATTERN.test(String(item.periodStart ?? ""))
     && DATE_PATTERN.test(String(item.periodEnd ?? ""))
     && DATE_PATTERN.test(String(item.anchorDate ?? ""))

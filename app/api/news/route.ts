@@ -84,6 +84,17 @@ const forecastSearches = [
   "FOMC preview",
 ] as const;
 
+const eventForecastSearches: Record<string, readonly string[]> = {
+  cpi: ["US CPI forecast", "US consumer price inflation preview", "US CPI economists expect"],
+  pce: ["US PCE inflation forecast", "US core PCE preview", "US PCE economists expect"],
+  ppi: ["US PPI forecast", "US producer price index preview", "US PPI economists expect"],
+  nfp: ["US jobs report forecast", "US nonfarm payrolls preview", "US payrolls economists expect"],
+  fomc: ["FOMC decision preview", "Federal Reserve meeting forecast", "Fed rates economists expect"],
+  gdp: ["US GDP forecast", "US GDP report preview", "US economic growth economists expect"],
+  "ism-manufacturing": ["US ISM manufacturing forecast", "ISM manufacturing PMI preview"],
+  "ism-services": ["US ISM services forecast", "ISM services PMI preview"],
+};
+
 const googleSourceNames: Record<string, string> = {
   reuters: "Reuters",
   ap: "Associated Press",
@@ -98,7 +109,7 @@ const googleSourceNames: Record<string, string> = {
 };
 
 const noisyHeadlinePattern = /\bjob with\b|company announcement|newsletter(?: signup)?|print edition|trending news, latest updates, analysis|sector & industry performance|^(?:interviews|economics?|business|shows|style(?:\s*-\s*page \d+)?|united states|ap|minute by minute|bonds headlines|opinion \+ politics|us news \+ business|business \+ economics|economics \+ business)$/i;
-const releasedResultPattern = /(?:meets?|met|beat|beats|missed?|above|below|tops?|topped|rose|fell|increased|decreased).{0,48}(?:expectations?|forecast|consensus)|(?:expectations?|forecast|consensus).{0,48}(?:met|beat|missed?|above|below|topped)/i;
+const releasedResultPattern = /(?:meets?|met|beat|beats|missed?|above|below|tops?|topped|rose|fell|increased|decreased).{0,48}(?:expectations?|forecast|consensus)|(?:expectations?|forecast|consensus).{0,48}(?:met|beat|missed?|above|below|topped)|\bas expected\b|\b(?:rose|fell|increased|decreased|came in)\s+(?:by\s+)?\d/i;
 
 // Google and Bing answer datacenter egress differently when no browser-shaped
 // headers are present: an empty channel instead of results. Sending a real
@@ -217,7 +228,6 @@ function keepArticle(title: string, topic: NewsTopic, publishedDate: string, sta
   if (!title) return false;
   if (noisyHeadlinePattern.test(title)) return false;
   if (!topicTitlePatterns[topic].test(title)) return false;
-  if (topic === "forecast" && !/(?:\bU\.S\.\b|\bUS\b|United States|American?|Federal Reserve|\bFed\b|FOMC|nonfarm|\bNFP\b|jobs? report|payrolls?)/i.test(title)) return false;
   if (topic === "forecast" && releasedResultPattern.test(title)) return false;
   return publishedDate >= start && publishedDate <= end;
 }
@@ -337,8 +347,8 @@ function strategiesFor(source: TrustedSource, topic: NewsTopic, start: string, e
   return chain;
 }
 
-async function collectSource(source: TrustedSource, topic: NewsTopic, start: string, end: string) {
-  if (topic === "forecast") return collectForecastSource(source, start, end);
+async function collectSource(source: TrustedSource, topic: NewsTopic, start: string, end: string, eventRoot?: string) {
+  if (topic === "forecast") return collectForecastSource(source, start, end, eventRoot);
   const attempts: Attempt[] = [];
   for (const run of strategiesFor(source, topic, start, end)) {
     const attempt = await run();
@@ -350,16 +360,17 @@ async function collectSource(source: TrustedSource, topic: NewsTopic, start: str
   return { source, attempts, winner, status: reachable ? ("ok" as const) : ("error" as const) };
 }
 
-async function collectForecastSource(source: TrustedSource, start: string, end: string) {
+async function collectForecastSource(source: TrustedSource, start: string, end: string, eventRoot?: string) {
   const attempts: Attempt[] = [];
   const sourceName = googleSourceNames[source.id] ?? source.name;
   const suffix = `source:${JSON.stringify(sourceName)}`;
   const today = koreaDate(new Date());
   const windowDays = daysBetween(start, today) + 1;
   const recent = windowDays > 0 && windowDays <= 60 && end >= shiftDate(today, -2);
+  const searches = eventRoot && eventForecastSearches[eventRoot] ? eventForecastSearches[eventRoot] : forecastSearches;
 
   const runGoogleRound = async (strategy: string, dateClause: string) => {
-    const round = await Promise.all(forecastSearches.map((query) =>
+    const round = await Promise.all(searches.map((query) =>
       fetchGoogle(source, "forecast", start, end, `${strategy}:${query}`, `${query} ${suffix} ${dateClause}`.trim())));
     attempts.push(...round);
     return round.flatMap((attempt) => attempt.articles);
@@ -389,6 +400,8 @@ export async function GET(request: Request) {
   const end = url.searchParams.get("end") ?? legacyEnd;
   const requestedTopic = url.searchParams.get("topic") as NewsTopic | null;
   const topic = requestedTopic && requestedTopic in topicQueries ? requestedTopic : "macro";
+  const requestedEvent = url.searchParams.get("event") ?? "";
+  const eventRoot = requestedEvent in eventForecastSearches ? requestedEvent : undefined;
   const debug = url.searchParams.get("debug") === "1";
 
   if (!validDate(start) || !validDate(end)) return Response.json({ error: "날짜 형식이 올바르지 않습니다." }, { status: 400 });
@@ -396,7 +409,7 @@ export async function GET(request: Request) {
   if (rangeDays < 0) return Response.json({ error: "시작일은 종료일보다 늦을 수 없습니다." }, { status: 400 });
   if (rangeDays > 30) return Response.json({ error: "뉴스 수집 기간은 최대 31일까지 선택할 수 있습니다." }, { status: 400 });
 
-  const collected = await Promise.all(trustedSources.map((source) => collectSource(source, topic, start, end)));
+  const collected = await Promise.all(trustedSources.map((source) => collectSource(source, topic, start, end, eventRoot)));
 
   const balancedArticles = collected.flatMap((result) => (result.winner?.articles ?? [])
     .sort((left, right) => right.publishedAt.localeCompare(left.publishedAt))
@@ -410,6 +423,7 @@ export async function GET(request: Request) {
       seen.add(key);
       return true;
     })
+    .filter((article) => !eventRoot || article.eventId === eventRoot)
     .slice(0, 100);
 
   const sourceCounts = new Map<string, number>();

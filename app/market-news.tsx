@@ -12,6 +12,7 @@ import Sparkles from "lucide-react/dist/esm/icons/sparkles";
 import X from "lucide-react/dist/esm/icons/x";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { NewsSimilarity } from "./news-similarity";
+import { MARKET_CALENDAR_2026, type MarketEvent } from "./market-calendar-data";
 
 type NewsTopic = "macro" | "forecast" | "fed" | "inflation" | "labor" | "markets";
 type NewsArticle = {
@@ -118,6 +119,8 @@ type TestDetail = {
 };
 type NewsAgentMessage = { id: string; role: "user" | "agent"; content: string; createdAt: string };
 type NewsHistoryEvent = { title: string; detail: string };
+type BatchResearchPlan = { root: string; label: string; months: number; note: string | null; events: MarketEvent[] };
+type BatchStatus = { completed: number; total: number; label: string; phase: string };
 
 const topicOptions: Array<{ id: NewsTopic; label: string }> = [
   { id: "macro", label: "전체 거시" },
@@ -129,6 +132,40 @@ const topicOptions: Array<{ id: NewsTopic; label: string }> = [
 ];
 
 const topicLabels: Record<NewsTopic, string> = { macro: "Macro", forecast: "Forecast", fed: "Fed", inflation: "Inflation", labor: "Labor", markets: "Markets" };
+
+const batchEventDefinitions = [
+  { root: "cpi", label: "CPI", aliases: /\bcpi\b|\bpci\b|소비자\s*물가|consumer\s*price/i },
+  { root: "pce", label: "PCE", aliases: /\bpce\b|개인\s*소비\s*지출|personal\s*consumption/i },
+  { root: "ppi", label: "PPI", aliases: /\bppi\b|생산자\s*물가|producer\s*price/i },
+  { root: "nfp", label: "NFP", aliases: /\bnfp\b|비농업|고용\s*보고서|jobs?\s*report|nonfarm/i },
+  { root: "fomc", label: "FOMC", aliases: /\bfomc\b|금리\s*결정|연준\s*회의|fed\s*(?:meeting|decision)/i },
+  { root: "gdp", label: "GDP", aliases: /\bgdp\b|국내\s*총생산/i },
+  { root: "ism-manufacturing", label: "ISM 제조업", aliases: /ism\s*제조|제조업\s*(?:ism|pmi)|manufacturing\s*(?:ism|pmi)/i },
+  { root: "ism-services", label: "ISM 서비스업", aliases: /ism\s*서비스|서비스업\s*(?:ism|pmi)|services?\s*(?:ism|pmi)/i },
+];
+
+function shiftMonths(date: string, months: number) {
+  const value = new Date(`${date}T00:00:00Z`);
+  value.setUTCMonth(value.getUTCMonth() - months);
+  return value.toISOString().slice(0, 10);
+}
+
+function parseBatchResearchCommand(prompt: string, today: string): BatchResearchPlan | null {
+  const definition = batchEventDefinitions.find((item) => item.aliases.test(prompt));
+  const batchIntent = /한번에|일괄|전부|모두|각각|수집.{0,30}분석|retrieval.{0,30}(?:분석|analysis)|비교.{0,20}(?:진행|해줘|까지)/i.test(prompt);
+  if (!definition || !batchIntent) return null;
+  const monthMatch = prompt.match(/최근\s*(\d{1,2})\s*(?:개월|달|months?)/i);
+  const months = Math.min(24, Math.max(1, Number(monthMatch?.[1] ?? 6)));
+  const start = shiftMonths(today, months);
+  const events = MARKET_CALENDAR_2026.filter((event) => event.id.startsWith(`${definition.root}-`) && event.date >= start && event.date <= today);
+  return {
+    root: definition.root,
+    label: definition.label,
+    months,
+    events,
+    note: /\bpci\b/i.test(prompt) ? "PCI 입력은 CPI의 오타로 해석했습니다." : null,
+  };
+}
 
 function koreaDate() {
   const parts = new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts();
@@ -144,6 +181,15 @@ function shiftDate(date: string, days: number) {
 
 function formatKoreaTime(value: string) {
   return new Intl.DateTimeFormat("ko-KR", { timeZone: "Asia/Seoul", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(value));
+}
+
+function publishedBeforeEvent(value: string, event: MarketEvent) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(new Date(value));
+  const pick = (type: string) => parts.find((part) => part.type === type)?.value ?? "";
+  const eastern = `${pick("year")}-${pick("month")}-${pick("day")}T${pick("hour")}:${pick("minute")}`;
+  return eastern <= `${event.date}T${event.time}`;
 }
 
 function formatReturn(value: number | null) {
@@ -190,6 +236,20 @@ function recordId(prefix: string) {
 
 function numericScore(value: number | undefined) {
   return Math.max(-100, Math.min(100, Number(value) || 0));
+}
+
+function newsTestFromAnalysis(query: RetrievedQuery, data: AnalysisResult, fallbackEvent?: ForecastEvent): NewsTest {
+  const forecastEvents = data.analysis.forecastEvents?.length
+    ? data.analysis.forecastEvents
+    : fallbackEvent ? [fallbackEvent] : [];
+  return {
+    id: recordId("test"), periodStart: query.start, periodEnd: query.end, topic: query.topic,
+    articleCount: data.articleCount, overallScore: numericScore(data.analysis.score), overallLabel: data.analysis.label ?? "중립",
+    techScore: numericScore(data.analysis.segments?.tech?.score), techLabel: data.analysis.segments?.tech?.label ?? "중립",
+    valueScore: numericScore(data.analysis.segments?.value?.score), valueLabel: data.analysis.segments?.value?.label ?? "중립",
+    nasdaq: data.benchmarks?.NASDAQ ?? null, nyse: data.benchmarks?.NYSE ?? null,
+    forecastEvents, createdAt: new Date().toISOString(),
+  };
 }
 
 function chartNumber(value: number) {
@@ -280,6 +340,7 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
   const [agentMessages, setAgentMessages] = useState<NewsAgentMessage[]>([]);
   const [agentQuestion, setAgentQuestion] = useState("");
   const [agentThinking, setAgentThinking] = useState(false);
+  const [batchStatus, setBatchStatus] = useState<BatchStatus | null>(null);
   const [stateReady, setStateReady] = useState(false);
   const [activeTest, setActiveTest] = useState<NewsTest | null>(null);
   const [testDetail, setTestDetail] = useState<TestDetail | null>(null);
@@ -415,14 +476,7 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
       const data = await response.json() as AnalysisResult & { error?: string };
       if (!response.ok) throw new Error(data.error || "뉴스 분석에 실패했습니다.");
       setAnalysis(data);
-      const test: NewsTest = {
-        id: recordId("test"), periodStart: retrieved.start, periodEnd: retrieved.end, topic: retrieved.topic,
-        articleCount: data.articleCount, overallScore: numericScore(data.analysis.score), overallLabel: data.analysis.label ?? "중립",
-        techScore: numericScore(data.analysis.segments?.tech?.score), techLabel: data.analysis.segments?.tech?.label ?? "중립",
-        valueScore: numericScore(data.analysis.segments?.value?.score), valueLabel: data.analysis.segments?.value?.label ?? "중립",
-        nasdaq: data.benchmarks?.NASDAQ ?? null, nyse: data.benchmarks?.NYSE ?? null,
-        forecastEvents: data.analysis.forecastEvents ?? [], createdAt: new Date().toISOString(),
-      };
+      const test = newsTestFromAnalysis(retrieved, data);
       setTests((current) => [...current, test].slice(-100));
       void persistRecord("test", test);
       onHistory?.({ title: "뉴스 감성 분석", detail: `${retrieved.start} – ${retrieved.end} · ${chosen.length}건 · ${data.analysis.label ?? "분석 완료"}` });
@@ -451,12 +505,99 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
     return `${requested}으로 분류된 뉴스 ${ids.length}건을 선택했습니다. 이 선택으로 다시 LLM 분석을 실행하면 새 Test 행이 생성됩니다.`;
   }
 
+  async function runBatchResearch(plan: BatchResearchPlan) {
+    if (!plan.events.length) {
+      appendAgentMessage("agent", `${plan.note ? `${plan.note}\n` : ""}최근 ${plan.months}개월 안에 등록된 ${plan.label} 과거 발표가 없습니다.`);
+      return;
+    }
+    setAgentThinking(true);
+    setBatchStatus({ completed: 0, total: plan.events.length, label: plan.label, phase: "계획 준비" });
+    const completed: NewsTest[] = [];
+    const failed: string[] = [];
+    const existingTests = [...tests].reverse();
+    const eventDefinition = batchEventDefinitions.find((item) => item.root === plan.root);
+
+    for (let index = 0; index < plan.events.length; index += 1) {
+      const event = plan.events[index];
+      const existing = existingTests.find((test) => test.forecastEvents?.some((item) => (
+        item.scheduledReleaseDate === event.date && Boolean(eventDefinition?.aliases.test(item.indicator))
+      )));
+      if (existing) {
+        completed.push(existing);
+        setBatchStatus({ completed: index + 1, total: plan.events.length, label: `${plan.label} · ${event.date}`, phase: "기존 Test 재사용" });
+        continue;
+      }
+
+      const newsStart = shiftDate(event.date, -5);
+      const newsEnd = event.date;
+      try {
+        setBatchStatus({ completed: index, total: plan.events.length, label: `${plan.label} · ${event.date}`, phase: "발표 전 뉴스 수집" });
+        const newsParams = new URLSearchParams({ start: newsStart, end: newsEnd, topic: "forecast", event: plan.root });
+        const newsResponse = await fetch(`/api/news?${newsParams}`, { cache: "no-store" });
+        const newsData = await newsResponse.json() as { articles?: NewsArticle[]; sources?: NewsSource[]; provider?: string; notice?: string | null; error?: string };
+        if (!newsResponse.ok) throw new Error(newsData.error || "뉴스 수집 실패");
+        const allArticles = newsData.articles ?? [];
+        const chosen = allArticles.filter((article) => article.eventId === plan.root && (!article.eventDate || article.eventDate === event.date) && publishedBeforeEvent(article.publishedAt, event)).slice(0, 40);
+        if (!chosen.length) throw new Error("해당 발표의 사전 전망 뉴스가 없음");
+
+        setArticles(allArticles);
+        setSources(newsData.sources ?? []);
+        setProvider(newsData.provider ?? "Google News RSS");
+        setNotice(newsData.notice ?? "");
+        setRetrieved({ start: newsStart, end: newsEnd, topic: "forecast" });
+        setSelected(new Set(chosen.map((article) => article.id)));
+        setBatchStatus({ completed: index, total: plan.events.length, label: `${plan.label} · ${event.date}`, phase: `${chosen.length}건 LLM 분석` });
+
+        const analysisResponse = await fetch("/api/news/analyze", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ date: event.date, start: newsStart, articles: chosen }),
+        });
+        const analysisData = await analysisResponse.json() as AnalysisResult & { error?: string };
+        if (!analysisResponse.ok) throw new Error(analysisData.error || "LLM 분석 실패");
+        setAnalysis(analysisData);
+        const fallbackEvent: ForecastEvent = {
+          indicator: event.title,
+          scheduledReleaseDate: event.date,
+          scheduledTimeET: event.time,
+          consensus: null,
+          previous: null,
+          expectationDirection: "불명확",
+          evidenceIds: chosen.map((article) => article.id),
+          caveat: "발표 일정은 경제 캘린더 기준이며, 헤드라인에서 수치 컨센서스를 추출하지 못했을 수 있습니다.",
+        };
+        const test = newsTestFromAnalysis({ start: newsStart, end: event.date, topic: "forecast" }, analysisData, fallbackEvent);
+        completed.push(test);
+        setTests((current) => [...current, test].slice(-100));
+        void persistRecord("test", test);
+        onHistory?.({ title: `${plan.label} 일괄 연구`, detail: `${event.date} · ${chosen.length}건 · ${test.overallLabel}` });
+        setBatchStatus({ completed: index + 1, total: plan.events.length, label: `${plan.label} · ${event.date}`, phase: "Test 행 저장" });
+      } catch (reason) {
+        failed.push(`${event.date}: ${reason instanceof Error ? reason.message : "처리 실패"}`);
+        setBatchStatus({ completed: index + 1, total: plan.events.length, label: `${plan.label} · ${event.date}`, phase: "건너뜀" });
+      }
+    }
+
+    const unique = [...completed].reverse().filter((test, index, values) => values.findIndex((candidate) => candidate.periodEnd === test.periodEnd) === index).reverse();
+    const note = plan.note ? `${plan.note}\n` : "";
+    const failureText = failed.length ? `\n제외 ${failed.length}개: ${failed.join(" / ")}` : "";
+    appendAgentMessage("agent", `${note}최근 ${plan.months}개월 ${plan.label} 발표 ${plan.events.length}개 중 ${unique.length}개 Test를 준비했습니다. 발표 5일 전부터 발표 시각 직전까지의 전망 헤드라인만 사용했고, 발표 결과가 들어간 뉴스는 제외했습니다.${failureText}${unique.length >= 2 ? "\n전체 비교 화면을 열었습니다." : ""}`);
+    if (unique.length >= 2) setComparison({ tests: unique, excludedDuplicates: completed.length - unique.length });
+    setBatchStatus(null);
+    setAgentThinking(false);
+  }
+
   async function askNewsAgent(event: FormEvent) {
     event.preventDefault();
     const prompt = agentQuestion.trim();
     if (!prompt || agentThinking) return;
     appendAgentMessage("user", prompt);
     setAgentQuestion("");
+    const batchPlan = parseBatchResearchCommand(prompt, today);
+    if (batchPlan) {
+      await runBatchResearch(batchPlan);
+      return;
+    }
     const commandReply = agentSelectionCommand(prompt);
     if (commandReply) {
       appendAgentMessage("agent", commandReply);
@@ -614,7 +755,7 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
           </header>
           <div className="news-agent-context"><span>{retrieved ? `${retrieved.start} → ${retrieved.end}` : "no range"}</span><span>{selected.size} news</span><span>{tests.length} tests</span></div>
           <div className="news-agent-prompts">
-            {["기술주와 가치주 차이 설명", "Test 결과 해석", "예측→실제치 이벤트 연구 설계"].map((prompt) => <button key={prompt} onClick={() => setAgentQuestion(prompt)}>{prompt}</button>)}
+            {batchStatus ? <div className="batch-progress"><span><b>{batchStatus.phase}</b><small>{batchStatus.label}</small></span><strong>{batchStatus.completed}/{batchStatus.total}</strong><i><em style={{ width: `${(batchStatus.completed / batchStatus.total) * 100}%` }} /></i></div> : ["최근 6개월 CPI 발표를 수집→분석→비교해줘", "Test 결과 해석", "예측→실제치 이벤트 연구 설계"].map((prompt) => <button key={prompt} disabled={agentThinking} onClick={() => setAgentQuestion(prompt)}>{prompt}</button>)}
           </div>
           <div className="news-agent-log" aria-live="polite">
             {stateReady && !agentMessages.length && <div className="research-empty"><Sparkles size={18} /><strong>세 영역을 함께 조사합니다.</strong><p>현재 뉴스 선택, 감성 분석, 누적 Test를 비교하거나 “부정 뉴스만 선택해줘”처럼 뉴스 선택을 바꿔보세요.</p></div>}

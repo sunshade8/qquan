@@ -50,6 +50,9 @@ export type EventWindow = {
   limitation: string | null;
 };
 
+export type IntradayInterval = "5m" | "15m" | "60m";
+export type IntradayPoint = { timestamp: number; date: string; time: string; close: number };
+
 type TossToken = { access_token?: string; expires_in?: number; error?: string; error_description?: string };
 type TossEnvelope<T> = { result?: T; error?: { code?: string; message?: string } };
 type TossCandle = {
@@ -278,6 +281,48 @@ export async function fetchYahooWindow(symbol: string, from: string, to: string)
   }
 
   throw lastError ?? new MarketProviderError("yahoo", "upstream", "Yahoo Finance 데이터를 가져오지 못했습니다.");
+}
+
+/** Bounded extended-hours bars for event studies. Yahoo limits how far back fine intervals are available. */
+export async function fetchYahooIntradayWindow(symbol: string, from: string, to: string, interval: IntradayInterval): Promise<IntradayPoint[]> {
+  let lastError: MarketProviderError | null = null;
+  for (const host of YAHOO_HOSTS) {
+    const sourceUrl = new URL(`https://${host}.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`);
+    sourceUrl.searchParams.set("period1", String(epochSeconds(from)));
+    sourceUrl.searchParams.set("period2", String(epochSeconds(to, 1)));
+    sourceUrl.searchParams.set("interval", interval);
+    sourceUrl.searchParams.set("includePrePost", "true");
+    sourceUrl.searchParams.set("events", "div,splits");
+    let response: Response;
+    try {
+      response = await fetch(sourceUrl, { headers: YAHOO_HEADERS });
+    } catch {
+      lastError = new MarketProviderError("yahoo", "upstream", "Yahoo Finance 분봉 데이터에 연결하지 못했습니다.", 502);
+      continue;
+    }
+    if (!response.ok) {
+      lastError = new MarketProviderError(
+        "yahoo",
+        response.status === 429 ? "rate_limit" : response.status === 404 ? "not_found" : "upstream",
+        response.status === 429 ? "Yahoo Finance 분봉 호출 한도를 초과했습니다." : "Yahoo Finance 분봉 데이터를 가져오지 못했습니다.",
+        response.status,
+      );
+      continue;
+    }
+    const payload = await response.json().catch(() => ({})) as YahooChart;
+    const result = payload.chart?.result?.[0];
+    const timestamps = result?.timestamp ?? [];
+    const closes = result?.indicators?.quote?.[0]?.close ?? [];
+    const points = timestamps.flatMap((timestamp, index): IntradayPoint[] => {
+      const close = closes[index];
+      if (close === null || close === undefined || !Number.isFinite(close)) return [];
+      const eastern = newYorkDateTime(timestamp);
+      return [{ timestamp, date: eastern.date, time: eastern.time, close }];
+    });
+    if (points.length) return points;
+    lastError = new MarketProviderError("yahoo", "not_found", "해당 구간의 분봉 데이터가 없습니다.", 404);
+  }
+  throw lastError ?? new MarketProviderError("yahoo", "upstream", "Yahoo Finance 분봉 데이터를 가져오지 못했습니다.");
 }
 
 function percentChange(from: number, to: number) {
