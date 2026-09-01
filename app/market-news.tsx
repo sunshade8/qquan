@@ -8,6 +8,7 @@ import Newspaper from "lucide-react/dist/esm/icons/newspaper";
 import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw";
 import Send from "lucide-react/dist/esm/icons/send";
 import Sparkles from "lucide-react/dist/esm/icons/sparkles";
+import X from "lucide-react/dist/esm/icons/x";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
 type NewsTopic = "macro" | "forecast" | "fed" | "inflation" | "labor" | "markets";
@@ -73,6 +74,45 @@ type NewsTest = {
   nyse: RangeBenchmark;
   forecastEvents?: ForecastEvent[];
   createdAt: string;
+};
+type TestDetailReaction = { effectiveDate: string; eventDayPct: number | null; next1DPct: number | null; post3DPct: number | null } | null;
+type TestDetailEvent = {
+  id: string;
+  date: string;
+  timeET: string;
+  title: string;
+  note: string;
+  category: "fed" | "inflation" | "labor" | "growth" | "business";
+  categoryLabel: string;
+  importance: "high" | "medium";
+  source: string;
+  sourceUrl: string;
+  reactions: { nasdaq: TestDetailReaction; nyse: TestDetailReaction };
+};
+type TestDetailIndex = {
+  symbol: string;
+  name: string;
+  origin: string;
+  reason: string | null;
+  points: Array<{ date: string; close: number; dailyReturnPct: number | null; phase: "pre" | "selected" | "post" }>;
+  summary: null | {
+    startDate: string;
+    endDate: string;
+    startClose: number;
+    endClose: number;
+    returnPct: number;
+    maxDrawdownPct: number;
+    annualizedVolatilityPct: number | null;
+    upDays: number;
+    downDays: number;
+    sessions: number;
+  };
+};
+type TestDetail = {
+  period: { start: string; end: string; chartStart: string; chartEnd: string };
+  indices: { nasdaq: TestDetailIndex; nyse: TestDetailIndex };
+  events: TestDetailEvent[];
+  methodology: string;
 };
 type NewsAgentMessage = { id: string; role: "user" | "agent"; content: string; createdAt: string };
 type NewsHistoryEvent = { title: string; detail: string };
@@ -150,6 +190,74 @@ function numericScore(value: number | undefined) {
   return Math.max(-100, Math.min(100, Number(value) || 0));
 }
 
+function chartNumber(value: number) {
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
+}
+
+function DailyIndexChart({ index, events, variant }: { index: TestDetailIndex; events: TestDetailEvent[]; variant: "nasdaq" | "nyse" }) {
+  const width = 760;
+  const height = 280;
+  const pad = { top: 28, right: 24, bottom: 34, left: 58 };
+  const points = index.points;
+  if (!points.length) return <div className="detail-chart-empty"><Newspaper size={18} /><strong>일봉 데이터를 불러오지 못했습니다.</strong><p>{index.reason}</p></div>;
+  const values = points.map((point) => point.close);
+  const rawMin = Math.min(...values);
+  const rawMax = Math.max(...values);
+  const buffer = Math.max((rawMax - rawMin) * .12, rawMax * .002);
+  const min = rawMin - buffer;
+  const max = rawMax + buffer;
+  const plotWidth = width - pad.left - pad.right;
+  const plotHeight = height - pad.top - pad.bottom;
+  const x = (indexValue: number) => pad.left + (points.length === 1 ? plotWidth / 2 : (indexValue / (points.length - 1)) * plotWidth);
+  const y = (value: number) => pad.top + ((max - value) / (max - min)) * plotHeight;
+  const line = points.map((point, pointIndex) => `${pointIndex ? "L" : "M"}${x(pointIndex).toFixed(2)},${y(point.close).toFixed(2)}`).join(" ");
+  const selectedStart = Math.max(0, points.findIndex((point) => point.phase === "selected"));
+  const selectedEndCandidate = points.findLastIndex((point) => point.phase === "selected");
+  const selectedEnd = selectedEndCandidate < 0 ? selectedStart : selectedEndCandidate;
+  const markerEvents = events.flatMap((event) => {
+    const reaction = event.reactions[variant];
+    const pointIndex = reaction ? points.findIndex((point) => point.date === reaction.effectiveDate) : -1;
+    return pointIndex < 0 ? [] : [{ event, reaction, point: points[pointIndex], pointIndex }];
+  });
+  const ticks = [0, .25, .5, .75, 1];
+  const dateTicks = Array.from(new Set([0, Math.floor((points.length - 1) / 2), points.length - 1]));
+
+  return (
+    <article className={`detail-chart-card ${variant}`}>
+      <header>
+        <div><span>{index.symbol}</span><strong>{index.name}</strong></div>
+        {index.summary && <b className={returnClass(index.summary.returnPct)}>{formatReturn(index.summary.returnPct)}</b>}
+      </header>
+      <div className="detail-chart-plot">
+        <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${index.name} 1일 종가 차트`}>
+          <rect className="chart-range-fill" x={Math.max(pad.left, x(selectedStart) - 8)} y={pad.top} width={Math.max(16, x(selectedEnd) - x(selectedStart) + 16)} height={plotHeight} rx="8" />
+          {ticks.map((tick) => {
+            const tickY = pad.top + tick * plotHeight;
+            const tickValue = max - tick * (max - min);
+            return <g key={tick}><line className="chart-grid-line" x1={pad.left} x2={width - pad.right} y1={tickY} y2={tickY} /><text className="chart-axis-label" x={pad.left - 10} y={tickY + 4} textAnchor="end">{chartNumber(tickValue)}</text></g>;
+          })}
+          <path className="chart-index-line" d={line} />
+          {markerEvents.map(({ event, reaction, point, pointIndex }) => (
+            <g className={`chart-event-marker ${event.category} ${event.importance === "high" ? "high" : ""}`} key={event.id}>
+              {event.importance === "high" && <circle className="event-pulse-ring" cx={x(pointIndex)} cy={y(point.close)} r="10" />}
+              <line className="event-guide" x1={x(pointIndex)} x2={x(pointIndex)} y1={pad.top} y2={height - pad.bottom} />
+              <circle className="event-point" cx={x(pointIndex)} cy={y(point.close)} r={event.importance === "high" ? 5.5 : 4} />
+              <title>{`${event.title} · ${event.date} ${event.timeET} ET · 당일 ${formatReturn(reaction.eventDayPct)}`}</title>
+            </g>
+          ))}
+          {dateTicks.map((pointIndex) => <text className="chart-date-label" key={pointIndex} x={x(pointIndex)} y={height - 9} textAnchor={pointIndex === 0 ? "start" : pointIndex === points.length - 1 ? "end" : "middle"}>{points[pointIndex].date.slice(5)}</text>)}
+        </svg>
+      </div>
+      {index.summary ? <div className="detail-chart-stats">
+        <span><small>거래일</small><b>{index.summary.sessions}</b></span>
+        <span><small>최대 낙폭</small><b className={returnClass(index.summary.maxDrawdownPct)}>{formatReturn(index.summary.maxDrawdownPct)}</b></span>
+        <span><small>연환산 변동성</small><b>{index.summary.annualizedVolatilityPct === null ? "—" : `${index.summary.annualizedVolatilityPct.toFixed(2)}%`}</b></span>
+        <span><small>상승 / 하락</small><b>{index.summary.upDays} / {index.summary.downDays}</b></span>
+      </div> : <p className="detail-chart-warning">선택 기간 내 거래일이 없습니다.</p>}
+    </article>
+  );
+}
+
 export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent) => void }) {
   const today = koreaDate();
   const [startDate, setStartDate] = useState(() => shiftDate(today, -2));
@@ -171,6 +279,10 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
   const [agentQuestion, setAgentQuestion] = useState("");
   const [agentThinking, setAgentThinking] = useState(false);
   const [stateReady, setStateReady] = useState(false);
+  const [activeTest, setActiveTest] = useState<NewsTest | null>(null);
+  const [testDetail, setTestDetail] = useState<TestDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState("");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -184,6 +296,37 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
       .finally(() => { if (!controller.signal.aborted) setStateReady(true); });
     return () => controller.abort();
   }, []);
+
+  useEffect(() => {
+    if (!activeTest) return;
+    const controller = new AbortController();
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setActiveTest(null);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    const params = new URLSearchParams({ start: activeTest.periodStart, end: activeTest.periodEnd });
+    fetch(`/api/news/test-detail?${params}`, { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        const data = await response.json() as TestDetail & { error?: string };
+        if (!response.ok) throw new Error(data.error || "상세 차트를 불러오지 못했습니다.");
+        setTestDetail(data);
+      })
+      .catch((reason) => {
+        if (!controller.signal.aborted) setDetailError(reason instanceof Error ? reason.message : "상세 차트를 불러오지 못했습니다.");
+      })
+      .finally(() => { if (!controller.signal.aborted) setDetailLoading(false); });
+    return () => {
+      controller.abort();
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [activeTest]);
+
+  function openTestDetail(test: NewsTest) {
+    setTestDetail(null);
+    setDetailError("");
+    setDetailLoading(true);
+    setActiveTest(test);
+  }
 
   async function persistRecord(kind: "test" | "message", value: NewsTest | NewsAgentMessage) {
     try {
@@ -435,14 +578,14 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
             {!stateReady && <div className="research-empty"><RefreshCw size={17} className="spin" /><strong>기록을 불러오는 중</strong></div>}
             {stateReady && !tests.length && <div className="research-empty"><FlaskConical size={18} /><strong>아직 Test가 없습니다.</strong><p>Sentiment에서 LLM 분석을 실행하면 같은 날짜 범위의 NASDAQ·NYSE 수익률과 함께 한 행이 자동 생성됩니다.</p></div>}
             {[...tests].reverse().map((test) => { const firstForecast = test.forecastEvents?.[0]; return (
-              <div className="test-row" role="row" key={test.id}>
+              <button className="test-row test-row-button" role="row" type="button" key={test.id} onClick={() => openTestDetail(test)} aria-label={`${test.periodStart}부터 ${test.periodEnd}까지 Test 상세 보기`}>
                 <span><strong>{test.periodStart}</strong><small>→ {test.periodEnd} · {test.articleCount} news</small>{firstForecast ? <em title={firstForecast.indicator}>{forecastBadge(firstForecast, test.forecastEvents?.length ?? 1)}</em> : null}</span>
                 <span><b className={toneClass(test.overallScore)}>{test.overallScore > 0 ? "+" : ""}{test.overallScore}</b><small>{test.overallLabel}</small></span>
                 <span><b className={toneClass(test.techScore)}>{test.techScore > 0 ? "+" : ""}{test.techScore}</b><small>{test.techLabel}</small></span>
                 <span><b className={toneClass(test.valueScore)}>{test.valueScore > 0 ? "+" : ""}{test.valueScore}</b><small>{test.valueLabel}</small></span>
                 <span className="benchmark-cell" title={benchmarkDetail(test.nasdaq)}><b className={returnClass(benchmarkValue(test.nasdaq)?.returnPct)}>{formatReturn(benchmarkValue(test.nasdaq)?.returnPct ?? null)}</b><small>{benchmarkNote(test.nasdaq)}</small></span>
                 <span className="benchmark-cell" title={benchmarkDetail(test.nyse)}><b className={returnClass(benchmarkValue(test.nyse)?.returnPct)}>{formatReturn(benchmarkValue(test.nyse)?.returnPct ?? null)}</b><small>{benchmarkNote(test.nyse)}</small></span>
-              </div>
+              </button>
             ); })}
           </div>
           <footer>지수 수익률은 선택 범위 안 첫 거래일 종가 → 마지막 거래일 종가 · 인과관계가 아닌 사후 비교</footer>
@@ -468,6 +611,69 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
           </form>
         </aside>
       </div>
+
+      {activeTest && <div className="test-detail-backdrop" role="button" tabIndex={-1} aria-label="Test 상세 닫기" onClick={(event) => { if (event.target === event.currentTarget) setActiveTest(null); }} onKeyDown={(event) => { if (event.key === "Escape") setActiveTest(null); }}>
+        <article className="test-detail-page" role="dialog" aria-modal="true" aria-labelledby="test-detail-title">
+          <header className="test-detail-head">
+            <div>
+              <span>EVENT REACTION STUDY</span>
+              <h2 id="test-detail-title">Test 상세 분석</h2>
+              <p>{activeTest.periodStart} → {activeTest.periodEnd} · 뉴스 {activeTest.articleCount}건</p>
+            </div>
+            <button type="button" onClick={() => setActiveTest(null)} aria-label="Test 상세 닫기"><X size={18} /></button>
+          </header>
+
+          <div className="test-detail-scroll">
+            <section className="test-detail-summary" aria-label="감성 및 지수 요약">
+              <article><small>전체 감성</small><strong className={toneClass(activeTest.overallScore)}>{activeTest.overallScore > 0 ? "+" : ""}{activeTest.overallScore}</strong><span>{activeTest.overallLabel}</span></article>
+              <article><small>기술주 감성</small><strong className={toneClass(activeTest.techScore)}>{activeTest.techScore > 0 ? "+" : ""}{activeTest.techScore}</strong><span>{activeTest.techLabel}</span></article>
+              <article><small>가치주 감성</small><strong className={toneClass(activeTest.valueScore)}>{activeTest.valueScore > 0 ? "+" : ""}{activeTest.valueScore}</strong><span>{activeTest.valueLabel}</span></article>
+              <article><small>스타일 스프레드</small><strong className={toneClass(activeTest.techScore - activeTest.valueScore)}>{activeTest.techScore - activeTest.valueScore > 0 ? "+" : ""}{activeTest.techScore - activeTest.valueScore}</strong><span>Tech − Value</span></article>
+            </section>
+
+            {detailLoading && <div className="test-detail-loading"><RefreshCw size={20} className="spin" /><strong>NASDAQ·NYSE 일봉을 계산하는 중</strong><p>선택 기간 앞뒤 거래일과 경제 이벤트를 연결하고 있습니다.</p></div>}
+            {!detailLoading && detailError && <div className="test-detail-loading error"><Newspaper size={20} /><strong>{detailError}</strong><p>Test 행은 보존되어 있습니다. 잠시 뒤 다시 열어주세요.</p></div>}
+            {!detailLoading && testDetail && <>
+              <section className="test-detail-section-head">
+                <div><span>1D CLOSE</span><h3>지수 반응 차트</h3></div>
+                <p>옅은 영역은 뉴스 분석 기간이며, 원은 주요 발표가 연결된 실제 거래일입니다.</p>
+              </section>
+              <section className="test-detail-charts">
+                <DailyIndexChart index={testDetail.indices.nasdaq} events={testDetail.events} variant="nasdaq" />
+                <DailyIndexChart index={testDetail.indices.nyse} events={testDetail.events} variant="nyse" />
+              </section>
+
+              <section className="test-event-section">
+                <header>
+                  <div><span>CATALYSTS</span><h3>주요 이벤트와 사후 반응</h3></div>
+                  <div className="event-legend"><span className="fed">연준</span><span className="inflation">물가</span><span className="labor">고용</span><span className="growth">성장</span><span className="business">경기</span></div>
+                </header>
+                {testDetail.events.length ? <div className="test-event-list">
+                  {testDetail.events.map((event) => <article className={event.category} key={event.id}>
+                    <div className="test-event-copy">
+                      <i className={event.importance === "high" ? "high" : ""} />
+                      <div><span>{event.categoryLabel} · {event.date} {event.timeET} ET</span><strong>{event.title}</strong><p>{event.note} · <a href={event.sourceUrl} target="_blank" rel="noreferrer">{event.source}</a></p></div>
+                    </div>
+                    {(["nasdaq", "nyse"] as const).map((market) => { const reaction = event.reactions[market]; return <div className="test-event-reaction" key={market}>
+                      <strong>{market === "nasdaq" ? "NASDAQ" : "NYSE"}</strong>
+                      <span><small>발표 세션</small><b className={returnClass(reaction?.eventDayPct)}>{formatReturn(reaction?.eventDayPct ?? null)}</b></span>
+                      <span><small>다음 1D</small><b className={returnClass(reaction?.next1DPct)}>{formatReturn(reaction?.next1DPct ?? null)}</b></span>
+                      <span><small>이후 3D</small><b className={returnClass(reaction?.post3DPct)}>{formatReturn(reaction?.post3DPct ?? null)}</b></span>
+                    </div>; })}
+                  </article>)}
+                </div> : <div className="test-event-empty"><CalendarClock size={18} /><strong>표시 구간에 등록된 주요 경제 발표가 없습니다.</strong></div>}
+              </section>
+
+              {!!activeTest.forecastEvents?.length && <section className="test-forecast-detail">
+                <header><span>PRE-RELEASE SIGNALS</span><h3>뉴스에서 추출한 발표 전 예측</h3></header>
+                <div>{activeTest.forecastEvents.map((event) => <article key={`${event.indicator}-${event.scheduledReleaseDate ?? "unknown"}`}><strong>{event.indicator}</strong><span>{event.scheduledReleaseDate ?? "발표일 미확인"}{event.scheduledTimeET ? ` · ${event.scheduledTimeET} ET` : ""}</span><dl><div><dt>CONSENSUS</dt><dd>{event.consensus ?? "수치 없음"}</dd></div><div><dt>PREVIOUS</dt><dd>{event.previous ?? "확인 불가"}</dd></div><div><dt>DIRECTION</dt><dd>{event.expectationDirection}</dd></div></dl><p>{event.caveat}</p></article>)}</div>
+              </section>}
+
+              <footer className="test-detail-method"><strong>읽는 법</strong><p>{testDetail.methodology} 08:30 ET 발표는 당일 종가 반응을 포함하지만, 14:00 ET 발표는 종가까지의 짧은 반응만 포함하므로 인과 추정이 아니라 이벤트 스크리닝 지표로 사용합니다.</p></footer>
+            </>}
+          </div>
+        </article>
+      </div>}
     </section>
   );
 }
