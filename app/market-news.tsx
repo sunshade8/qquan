@@ -1,6 +1,7 @@
 "use client";
 
 import CalendarClock from "lucide-react/dist/esm/icons/calendar-clock";
+import ChartNoAxesCombined from "lucide-react/dist/esm/icons/chart-no-axes-combined";
 import ExternalLink from "lucide-react/dist/esm/icons/external-link";
 import FlaskConical from "lucide-react/dist/esm/icons/flask-conical";
 import HistoryIcon from "lucide-react/dist/esm/icons/history";
@@ -10,6 +11,7 @@ import Send from "lucide-react/dist/esm/icons/send";
 import Sparkles from "lucide-react/dist/esm/icons/sparkles";
 import X from "lucide-react/dist/esm/icons/x";
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { NewsSimilarity } from "./news-similarity";
 
 type NewsTopic = "macro" | "forecast" | "fed" | "inflation" | "labor" | "markets";
 type NewsArticle = {
@@ -242,7 +244,7 @@ function DailyIndexChart({ index, events, variant }: { index: TestDetailIndex; e
               {event.importance === "high" && <circle className="event-pulse-ring" cx={x(pointIndex)} cy={y(point.close)} r="10" />}
               <line className="event-guide" x1={x(pointIndex)} x2={x(pointIndex)} y1={pad.top} y2={height - pad.bottom} />
               <circle className="event-point" cx={x(pointIndex)} cy={y(point.close)} r={event.importance === "high" ? 5.5 : 4} />
-              <title>{`${event.title} · ${event.date} ${event.timeET} ET · 당일 ${formatReturn(reaction.eventDayPct)}`}</title>
+              <title>{`${event.title} · ${event.date} ${event.timeET} ET · 당일 ${formatReturn(reaction!.eventDayPct)}`}</title>
             </g>
           ))}
           {dateTicks.map((pointIndex) => <text className="chart-date-label" key={pointIndex} x={x(pointIndex)} y={height - 9} textAnchor={pointIndex === 0 ? "start" : pointIndex === points.length - 1 ? "end" : "middle"}>{points[pointIndex].date.slice(5)}</text>)}
@@ -283,12 +285,13 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
   const [testDetail, setTestDetail] = useState<TestDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
+  const [comparison, setComparison] = useState<{ tests: NewsTest[]; excludedDuplicates: number } | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
     fetch("/api/news/research-state", { cache: "no-store", signal: controller.signal })
-      .then((response) => response.json())
-      .then((data: { tests?: NewsTest[]; messages?: NewsAgentMessage[] }) => {
+      .then((response) => response.json() as Promise<{ tests?: NewsTest[]; messages?: NewsAgentMessage[] }>)
+      .then((data) => {
         setTests(Array.isArray(data.tests) ? data.tests : []);
         setAgentMessages(Array.isArray(data.messages) ? data.messages : []);
       })
@@ -326,6 +329,19 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
     setDetailError("");
     setDetailLoading(true);
     setActiveTest(test);
+  }
+
+  function openComparison() {
+    const seen = new Set<string>();
+    const uniqueLatest = [...tests].reverse().filter((test) => {
+      const key = `${test.periodStart}:${test.periodEnd}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).reverse();
+    if (uniqueLatest.length < 2) return;
+    setActiveTest(null);
+    setComparison({ tests: uniqueLatest, excludedDuplicates: tests.length - uniqueLatest.length });
   }
 
   async function persistRecord(kind: "test" | "message", value: NewsTest | NewsAgentMessage) {
@@ -571,7 +587,7 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
         <section className="news-test-panel">
           <header className="research-panel-head">
             <div><span className="test-mark"><FlaskConical size={15} /></span><div><strong>Test</strong><small>Sentiment vs realized index return</small></div></div>
-            <span>{tests.length} runs</span>
+            <div className="test-panel-actions"><span>{tests.length} runs</span><button type="button" onClick={openComparison} disabled={tests.length < 2}><ChartNoAxesCombined size={13} />전체 비교</button></div>
           </header>
           <div className="test-table" role="table" aria-label="뉴스 감성 테스트 기록">
             <div className="test-row test-head" role="row"><span>DATE RANGE</span><span>SENTIMENT</span><span>TECH</span><span>VALUE</span><span>NASDAQ</span><span>NYSE</span></div>
@@ -611,6 +627,13 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
           </form>
         </aside>
       </div>
+
+      {comparison && <NewsSimilarity
+        tests={comparison.tests}
+        excludedDuplicates={comparison.excludedDuplicates}
+        onClose={() => setComparison(null)}
+        onAskAgent={(prompt) => setAgentQuestion(prompt)}
+      />}
 
       {activeTest && <div className="test-detail-backdrop" role="button" tabIndex={-1} aria-label="Test 상세 닫기" onClick={(event) => { if (event.target === event.currentTarget) setActiveTest(null); }} onKeyDown={(event) => { if (event.key === "Escape") setActiveTest(null); }}>
         <article className="test-detail-page" role="dialog" aria-modal="true" aria-labelledby="test-detail-title">
