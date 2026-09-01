@@ -437,8 +437,10 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .test-row:not(.test-head):hover { background: var(--panel-alt); }
 .test-row > span { min-width: 0; display: grid; gap: 3px; }
 .test-row strong, .test-row b { font-size: 10px; }
-.test-row small { color: var(--tertiary); font-size: 7.5px; white-space: nowrap; }
-.test-row em { width: fit-content; padding: 3px 5px; border-radius: 5px; color: #9a5b00; background: rgba(216,135,0,.08); font-size: 6.5px; font-style: normal; font-weight: 700; }
+.test-row small { max-width: 100%; overflow: hidden; color: var(--tertiary); font-size: 7.5px; text-overflow: ellipsis; white-space: nowrap; }
+.test-row em { width: fit-content; max-width: 100%; padding: 3px 5px; overflow: hidden; border-radius: 5px; color: #9a5b00; background: rgba(216,135,0,.08); font-size: 6.5px; font-style: normal; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.benchmark-cell { overflow: hidden; }
+.benchmark-cell b { font-variant-numeric: tabular-nums; }
 .test-head { position: sticky; top: 0; z-index: 1; padding-block: 9px; color: var(--tertiary); background: var(--panel); font-size: 7px; font-weight: 750; letter-spacing: .04em; }
 .news-test-panel > footer { padding: 0 13px; display: flex; align-items: center; border-top: 1px solid var(--line); color: var(--tertiary); font-size: 8px; }
 .research-empty { min-height: 220px; padding: 30px; display: grid; place-content: center; justify-items: center; gap: 8px; color: var(--tertiary); text-align: center; }

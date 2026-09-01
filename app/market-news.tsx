@@ -123,9 +123,18 @@ function benchmarkValue(value: RangeBenchmark): BenchmarkValue | null {
 // A missing index return is a data-supply problem, not a zero. Say which.
 function benchmarkNote(value: RangeBenchmark) {
   const resolved = benchmarkValue(value);
-  if (resolved) return `${resolved.startDate} → ${resolved.endDate}${resolved.origin === "cache-stale" ? " · 캐시" : ""}`;
+  if (resolved) return `${resolved.startDate} → ${resolved.endDate}${resolved.origin === "cache-stale" ? " · 캐시" : resolved.origin === "google-finance" ? " · 백업" : ""}`;
+  return "시세 데이터 대기";
+}
+
+function benchmarkDetail(value: RangeBenchmark) {
   if (value && "unavailable" in value) return value.unavailable;
-  return "지수 데이터를 가져오지 못했습니다.";
+  return benchmarkValue(value) ? "" : "지수 데이터를 가져오지 못했습니다.";
+}
+
+function forecastBadge(event: ForecastEvent, count: number) {
+  const code = event.indicator.match(/\(([A-Z]+)\)/)?.[1] ?? event.indicator.split(/\s+/)[0];
+  return `${code} · ${count} event${count === 1 ? "" : "s"}`;
 }
 
 function returnClass(value: number | null | undefined) {
@@ -425,16 +434,16 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
             <div className="test-row test-head" role="row"><span>DATE RANGE</span><span>SENTIMENT</span><span>TECH</span><span>VALUE</span><span>NASDAQ</span><span>NYSE</span></div>
             {!stateReady && <div className="research-empty"><RefreshCw size={17} className="spin" /><strong>기록을 불러오는 중</strong></div>}
             {stateReady && !tests.length && <div className="research-empty"><FlaskConical size={18} /><strong>아직 Test가 없습니다.</strong><p>Sentiment에서 LLM 분석을 실행하면 같은 날짜 범위의 NASDAQ·NYSE 수익률과 함께 한 행이 자동 생성됩니다.</p></div>}
-            {[...tests].reverse().map((test) => (
+            {[...tests].reverse().map((test) => { const firstForecast = test.forecastEvents?.[0]; return (
               <div className="test-row" role="row" key={test.id}>
-                <span><strong>{test.periodStart}</strong><small>→ {test.periodEnd} · {test.articleCount} news</small>{Boolean(test.forecastEvents?.length) && <em>{test.forecastEvents![0].indicator} forecast · {test.forecastEvents!.length} event</em>}</span>
+                <span><strong>{test.periodStart}</strong><small>→ {test.periodEnd} · {test.articleCount} news</small>{firstForecast ? <em title={firstForecast.indicator}>{forecastBadge(firstForecast, test.forecastEvents?.length ?? 1)}</em> : null}</span>
                 <span><b className={toneClass(test.overallScore)}>{test.overallScore > 0 ? "+" : ""}{test.overallScore}</b><small>{test.overallLabel}</small></span>
                 <span><b className={toneClass(test.techScore)}>{test.techScore > 0 ? "+" : ""}{test.techScore}</b><small>{test.techLabel}</small></span>
                 <span><b className={toneClass(test.valueScore)}>{test.valueScore > 0 ? "+" : ""}{test.valueScore}</b><small>{test.valueLabel}</small></span>
-                <span><b className={returnClass(benchmarkValue(test.nasdaq)?.returnPct)}>{formatReturn(benchmarkValue(test.nasdaq)?.returnPct ?? null)}</b><small>{benchmarkNote(test.nasdaq)}</small></span>
-                <span><b className={returnClass(benchmarkValue(test.nyse)?.returnPct)}>{formatReturn(benchmarkValue(test.nyse)?.returnPct ?? null)}</b><small>{benchmarkNote(test.nyse)}</small></span>
+                <span className="benchmark-cell" title={benchmarkDetail(test.nasdaq)}><b className={returnClass(benchmarkValue(test.nasdaq)?.returnPct)}>{formatReturn(benchmarkValue(test.nasdaq)?.returnPct ?? null)}</b><small>{benchmarkNote(test.nasdaq)}</small></span>
+                <span className="benchmark-cell" title={benchmarkDetail(test.nyse)}><b className={returnClass(benchmarkValue(test.nyse)?.returnPct)}>{formatReturn(benchmarkValue(test.nyse)?.returnPct ?? null)}</b><small>{benchmarkNote(test.nyse)}</small></span>
               </div>
-            ))}
+            ); })}
           </div>
           <footer>지수 수익률은 선택 범위 안 첫 거래일 종가 → 마지막 거래일 종가 · 인과관계가 아닌 사후 비교</footer>
         </section>

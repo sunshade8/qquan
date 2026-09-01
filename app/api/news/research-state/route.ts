@@ -1,7 +1,9 @@
 import { env } from "cloudflare:workers";
-import { asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { newsAgentMessages, newsTests } from "@/db/schema";
+import { loadDailyRows } from "../../../../lib/price-cache";
+import type { PriceRow } from "../../../../lib/market-data";
 
 const COOKIE_NAME = "qquant_research_device";
 let schemaReady: Promise<void> | undefined;
@@ -42,15 +44,65 @@ function parsePayload(value: string) {
   try { return JSON.parse(value) as unknown; } catch { return null; }
 }
 
+function hasReturn(value: unknown) {
+  return Boolean(value && typeof value === "object" && "returnPct" in value && typeof value.returnPct === "number");
+}
+
+function rangeBenchmark(rows: PriceRow[], start: string, end: string, symbol: string, name: string, origin: string) {
+  const inside = rows.filter((row) => row.date >= start && row.date <= end);
+  const first = inside[0];
+  const last = inside.at(-1);
+  if (!first || !last) return null;
+  return {
+    symbol, name, startDate: first.date, endDate: last.date,
+    startClose: first.close, endClose: last.close,
+    returnPct: Number((((last.close / first.close) - 1) * 100).toFixed(3)), origin,
+  };
+}
+
+async function repairMissingBenchmarks(tests: Array<typeof newsTests.$inferSelect>, ownerId: string) {
+  const missing = tests.filter((test) => !hasReturn(parsePayload(test.nasdaqPayload)) || !hasReturn(parsePayload(test.nysePayload)));
+  if (!missing.length) return tests;
+  let from = missing[0].periodStart;
+  let to = missing[0].periodEnd;
+  for (const test of missing) {
+    if (test.periodStart < from) from = test.periodStart;
+    if (test.periodEnd > to) to = test.periodEnd;
+  }
+  const [nasdaqLoad, nyseLoad] = await Promise.all([
+    loadDailyRows("^IXIC", from, to),
+    loadDailyRows("^NYA", from, to),
+  ]);
+  const db = getDb();
+  await Promise.all(missing.map(async (test) => {
+    const existingNasdaq = parsePayload(test.nasdaqPayload);
+    const existingNyse = parsePayload(test.nysePayload);
+    const nasdaq = hasReturn(existingNasdaq) ? existingNasdaq : rangeBenchmark(nasdaqLoad.rows, test.periodStart, test.periodEnd, "^IXIC", "NASDAQ Composite", nasdaqLoad.origin);
+    const nyse = hasReturn(existingNyse) ? existingNyse : rangeBenchmark(nyseLoad.rows, test.periodStart, test.periodEnd, "^NYA", "NYSE Composite", nyseLoad.origin);
+    if (!nasdaq && !nyse) return;
+    test.nasdaqPayload = JSON.stringify(nasdaq ?? existingNasdaq);
+    test.nysePayload = JSON.stringify(nyse ?? existingNyse);
+    await db.update(newsTests).set({ nasdaqPayload: test.nasdaqPayload, nysePayload: test.nysePayload })
+      .where(and(eq(newsTests.ownerId, ownerId), eq(newsTests.id, test.id)));
+  }));
+  return tests;
+}
+
 export async function GET(request: Request) {
   const ownerId = ownerFrom(request);
   try {
     await ensureNewsSchema();
     const db = getDb();
-    const [tests, messages] = await Promise.all([
+    const [storedTests, messages] = await Promise.all([
       db.select().from(newsTests).where(eq(newsTests.ownerId, ownerId)).orderBy(desc(newsTests.createdAt)).limit(100),
       db.select().from(newsAgentMessages).where(eq(newsAgentMessages.ownerId, ownerId)).orderBy(asc(newsAgentMessages.createdAt)).limit(200),
     ]);
+    let tests = storedTests;
+    try {
+      tests = await repairMissingBenchmarks(storedTests, ownerId);
+    } catch (error) {
+      console.error("[news/research-state] benchmark repair failed", { ownerId, error: error instanceof Error ? error.message : String(error) });
+    }
     return Response.json({
       tests: tests.reverse().map((item) => ({
         id: item.id, periodStart: item.periodStart, periodEnd: item.periodEnd, topic: item.topic,

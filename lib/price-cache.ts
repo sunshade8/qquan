@@ -2,11 +2,12 @@ import { env } from "cloudflare:workers";
 import { and, asc, eq, gte, lte } from "drizzle-orm";
 import { getDb } from "@/db";
 import { dailyPrices } from "@/db/schema";
+import { fetchGoogleFinanceWindow } from "./google-finance";
 import { fetchYahooWindow, MarketProviderError, type PriceRow } from "./market-data";
 
 export type PriceLoad = {
   rows: PriceRow[];
-  origin: "upstream" | "cache" | "cache-stale";
+  origin: "yahoo" | "google-finance" | "cache" | "cache-stale";
   reason: string | null;
 };
 
@@ -103,9 +104,21 @@ export async function loadDailyRows(symbol: string, from: string, to: string): P
       // A cache write failure must not fail the request that already has data.
       console.error("[price-cache] write failed", { symbol, rows: fresh.length, error: describeError(error) });
     }
-    return { rows: fresh, origin: "upstream", reason: null };
-  } catch (error) {
-    if (cached.length) return { rows: cached, origin: "cache-stale", reason: describe(error) };
-    return { rows: [], origin: "upstream", reason: describe(error) };
+    return { rows: fresh, origin: "yahoo", reason: null };
+  } catch (yahooError) {
+    try {
+      const fallback = await fetchGoogleFinanceWindow(symbol, from, to);
+      try {
+        await writeCache(symbol, fallback);
+      } catch (error) {
+        console.error("[price-cache] fallback write failed", { symbol, rows: fallback.length, error: describeError(error) });
+      }
+      console.info("[price-cache] google fallback", { symbol, rows: fallback.length, yahoo: describe(yahooError) });
+      return { rows: fallback, origin: "google-finance", reason: describe(yahooError) };
+    } catch (googleError) {
+      if (cached.length) return { rows: cached, origin: "cache-stale", reason: describe(yahooError) };
+      console.error("[price-cache] providers exhausted", { symbol, yahoo: describeError(yahooError), google: describeError(googleError) });
+      return { rows: [], origin: "google-finance", reason: `${describe(yahooError)} Google Finance 백업도 사용할 수 없습니다.` };
+    }
   }
 }
