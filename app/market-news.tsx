@@ -356,7 +356,7 @@ function DailyIndexChart({ index, events, variant }: { index: TestDetailIndex; e
   );
 }
 
-export function MarketNews({ onHistory, onActivityChange }: { onHistory?: (event: NewsHistoryEvent) => void; onActivityChange?: (activity: AgentActivity | null) => void }) {
+export function MarketNews({ conversationId, onConversationChange, onHistory, onActivityChange }: { conversationId: string; onConversationChange?: (id: string) => void; onHistory?: (event: NewsHistoryEvent) => void; onActivityChange?: (activity: AgentActivity | null) => void }) {
   const today = koreaDate();
   const [startDate, setStartDate] = useState(() => shiftDate(today, -2));
   const [endDate, setEndDate] = useState(today);
@@ -398,9 +398,11 @@ export function MarketNews({ onHistory, onActivityChange }: { onHistory?: (event
 
   useEffect(() => {
     const controller = new AbortController();
-    fetch("/api/news/research-state", { cache: "no-store", signal: controller.signal })
+    queueMicrotask(() => { if (!controller.signal.aborted) { setStateReady(false); setLastPlan(null); setLastSpecialists([]); } });
+    fetch(`/api/news/research-state?conversation=${encodeURIComponent(conversationId)}`, { cache: "no-store", signal: controller.signal })
       .then((response) => response.json() as Promise<{ tests?: NewsTest[]; messages?: NewsAgentMessage[]; runs?: ResearchRun[] }>)
       .then((data) => {
+        if (controller.signal.aborted) return;
         setTests(Array.isArray(data.tests) ? data.tests : []);
         setAgentMessages(Array.isArray(data.messages) ? data.messages : []);
         setResearchRuns(Array.isArray(data.runs) ? data.runs : []);
@@ -408,7 +410,7 @@ export function MarketNews({ onHistory, onActivityChange }: { onHistory?: (event
       .catch(() => undefined)
       .finally(() => { if (!controller.signal.aborted) setStateReady(true); });
     return () => controller.abort();
-  }, []);
+  }, [conversationId]);
 
   useEffect(() => {
     if (!activeTest) return;
@@ -459,7 +461,7 @@ export function MarketNews({ onHistory, onActivityChange }: { onHistory?: (event
       const response = await fetch("/api/news/research-state", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ kind, [kind]: value }),
+        body: JSON.stringify({ kind, [kind]: value, conversationId }),
       });
       return response.ok;
     } catch {
@@ -908,7 +910,7 @@ export function MarketNews({ onHistory, onActivityChange }: { onHistory?: (event
         <aside className="news-agent-panel">
           <header className="research-panel-head">
             <div><span className="agent-mark"><Sparkles size={15} /></span><div><strong>News JARVIS</strong><small>planner · analyst · auditor · strategist · synthesizer</small></div></div>
-            <span><HistoryIcon size={12} /> {agentMessages.length}</span>
+            <span className="news-agent-head-actions"><HistoryIcon size={12} /> {agentMessages.length}{agentMessages.length > 0 && !agentThinking && <button type="button" onClick={() => onConversationChange?.(crypto.randomUUID())} title="새 대화 (현재 대화는 History에 보관)">새 대화</button>}</span>
           </header>
           <div className="news-agent-context"><span>{retrieved ? `${retrieved.start} → ${retrieved.end}` : "no range"}</span><span>{selected.size} news</span><span>{tests.length} tests</span></div>
           {lastPlan && <div className="agent-plan" aria-label="해석된 실행 계획">

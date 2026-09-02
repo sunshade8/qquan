@@ -1,4 +1,4 @@
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { ensureSchema } from "@/db/ensure";
 import { labMessages } from "@/db/schema";
@@ -15,10 +15,13 @@ function parseArray(value: string) {
 
 export async function GET(request: Request) {
   const ownerId = researchOwnerFrom(request);
+  const conversation = new URL(request.url).searchParams.get("conversation");
+  if (!conversation) return Response.json({ messages: [] }, { headers: { "set-cookie": researchOwnerCookie(ownerId) } });
   try {
     await ensureSchema();
-    const rows = await getDb().select().from(labMessages).where(eq(labMessages.ownerId, ownerId)).orderBy(asc(labMessages.createdAt)).limit(200);
+    const rows = await getDb().select().from(labMessages).where(and(eq(labMessages.ownerId, ownerId), eq(labMessages.conversationId, conversation))).orderBy(asc(labMessages.createdAt)).limit(200);
     return Response.json({
+      conversationId: conversation,
       messages: rows.map((row) => ({
         id: row.id, role: row.role, content: row.content,
         tools: parseArray(row.toolsPayload), artifacts: parseArray(row.artifactsPayload), createdAt: row.createdAt,
@@ -38,6 +41,7 @@ export async function POST(request: Request) {
   const row = {
     id: typeof message?.id === "string" ? message.id : crypto.randomUUID(),
     ownerId,
+    conversationId: typeof payload.conversationId === "string" ? payload.conversationId : null,
     role: message?.role === "agent" ? "agent" : "user",
     content,
     toolsPayload: JSON.stringify(Array.isArray(message?.tools) ? message.tools : []),

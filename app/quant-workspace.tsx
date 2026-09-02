@@ -2,7 +2,6 @@
 
 import CalendarDays from "lucide-react/dist/esm/icons/calendar-days";
 import ChartCandlestick from "lucide-react/dist/esm/icons/chart-candlestick";
-import Check from "lucide-react/dist/esm/icons/check";
 import ChevronDown from "lucide-react/dist/esm/icons/chevron-down";
 import Database from "lucide-react/dist/esm/icons/database";
 import FileUp from "lucide-react/dist/esm/icons/file-up";
@@ -20,7 +19,8 @@ import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
 import { TradingViewChart } from "./tradingview-chart";
 import { MarketCalendar } from "./market-calendar";
 import { MarketNews } from "./market-news";
-import { LabWorkspace } from "./lab-workspace";
+import { LabWorkspace, newConversationId } from "./lab-workspace";
+import { BacktestWorkspace } from "./backtest-workspace";
 import type { AgentActivity } from "@/lib/lab-types";
 
 type View = "market" | "backtest" | "calendar" | "news" | "lab" | "settings";
@@ -71,6 +71,7 @@ type StudyResult = {
 
 type ChatMessage = { id: string; role: "user" | "agent"; text: string; symbol: string; createdAt: string };
 type WorkspaceHistoryItem = { id: string; kind: "chat" | "news"; title: string; detail: string; context: string; createdAt: string };
+type ConversationSummary = { id: string; kind: "lab" | "news"; title: string; preview: string; messageCount: number; createdAt: string; updatedAt: string };
 type MarketSession = { code: "pre" | "regular" | "after" | "closed"; label: string; time: string; zone: string; schedule: string };
 type LlmUsageReport = {
   totals: { calls: number; inputTokens: number; outputTokens: number; cacheCreationInputTokens: number; cacheReadInputTokens: number; costUsd: number; trackingSince: string | null };
@@ -346,6 +347,45 @@ export function QuantWorkspace() {
   const [llmUsageError, setLlmUsageError] = useState("");
   const [newsActivity, setNewsActivity] = useState<AgentActivity | null>(null);
   const [labActivity, setLabActivity] = useState<AgentActivity | null>(null);
+  // Each page load starts fresh conversations; earlier threads live in History.
+  const [labConversation, setLabConversation] = useState(() => newConversationId());
+  const [newsConversation, setNewsConversation] = useState(() => newConversationId());
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [focusStrategyId, setFocusStrategyId] = useState<string | null>(null);
+  const [labPrompt, setLabPrompt] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!historyOpen) return;
+    const controller = new AbortController();
+    fetch("/api/conversations", { cache: "no-store", signal: controller.signal })
+      .then((response) => response.json() as Promise<{ conversations?: ConversationSummary[] }>)
+      .then((data) => { if (!controller.signal.aborted) setConversations(Array.isArray(data.conversations) ? data.conversations : []); })
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [historyOpen, labConversation, newsConversation]);
+
+  function openConversation(item: ConversationSummary) {
+    if (item.kind === "lab") { setLabConversation(item.id); setView("lab"); }
+    else { setNewsConversation(item.id); setView("news"); }
+    setHistoryOpen(false);
+  }
+
+  const [confirmConversationDelete, setConfirmConversationDelete] = useState<string | null>(null);
+
+  async function deleteConversation(id: string) {
+    // Two clicks within four seconds: the drawer has no undo.
+    if (confirmConversationDelete !== id) { setConfirmConversationDelete(id); window.setTimeout(() => setConfirmConversationDelete((current) => current === id ? null : current), 4000); return; }
+    setConfirmConversationDelete(null);
+    try { await fetch(`/api/conversations?id=${encodeURIComponent(id)}`, { method: "DELETE" }); } catch { /* ignore */ }
+    setConversations((current) => current.filter((item) => item.id !== id));
+    if (id === labConversation) setLabConversation(newConversationId());
+    if (id === newsConversation) setNewsConversation(newConversationId());
+  }
+
+  function askLab(prompt: string) {
+    setLabPrompt(prompt);
+    setView("lab");
+  }
 
   useEffect(() => {
     let savedMessages: ChatMessage[] = [];
@@ -606,10 +646,19 @@ export function QuantWorkspace() {
           <aside className="history-drawer" aria-label="Agent history">
             <header><div><span className="agent-mark"><HistoryIcon size={15} /></span><div><strong>Agent History</strong><small>이 브라우저에 자동 저장</small></div></div><button aria-label="Close history" onClick={() => setHistoryOpen(false)}><X size={15} /></button></header>
             <div className="history-list">
-              {!history.length && <div className="history-empty"><HistoryIcon size={20} /><strong>아직 기록이 없습니다.</strong><p>질문, Agent 응답, 뉴스 수집과 분석 내역이 여기에 남습니다.</p></div>}
+              <div className="history-section"><span>대화 세션</span><small>클릭하면 그 대화로 돌아갑니다</small></div>
+              {!conversations.length && <div className="history-empty compact"><strong>저장된 대화가 없습니다.</strong><p>Lab·News JARVIS와 나눈 대화는 세션이 끝나도 여기에 남습니다.</p></div>}
+              {conversations.map((item) => <article key={item.id} className={`conversation ${item.kind} ${item.id === labConversation || item.id === newsConversation ? "current" : ""}`}>
+                <button type="button" onClick={() => openConversation(item)}>
+                  <div><span>{item.kind === "lab" ? "Lab JARVIS" : "News JARVIS"}{item.id === labConversation || item.id === newsConversation ? " · 현재" : ""}</span><time>{new Intl.DateTimeFormat("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(item.updatedAt))}</time></div>
+                  <strong>{item.title}</strong><p>{item.preview}</p><small>{item.messageCount}개 메시지</small>
+                </button>
+                <button type="button" className={`conversation-delete ${confirmConversationDelete === item.id ? "confirm" : ""}`} aria-label={confirmConversationDelete === item.id ? "한 번 더 누르면 삭제" : "대화 삭제"} title={confirmConversationDelete === item.id ? "한 번 더 누르면 삭제" : "대화 삭제"} onClick={() => deleteConversation(item.id)}>{confirmConversationDelete === item.id ? <X size={12} /> : <Trash2 size={12} />}</button>
+              </article>)}
+              {history.length > 0 && <div className="history-section"><span>Market Agent · 이 브라우저</span></div>}
               {[...history].reverse().map((item) => <article key={item.id} className={item.kind}><div><span>{item.title}</span><time>{new Intl.DateTimeFormat("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(item.createdAt))}</time></div><strong>{item.context}</strong><p>{item.detail}</p></article>)}
             </div>
-            {history.length > 0 && <footer><span>{history.length}개 기록</span><button onClick={() => { setHistory([]); setMessages([]); }}>기록 지우기</button></footer>}
+            {history.length > 0 && <footer><span>{history.length}개 로컬 기록</span><button onClick={() => { setHistory([]); setMessages([]); }}>로컬 기록 지우기</button></footer>}
           </aside>
         )}
 
@@ -675,7 +724,7 @@ export function QuantWorkspace() {
                 {dataTab === "hypothesis" && (
                   <div className="hypothesis-editor">
                     <label>Working hypothesis<textarea value={hypothesis} onChange={(event) => setHypothesis(event.target.value)} placeholder="관찰 → 예상 메커니즘 → 진입/청산 규칙 → 반증 조건" /></label>
-                    <div><span>{hypothesis.length ? "Draft · not backtested" : "No hypothesis"}</span><button className="run-button" disabled={!hypothesis.trim() || !rows.length} onClick={() => setView("backtest")}><FlaskConical size={13} />Prepare backtest</button></div>
+                    <div><span>{hypothesis.length ? "Draft · JARVIS가 탑다운 전략으로 구조화" : "No hypothesis"}</span><button className="run-button" disabled={!hypothesis.trim()} onClick={() => askLab(`다음 가설을 탑다운(논제→메커니즘→예측→반증)으로 구조화해서 ${symbol.split(":").at(-1)} 대상 백테스트 전략을 제안해줘:\n${hypothesis.trim()}`)}><FlaskConical size={13} />JARVIS로 전략화</button></div>
                   </div>
                 )}
               </article>
@@ -701,24 +750,16 @@ export function QuantWorkspace() {
           </div>
         )}
 
-        {view === "backtest" && (
-          <section className="simple-view">
-            <header><div><span>Backtest</span><h1>검증할 규칙을 확정합니다.</h1></div><span className="engine-state"><Check size={13} />No LLM</span></header>
-            <div className="backtest-grid">
-              <article><small>Hypothesis</small><textarea value={hypothesis} onChange={(event) => setHypothesis(event.target.value)} placeholder="Market 화면에서 가설을 작성하세요." /><div className="config-row"><label>Capital<input type="number" defaultValue="100000" /></label><label>Cost (bps)<input type="number" defaultValue="8" /></label><label>Benchmark<select defaultValue="SPY"><option>SPY</option></select></label></div><button className="run-button large" disabled>Data engine not connected</button></article>
-              <aside><strong>아직 실행하지 않습니다.</strong><p>현재는 합성 수익률을 만들지 않습니다. 실제 S&amp;P 500 데이터 공급자와 포인트인타임 유니버스가 연결된 뒤, 확정된 규칙만 백테스트 엔진에 전달합니다.</p></aside>
-            </div>
-          </section>
-        )}
+        {view === "backtest" && <BacktestWorkspace focusStrategyId={focusStrategyId} onAskLab={askLab} />}
 
         {view === "calendar" && <MarketCalendar />}
 
         <div className={`persistent-view ${view === "news" ? "active" : "inactive"}`} aria-hidden={view !== "news"}>
-          <MarketNews onHistory={(event) => recordHistory("news", event.title, event.detail, "Google News")} onActivityChange={setNewsActivity} />
+          <MarketNews conversationId={newsConversation} onConversationChange={setNewsConversation} onHistory={(event) => recordHistory("news", event.title, event.detail, "Google News")} onActivityChange={setNewsActivity} />
         </div>
 
         <div className={`persistent-view ${view === "lab" ? "active" : "inactive"}`} aria-hidden={view !== "lab"}>
-          <LabWorkspace onActivityChange={setLabActivity} />
+          <LabWorkspace conversationId={labConversation} onConversationChange={setLabConversation} onActivityChange={setLabActivity} onOpenBacktest={(strategyId) => { setFocusStrategyId(strategyId); setView("backtest"); }} pendingPrompt={labPrompt} onPromptConsumed={() => setLabPrompt(null)} />
         </div>
 
         {view === "settings" && (

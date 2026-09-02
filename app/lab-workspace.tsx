@@ -8,9 +8,10 @@ import Send from "lucide-react/dist/esm/icons/send";
 import Sparkles from "lucide-react/dist/esm/icons/sparkles";
 import Trash2 from "lucide-react/dist/esm/icons/trash-2";
 import X from "lucide-react/dist/esm/icons/x";
+import MessageSquarePlus from "lucide-react/dist/esm/icons/message-square-plus";
 import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentActivity, LabArtifact, LabMessage, LabStreamEvent, LabToolTrace } from "@/lib/lab-types";
-import { ArtifactView, artifactKindLabel } from "./lab-charts";
+import { ArtifactView, artifactKindLabel, type StrategyAction } from "./lab-charts";
 import { Markdown } from "./markdown";
 
 type LiveTurn = { text: string; tools: LabToolTrace[]; status: string };
@@ -33,7 +34,18 @@ function ToolTraces({ tools }: { tools: LabToolTrace[] }) {
   return <div className="lab-tool-traces">{tools.map((trace, index) => <span className={trace.status} key={trace.id ?? `${trace.name}-${index}`}><i />{trace.label}<small>{trace.detail}{trace.durationMs ? ` · ${(trace.durationMs / 1000).toFixed(1)}s` : ""}</small></span>)}</div>;
 }
 
-export function LabWorkspace({ onActivityChange }: { onActivityChange?: (activity: AgentActivity | null) => void }) {
+export function newConversationId() {
+  return crypto.randomUUID();
+}
+
+export function LabWorkspace({ conversationId, onConversationChange, onActivityChange, onOpenBacktest, pendingPrompt, onPromptConsumed }: {
+  conversationId: string;
+  onConversationChange?: (id: string) => void;
+  onActivityChange?: (activity: AgentActivity | null) => void;
+  onOpenBacktest?: (strategyId: string | null) => void;
+  pendingPrompt?: string | null;
+  onPromptConsumed?: () => void;
+}) {
   const [messages, setMessages] = useState<LabMessage[]>([]);
   const [question, setQuestion] = useState("");
   const [running, setRunning] = useState(false);
@@ -49,15 +61,21 @@ export function LabWorkspace({ onActivityChange }: { onActivityChange?: (activit
   const allArtifacts = useMemo(() => [...artifacts, ...pendingArtifacts], [artifacts, pendingArtifacts]);
   const activeArtifact = allArtifacts.find((artifact) => artifact.id === activeArtifactId) ?? allArtifacts.at(-1) ?? null;
 
+  // A new conversation id means a fresh chat; an id chosen from History reloads that thread.
   useEffect(() => {
     const controller = new AbortController();
-    fetch("/api/lab/state", { cache: "no-store", signal: controller.signal })
+    queueMicrotask(() => { if (!controller.signal.aborted) { setReady(false); setActiveArtifactId(null); setError(""); } });
+    fetch(`/api/lab/state?conversation=${encodeURIComponent(conversationId)}`, { cache: "no-store", signal: controller.signal })
       .then((response) => response.json() as Promise<{ messages?: LabMessage[] }>)
-      .then((data) => setMessages(Array.isArray(data.messages) ? data.messages : []))
-      .catch(() => undefined)
+      .then((data) => { if (!controller.signal.aborted) setMessages(Array.isArray(data.messages) ? data.messages : []); })
+      .catch(() => { if (!controller.signal.aborted) setMessages([]); })
       .finally(() => { if (!controller.signal.aborted) setReady(true); });
     return () => controller.abort();
-  }, []);
+  }, [conversationId]);
+
+  useEffect(() => {
+    if (pendingPrompt && !running && ready) queueMicrotask(() => { setQuestion(pendingPrompt); onPromptConsumed?.(); });
+  }, [pendingPrompt, running, ready, onPromptConsumed]);
 
   useEffect(() => {
     onActivityChange?.(running ? { label: "Lab JARVIS", detail: live?.status || "도구를 선택하고 결과를 계산 중", progress: live?.tools.length ? `${live.tools.filter((tool) => tool.status !== "running").length}/${live.tools.length}` : "RUNNING" } : null);
@@ -78,6 +96,7 @@ export function LabWorkspace({ onActivityChange }: { onActivityChange?: (activit
     else if (event.type === "done") {
       setMessages((current) => [...current, event.message].slice(-200));
       if (event.message.artifacts.length) setActiveArtifactId(event.message.artifacts.at(-1)!.id);
+      if (event.conversationId && event.conversationId !== conversationId) onConversationChange?.(event.conversationId);
     }
   }
 
@@ -94,7 +113,7 @@ export function LabWorkspace({ onActivityChange }: { onActivityChange?: (activit
     try {
       const response = await fetch("/api/lab/agent", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ question: prompt, history: messages.slice(-12).map(({ role, content }) => ({ role, content })) }),
+        body: JSON.stringify({ question: prompt, conversationId, history: messages.slice(-12).map(({ role, content }) => ({ role, content })) }),
       });
       if (!response.body) throw new Error("서버가 스트림을 반환하지 않았습니다.");
       if (!response.headers.get("content-type")?.includes("text/event-stream")) {
@@ -148,9 +167,28 @@ export function LabWorkspace({ onActivityChange }: { onActivityChange?: (activit
   async function clearHistory() {
     if (!confirmClear) { setConfirmClear(true); window.setTimeout(() => setConfirmClear(false), 4000); return; }
     setConfirmClear(false);
-    try { await fetch("/api/lab/state", { method: "DELETE" }); } catch { /* local state clears regardless */ }
+    try { await fetch(`/api/conversations?id=${encodeURIComponent(conversationId)}`, { method: "DELETE" }); } catch { /* local state clears regardless */ }
     setMessages([]);
     setActiveArtifactId(null);
+    onConversationChange?.(newConversationId());
+  }
+
+  async function handleStrategyAction(action: StrategyAction) {
+    if (action.type === "open") { onOpenBacktest?.(action.strategyId); return; }
+    setError("");
+    try {
+      const response = await fetch("/api/strategies", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ spec: action.spec, sourceConversationId: conversationId }) });
+      const data = await response.json() as { strategy?: { id: string }; error?: string };
+      if (!response.ok || !data.strategy) throw new Error(data.error || "전략 저장에 실패했습니다.");
+      if (action.runNow) {
+        const run = await fetch("/api/strategies/backtest", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: data.strategy.id }) });
+        const runData = await run.json() as { error?: string };
+        if (!run.ok) throw new Error(runData.error || "백테스트에 실패했습니다.");
+      }
+      onOpenBacktest?.(data.strategy.id);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "전략 저장에 실패했습니다.");
+    }
   }
 
   return <section className="lab-view">
@@ -165,7 +203,8 @@ export function LabWorkspace({ onActivityChange }: { onActivityChange?: (activit
           <div><strong>Lab JARVIS</strong><small>quant PM · 14 tools · persistent memory</small></div>
           <div className="lab-agent-actions">
             <em className={running ? "running" : "ready"}>{running ? "RUNNING" : "READY"}</em>
-            {messages.length > 0 && !running && <button className={confirmClear ? "danger" : ""} onClick={clearHistory} aria-label="대화 기록 지우기" title={confirmClear ? "한 번 더 누르면 삭제" : "대화 기록 지우기"}>{confirmClear ? <X size={13} /> : <Trash2 size={13} />}</button>}
+            {messages.length > 0 && !running && <button onClick={() => onConversationChange?.(newConversationId())} aria-label="새 대화" title="새 대화 (현재 대화는 History에 보관)"><MessageSquarePlus size={13} /></button>}
+            {messages.length > 0 && !running && <button className={confirmClear ? "danger" : ""} onClick={clearHistory} aria-label="이 대화 삭제" title={confirmClear ? "한 번 더 누르면 삭제" : "이 대화 삭제"}>{confirmClear ? <X size={13} /> : <Trash2 size={13} />}</button>}
           </div>
         </header>
         {!messages.length && <div className="lab-quick-prompts">{QUICK_PROMPTS.map((prompt) => <button key={prompt} disabled={running} onClick={() => void askAgent(prompt)}>{prompt}</button>)}</div>}
@@ -191,7 +230,7 @@ export function LabWorkspace({ onActivityChange }: { onActivityChange?: (activit
       <section className="lab-canvas">
         <header><div><span>RESEARCH CANVAS</span><strong>{activeArtifact ? activeArtifact.title : "아직 생성된 결과가 없습니다"}</strong></div><span>{allArtifacts.length} artifacts</span></header>
         {allArtifacts.length > 1 && <div className="lab-artifact-tabs">{[...allArtifacts].reverse().map((artifact) => <button className={activeArtifact?.id === artifact.id ? "active" : ""} onClick={() => setActiveArtifactId(artifact.id)} key={artifact.id}>{artifactKindLabel(artifact)} · {artifact.title}</button>)}</div>}
-        <div className="lab-canvas-body">{activeArtifact ? <ArtifactView artifact={activeArtifact} /> : <div className="lab-canvas-empty"><ChartNoAxesCombined size={28} /><strong>분석 결과가 이곳에 쌓입니다.</strong><p>차트·표·백테스트 자본곡선은 시각적으로, 상관계수·수익률·날짜·표본 수는 대화에서 다시 쓸 수 있는 숫자로 함께 저장됩니다.</p></div>}</div>
+        <div className="lab-canvas-body">{activeArtifact ? <ArtifactView artifact={activeArtifact} onAction={handleStrategyAction} /> : <div className="lab-canvas-empty"><ChartNoAxesCombined size={28} /><strong>분석 결과가 이곳에 쌓입니다.</strong><p>차트·표·백테스트 자본곡선은 시각적으로, 상관계수·수익률·날짜·표본 수는 대화에서 다시 쓸 수 있는 숫자로 함께 저장됩니다.</p></div>}</div>
       </section>
     </div>
   </section>;

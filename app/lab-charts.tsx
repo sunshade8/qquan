@@ -127,8 +127,64 @@ function ArtifactFrame({ eyebrow, title, subtitle, notes, children, tone }: { ey
   </article>;
 }
 
-export function ArtifactView({ artifact }: { artifact: LabArtifact }) {
+export type StrategyAction = { type: "save"; spec: Record<string, unknown>; runNow: boolean } | { type: "open"; strategyId: string | null };
+
+function VerdictBadge({ status }: { status: "pass" | "fail" | "inconclusive" }) {
+  const labels = { pass: "통과 · 시그널 후보", fail: "기각", inconclusive: "판단 유보" };
+  return <em className={`verdict ${status}`}>{labels[status]}</em>;
+}
+
+export function StrategyBacktestView({ artifact, onAction }: { artifact: Extract<LabArtifact, { type: "strategy-backtest" }>; onAction?: (action: StrategyAction) => void }) {
+  const dates = artifact.equityCurve.map((point) => point.date);
+  const hasMarket = artifact.equityCurve.some((point) => point.market !== null);
+  return <ArtifactFrame eyebrow="STRATEGY BACKTEST" title={artifact.title} subtitle={`${artifact.period.from} → ${artifact.period.to} · ${artifact.period.sessions} 거래일`} notes={artifact.notes}>
+    <div className="lab-verdict"><VerdictBadge status={artifact.verdict.status} /><ul>{artifact.verdict.reasons.map((reason) => <li key={reason} className={reason.startsWith("✓") ? "ok" : "bad"}>{reason}</li>)}</ul>{onAction && <button className="run-button" onClick={() => onAction({ type: "open", strategyId: artifact.strategyId })}>Backtest 화면에서 열기</button>}</div>
+    <LineChart dates={dates} ariaLabel="전략 vs 벤치마크 자본곡선" series={[{ name: "전략", values: artifact.equityCurve.map((point) => point.strategy), color: "#087aff" }, { name: "동일가중 매수보유", values: artifact.equityCurve.map((point) => point.benchmark), color: "#9b9ba1", dashed: true }, ...(hasMarket ? [{ name: "시장 벤치마크", values: artifact.equityCurve.map((point) => point.market), color: "#d88700", dashed: true }] : [])]} references={[{ value: 100, label: "시작 100" }]} height={300} />
+    <StatGrid items={Object.entries(artifact.metrics).map(([label, value]) => /샤프|소르티노|거래|손익비/.test(label) ? { label, value: value === null ? "—" : String(value), tone: "neutral" as const } : /승률|노출/.test(label) ? { label, value: typeof value === "number" ? `${value.toFixed(1)}%` : "—", tone: "neutral" as const } : percentStat(label, value))} />
+    <div className="lab-robustness">
+      <span><small>인샘플 {artifact.robustness.inSample.from} → {artifact.robustness.inSample.to}</small><b>CAGR {formatPercent(artifact.robustness.inSample.cagrPct)} · 샤프 {artifact.robustness.inSample.sharpe ?? "—"}</b></span>
+      <span><small>아웃오브샘플 {artifact.robustness.outOfSample.from} → {artifact.robustness.outOfSample.to}</small><b className={toneOf(artifact.robustness.outOfSample.cagrPct)}>CAGR {formatPercent(artifact.robustness.outOfSample.cagrPct)} · 샤프 {artifact.robustness.outOfSample.sharpe ?? "—"}</b></span>
+      <span><small>파라미터 교란 안정성</small><b>{artifact.robustness.stabilityScore === null ? "—" : `${artifact.robustness.stabilityScore}%`}</b></span>
+    </div>
+    {artifact.perSymbol.length > 0 && <div className="lab-table-wrap"><table className="lab-table"><thead><tr><th>종목</th><th>전략</th><th>매수보유</th><th>샤프</th><th>MDD</th><th>거래</th><th>승률</th><th>현재 신호</th></tr></thead><tbody>{artifact.perSymbol.map((row) => <tr key={row.symbol}><td>{row.symbol}</td><td className={toneOf(row.totalReturnPct)}>{formatPercent(row.totalReturnPct)}</td><td className={toneOf(row.benchmarkReturnPct)}>{formatPercent(row.benchmarkReturnPct)}</td><td>{row.sharpe ?? "—"}</td><td className={toneOf(row.maxDrawdownPct)}>{formatPercent(row.maxDrawdownPct)}</td><td>{row.trades}</td><td>{row.winRatePct === null ? "—" : `${row.winRatePct}%`}</td><td>{row.currentSignal === "long" ? "LONG" : "FLAT"}</td></tr>)}</tbody></table></div>}
+  </ArtifactFrame>;
+}
+
+export function StrategyProposalView({ artifact, onAction }: { artifact: Extract<LabArtifact, { type: "strategy-proposal" }>; onAction?: (action: StrategyAction) => void }) {
+  const spec = artifact.spec as { hypothesis?: { thesis?: string; mechanism?: string; prediction?: string; falsification?: string }; period?: { from?: string; to?: string }; successCriteria?: Record<string, number>; benchmark?: string };
+  const criteria = Object.entries(spec.successCriteria ?? {}).map(([key, value]) => `${({ minSharpe: "샤프 ≥", minExcessCagrPct: "초과 CAGR ≥", maxDrawdownPct: "MDD 한도", minTrades: "거래 ≥", minWinRatePct: "승률 ≥" } as Record<string, string>)[key] ?? key} ${value}`).join(" · ");
+  return <ArtifactFrame eyebrow={artifact.strategyId ? "STRATEGY · SAVED" : "STRATEGY PROPOSAL"} title={artifact.title} subtitle={`${spec.period?.from ?? ""} → ${spec.period?.to ?? ""} · 벤치마크 ${spec.benchmark ?? "SPY"}${artifact.status ? ` · ${artifact.status}` : ""}`} notes={artifact.notes}>
+    <ol className="lab-hypothesis">
+      <li><small>1 · 논제 (thesis)</small><p>{spec.hypothesis?.thesis}</p></li>
+      <li><small>2 · 메커니즘</small><p>{spec.hypothesis?.mechanism}</p></li>
+      <li><small>3 · 예측</small><p>{spec.hypothesis?.prediction}</p></li>
+      <li><small>4 · 반증 조건</small><p>{spec.hypothesis?.falsification}</p></li>
+    </ol>
+    <div className="lab-rule-grid">
+      <span><small>유니버스</small><b>{artifact.summary.universe}</b></span>
+      <span><small>진입</small><b>{artifact.summary.entry}</b></span>
+      <span><small>청산</small><b>{artifact.summary.exit}</b></span>
+      <span><small>보유·리스크</small><b>{artifact.summary.holding}</b></span>
+      <span><small>비용</small><b>{artifact.summary.cost}</b></span>
+      <span><small>통과 기준</small><b>{criteria || "기본 (샤프 0.5 · 초과 CAGR 0 · 거래 10 · OOS > 0)"}</b></span>
+    </div>
+    {onAction && <div className="lab-artifact-actions">
+      {artifact.strategyId ? <button className="run-button" onClick={() => onAction({ type: "open", strategyId: artifact.strategyId })}>Backtest 화면에서 열기</button> : <>
+        <button className="run-button" onClick={() => onAction({ type: "save", spec: artifact.spec, runNow: true })}>저장하고 백테스트</button>
+        <button onClick={() => onAction({ type: "save", spec: artifact.spec, runNow: false })}>Backtest에 저장만</button>
+      </>}
+    </div>}
+  </ArtifactFrame>;
+}
+
+export function ArtifactView({ artifact, onAction }: { artifact: LabArtifact; onAction?: (action: StrategyAction) => void }) {
   switch (artifact.type) {
+    case "strategy-proposal": return <StrategyProposalView artifact={artifact} onAction={onAction} />;
+    case "strategy-backtest": return <StrategyBacktestView artifact={artifact} onAction={onAction} />;
+    case "web-search":
+      return <ArtifactFrame eyebrow="WEB SEARCH" title={artifact.title} subtitle={artifact.query} notes={artifact.notes}>
+        <div className="drawdown-headlines">{artifact.results.map((item) => <a href={item.url} target="_blank" rel="noreferrer" key={item.url}><span>{new URL(item.url).hostname}{item.snippet ? ` · ${item.snippet}` : ""}</span><strong>{item.title}</strong><ExternalLink size={12} /></a>)}</div>
+      </ArtifactFrame>;
     case "price-chart": {
       const dates = artifact.bars.map((bar) => bar.date);
       return <ArtifactFrame eyebrow="PRICE HISTORY" title={artifact.title} subtitle={`${artifact.period.from} → ${artifact.period.to} · ${artifact.period.sessions} 거래일`} notes={artifact.notes}>
@@ -198,6 +254,6 @@ export function ArtifactView({ artifact }: { artifact: LabArtifact }) {
 }
 
 export function artifactKindLabel(artifact: LabArtifact) {
-  const labels: Record<LabArtifact["type"], string> = { "price-chart": "가격", "price-comparison": "비교", "indicator-panel": "지표", "event-study": "이벤트", backtest: "백테스트", seasonality: "계절성", table: "표", "drawdown-news": "급등락", "news-list": "뉴스", calendar: "일정", tradingview: "차트", limitation: "제한" };
+  const labels: Record<LabArtifact["type"], string> = { "price-chart": "가격", "price-comparison": "비교", "indicator-panel": "지표", "event-study": "이벤트", backtest: "백테스트", seasonality: "계절성", table: "표", "drawdown-news": "급등락", "news-list": "뉴스", calendar: "일정", tradingview: "차트", "strategy-proposal": "전략", "strategy-backtest": "백테스트", "web-search": "웹", limitation: "제한" };
   return labels[artifact.type];
 }

@@ -87,6 +87,7 @@ export const newsTests = sqliteTable("news_tests", {
 export const newsAgentMessages = sqliteTable("news_agent_messages", {
   id: text("id").primaryKey(),
   ownerId: text("owner_id").notNull(),
+  conversationId: text("conversation_id"),
   role: text("role").notNull(),
   content: text("content").notNull(),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
@@ -130,6 +131,7 @@ export const llmUsage = sqliteTable("llm_usage", {
 export const labMessages = sqliteTable("lab_messages", {
   id: text("id").primaryKey(),
   ownerId: text("owner_id").notNull(),
+  conversationId: text("conversation_id"),
   role: text("role").notNull(),
   content: text("content").notNull(),
   toolsPayload: text("tools_payload").notNull().default("[]"),
@@ -138,3 +140,36 @@ export const labMessages = sqliteTable("lab_messages", {
 }, (table) => [
   index("idx_lab_messages_owner_created").on(table.ownerId, table.createdAt),
 ]);
+
+export const conversations = sqliteTable("conversations", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull(),
+  kind: text("kind").notNull(),
+  title: text("title").notNull(),
+  preview: text("preview").notNull().default(""),
+  messageCount: integer("message_count").notNull().default(0),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => [index("idx_conversations_owner_updated").on(table.ownerId, table.updatedAt)]);
+
+export const strategies = sqliteTable("strategies", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull(),
+  name: text("name").notNull(),
+  status: text("status").notNull().default("draft"),
+  specPayload: text("spec_payload").notNull(),
+  latestResultPayload: text("latest_result_payload").notNull().default("null"),
+  sourceConversationId: text("source_conversation_id"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => [index("idx_strategies_owner_updated").on(table.ownerId, table.updatedAt)]);
+
+export const strategyRuns = sqliteTable("strategy_runs", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull(),
+  strategyId: text("strategy_id").notNull(),
+  specPayload: text("spec_payload").notNull(),
+  resultPayload: text("result_payload").notNull(),
+  verdict: text("verdict").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => [index("idx_strategy_runs_strategy_created").on(table.strategyId, table.createdAt)]);

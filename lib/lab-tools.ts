@@ -14,8 +14,10 @@ import {
   type EventFeature, type EventOperator, type StrategyId, EVENT_FEATURE_LABELS,
 } from "@/lib/quant";
 import { resolveSymbol, resolveSymbols, type ResolvedSymbol } from "@/lib/symbols";
+import { describeSpec, normalizeSpec, presetConditions, type BacktestResult } from "@/lib/strategy";
+import { backtestSpec, getStrategy, listStrategies, runAndRecord, saveStrategy, STRATEGY_STATUS_LABELS } from "@/lib/strategy-store";
 
-export type ToolContext = { ownerId: string; today: string };
+export type ToolContext = { ownerId: string; today: string; conversationId?: string | null };
 export type ToolOutcome = { result: unknown; artifacts: LabArtifact[]; trace: Omit<LabToolTrace, "id" | "startedAt" | "durationMs"> };
 
 function shiftDate(date: string, days: number) {
@@ -191,6 +193,44 @@ export const LAB_TOOLS: Anthropic.Tool[] = [
       },
       required: ["symbol"],
     },
+  },
+  {
+    name: "propose_strategy",
+    description: "탑다운 가설에서 출발한 백테스트 전략 사양을 만든다. 순서: thesis(거시·구조적 논제) → mechanism(초과수익이 생기는 이유) → prediction(규칙이 맞다면 관측될 것) → falsification(무엇이 나오면 기각) → 기계적 entry/exit 규칙. 사용자가 전략을 만들어 달라고 하거나 대화가 매매 규칙으로 수렴하면 호출한다. 결과는 Canvas 카드로 표시되고, 사용자가 원하면 save_strategy로 Backtest 화면에 저장한다. 조건의 left/right는 {kind, period} 또는 {kind:'value', value}. kind: close, open, high, low, volume, sma, ema, rsi, macd_hist, macd_line, return(N일 %), drawdown(%), volume_ratio, bb_pos(0~1), atr_pct, highest_close, lowest_close, volatility. op: >, <, >=, <=, cross_above, cross_below.",
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string" },
+        hypothesis: { type: "object", properties: { thesis: { type: "string" }, mechanism: { type: "string" }, prediction: { type: "string" }, falsification: { type: "string" } }, required: ["thesis", "mechanism", "prediction", "falsification"] },
+        universe: { type: "array", items: { type: "string" }, description: "티커 1~12개" },
+        benchmark: { type: "string", description: "기본 SPY" },
+        entry: { type: "array", items: { type: "object", properties: { left: { type: "object" }, op: { type: "string", enum: [">", "<", ">=", "<=", "cross_above", "cross_below"] }, right: { type: "object" } }, required: ["left", "op", "right"] }, description: "모두 충족 시 진입" },
+        exit: { type: "array", items: { type: "object", properties: { left: { type: "object" }, op: { type: "string" }, right: { type: "object" } }, required: ["left", "op", "right"] }, description: "하나라도 충족 시 청산" },
+        holding: { type: "object", properties: { maxSessions: { type: "integer" }, stopLossPct: { type: "number" }, takeProfitPct: { type: "number" } } },
+        costBps: { type: "number" },
+        period: { type: "object", properties: { from: { type: "string" }, to: { type: "string" } } },
+        successCriteria: { type: "object", properties: { minSharpe: { type: "number" }, minExcessCagrPct: { type: "number" }, maxDrawdownPct: { type: "number" }, minTrades: { type: "integer" }, minWinRatePct: { type: "number" } }, description: "통과 기준. 반증 조건을 숫자로 번역" },
+        preset: { type: "string", enum: ["sma_cross", "momentum", "rsi_reversal", "breakout"], description: "entry/exit 대신 프리셋을 쓸 때" },
+        presetParams: { type: "object", properties: { fast: { type: "integer" }, slow: { type: "integer" }, period: { type: "integer" }, entry: { type: "number" }, exit: { type: "number" }, lookback: { type: "integer" }, exitLookback: { type: "integer" } } },
+        runNow: { type: "boolean", description: "true면 제안과 동시에 백테스트 실행" },
+      },
+      required: ["name", "hypothesis", "universe"],
+    },
+  },
+  {
+    name: "save_strategy",
+    description: "propose_strategy로 만든 전략(또는 수정한 사양)을 Backtest 화면에 저장한다. 사용자가 저장·Backtest에 추가·만들자 등으로 동의했을 때만 호출한다. runNow=true면 저장 직후 백테스트를 실행하고 결과 카드를 만든다.",
+    input_schema: { type: "object", properties: { spec: { type: "object", description: "propose_strategy 입력과 같은 형식의 전략 사양" }, runNow: { type: "boolean" } }, required: ["spec"] },
+  },
+  {
+    name: "run_strategy_backtest",
+    description: "저장된 전략 id 또는 전략 사양을 실제 일봉으로 백테스트한다(신호 종가 → 다음 종가 체결, 편도 비용, 동일가중 유니버스, 인/아웃오브샘플 분리, 파라미터 교란 견고성, 통과 기준 판정). 저장된 전략이면 결과와 상태가 Backtest 화면에 기록된다.",
+    input_schema: { type: "object", properties: { strategyId: { type: "string" }, spec: { type: "object" } } },
+  },
+  {
+    name: "list_strategies",
+    description: "Backtest 화면에 저장된 전략 목록과 최근 결과·상태(가설/백테스트 완료/시그널 후보/기각/페이퍼/실거래)를 불러온다.",
+    input_schema: { type: "object", properties: {} },
   },
 ];
 
@@ -474,6 +514,91 @@ async function showChart(input: Input): Promise<ToolOutcome> {
   return { result: { asset, tradingViewSymbol: tradingView, interval, studies }, artifacts: [artifact], trace: { name: "show_chart", label: `${asset.symbol} 차트`, status: "complete", detail: `${tradingView} · ${interval}` } };
 }
 
+function specFromToolInput(input: Input, context: ToolContext) {
+  const raw: Record<string, unknown> = { ...(input.spec && typeof input.spec === "object" ? input.spec as Record<string, unknown> : input) };
+  if (typeof raw.preset === "string" && !(Array.isArray(raw.entry) && raw.entry.length)) {
+    const preset = presetConditions(raw.preset, (raw.presetParams as Record<string, number> | undefined) ?? {});
+    raw.entry = preset.entry;
+    raw.exit = preset.exit;
+  }
+  return normalizeSpec(raw, context.today);
+}
+
+function backtestArtifact(result: BacktestResult, strategyId: string | null): LabArtifact {
+  const metrics = result.metrics;
+  return {
+    id: id(), type: "strategy-backtest", title: `백테스트 · ${result.spec.name}`, strategyId, strategyName: result.spec.name, verdict: result.verdict,
+    period: result.period,
+    metrics: { "총수익": metrics.totalReturnPct, "동일가중 매수보유": metrics.benchmarkReturnPct, [`${result.spec.benchmark}`]: metrics.marketReturnPct, CAGR: metrics.cagrPct, "초과 CAGR": metrics.excessCagrPct, "샤프": metrics.sharpe, "소르티노": metrics.sortino, "최대낙폭": metrics.maxDrawdownPct, "변동성": metrics.annualizedVolatilityPct, "거래": metrics.trades, "승률": metrics.winRatePct, "평균 거래": metrics.averageTradePct, "노출": metrics.exposurePct, "손익비": metrics.profitFactor },
+    equityCurve: result.equityCurve,
+    perSymbol: result.perSymbol.map((item) => ({ symbol: item.symbol, totalReturnPct: item.totalReturnPct, benchmarkReturnPct: item.benchmarkReturnPct, sharpe: item.sharpe, maxDrawdownPct: item.maxDrawdownPct, trades: item.trades, winRatePct: item.winRatePct, currentSignal: item.currentSignal })),
+    robustness: { inSample: { from: result.robustness.inSample.from, to: result.robustness.inSample.to, cagrPct: result.robustness.inSample.cagrPct, sharpe: result.robustness.inSample.sharpe }, outOfSample: { from: result.robustness.outOfSample.from, to: result.robustness.outOfSample.to, cagrPct: result.robustness.outOfSample.cagrPct, sharpe: result.robustness.outOfSample.sharpe }, stabilityScore: result.robustness.stabilityScore },
+    notes: ["신호 종가 → 다음 종가 체결 · 롱온리 · 동일가중 · 배당 미반영", `비용 ${result.spec.costBps}bps 편도 · 인샘플 70% / 아웃오브샘플 30%`, ...(result.missingSymbols.length ? [`제외: ${result.missingSymbols.map((item) => `${item.symbol}(${item.reason})`).join(", ")}`] : [])],
+  };
+}
+
+function compactResult(result: BacktestResult) {
+  return { period: result.period, metrics: result.metrics, verdict: result.verdict, robustness: { inSample: result.robustness.inSample, outOfSample: result.robustness.outOfSample, perturbations: result.robustness.perturbations, stabilityScore: result.robustness.stabilityScore }, perSymbol: result.perSymbol.map((item) => { const { equity, ...rest } = item; void equity; return rest; }), recentTrades: result.trades.slice(-10), missingSymbols: result.missingSymbols };
+}
+
+async function proposeStrategy(input: Input, context: ToolContext): Promise<ToolOutcome> {
+  const { spec, errors } = specFromToolInput(input, context);
+  if (!spec) return { result: { ok: false, errors }, artifacts: [], trace: { name: "propose_strategy", label: "전략 제안", status: "failed", detail: errors.join(" ") } };
+  const artifacts: LabArtifact[] = [{ id: id(), type: "strategy-proposal", title: `전략 제안 · ${spec.name}`, spec: spec as unknown as Record<string, unknown>, summary: describeSpec(spec), strategyId: null, status: null, notes: ["Backtest 화면에 저장하려면 카드의 버튼을 누르거나 JARVIS에게 저장을 요청", "가설 → 규칙 → 백테스트 → 반증 순서로 검증"] }];
+  let run: ReturnType<typeof compactResult> | null = null;
+  if (input.runNow) {
+    const outcome = await backtestSpec(spec);
+    if (outcome.result) { artifacts.push(backtestArtifact(outcome.result, null)); run = compactResult(outcome.result); }
+  }
+  return { result: { ok: true, spec, summary: describeSpec(spec), backtest: run, nextStep: "사용자에게 Backtest 화면에 저장할지 물어보고, 동의하면 save_strategy를 호출" }, artifacts, trace: { name: "propose_strategy", label: `전략 제안 · ${spec.name}`, status: "complete", detail: `${spec.universe.join(", ")} · ${describeSpec(spec).entry}` } };
+}
+
+async function saveStrategyTool(input: Input, context: ToolContext): Promise<ToolOutcome> {
+  const { spec, errors } = specFromToolInput(input, context);
+  if (!spec) return { result: { ok: false, errors }, artifacts: [], trace: { name: "save_strategy", label: "전략 저장", status: "failed", detail: errors.join(" ") } };
+  try {
+    let stored = await saveStrategy(context.ownerId, spec, { sourceConversationId: context.conversationId ?? null });
+    const artifacts: LabArtifact[] = [];
+    let run: ReturnType<typeof compactResult> | null = null;
+    if (input.runNow) {
+      const outcome = await runAndRecord(context.ownerId, stored);
+      if (outcome.result) { stored = outcome.strategy ?? stored; artifacts.push(backtestArtifact(outcome.result, stored.id)); run = compactResult(outcome.result); }
+    }
+    artifacts.unshift({ id: id(), type: "strategy-proposal", title: `저장됨 · ${spec.name}`, spec: spec as unknown as Record<string, unknown>, summary: describeSpec(spec), strategyId: stored.id, status: stored.status, notes: ["Backtest 화면에서 기간·비용을 바꿔 다시 실행하고 실거래 시그널을 확인할 수 있음"] });
+    return { result: { ok: true, strategyId: stored.id, status: stored.status, statusLabel: STRATEGY_STATUS_LABELS[stored.status], backtest: run }, artifacts, trace: { name: "save_strategy", label: `전략 저장 · ${spec.name}`, status: "complete", detail: `Backtest에 저장 (${STRATEGY_STATUS_LABELS[stored.status]})` } };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "전략 저장 실패";
+    return { result: { ok: false, reason }, artifacts: [], trace: { name: "save_strategy", label: "전략 저장", status: "failed", detail: reason } };
+  }
+}
+
+async function runStrategyTool(input: Input, context: ToolContext): Promise<ToolOutcome> {
+  if (typeof input.strategyId === "string") {
+    const stored = await getStrategy(context.ownerId, input.strategyId).catch(() => null);
+    if (!stored) return { result: { ok: false, reason: "전략을 찾지 못했습니다." }, artifacts: [], trace: { name: "run_strategy_backtest", label: "백테스트", status: "failed", detail: "전략 없음" } };
+    const outcome = await runAndRecord(context.ownerId, stored);
+    if (!outcome.result) return { result: { ok: false, reason: "데이터 부족", missing: outcome.missing }, artifacts: [], trace: { name: "run_strategy_backtest", label: `백테스트 · ${stored.name}`, status: "failed", detail: outcome.missing.map((item) => item.reason).join(" ") } };
+    return { result: { ok: true, strategyId: stored.id, status: outcome.strategy?.status, ...compactResult(outcome.result) }, artifacts: [backtestArtifact(outcome.result, stored.id)], trace: { name: "run_strategy_backtest", label: `백테스트 · ${stored.name}`, status: "complete", detail: `${outcome.result.verdict.status} · CAGR ${outcome.result.metrics.cagrPct}% vs ${outcome.result.metrics.benchmarkCagrPct}%` } };
+  }
+  const { spec, errors } = specFromToolInput(input, context);
+  if (!spec) return { result: { ok: false, errors }, artifacts: [], trace: { name: "run_strategy_backtest", label: "백테스트", status: "failed", detail: errors.join(" ") } };
+  const outcome = await backtestSpec(spec);
+  if (!outcome.result) return { result: { ok: false, reason: "데이터 부족", missing: outcome.missing }, artifacts: [], trace: { name: "run_strategy_backtest", label: `백테스트 · ${spec.name}`, status: "failed", detail: outcome.missing.map((item) => item.reason).join(" ") } };
+  return { result: { ok: true, ...compactResult(outcome.result) }, artifacts: [backtestArtifact(outcome.result, null)], trace: { name: "run_strategy_backtest", label: `백테스트 · ${spec.name}`, status: "complete", detail: `${outcome.result.verdict.status} · CAGR ${outcome.result.metrics.cagrPct}% vs ${outcome.result.metrics.benchmarkCagrPct}%` } };
+}
+
+async function listStrategiesTool(context: ToolContext): Promise<ToolOutcome> {
+  try {
+    const items = await listStrategies(context.ownerId);
+    const rows = items.map((item) => ({ id: item.id, name: item.name, status: item.status, statusLabel: STRATEGY_STATUS_LABELS[item.status], universe: item.spec.universe, thesis: item.spec.hypothesis.thesis, entry: describeSpec(item.spec).entry, verdict: item.latestResult?.verdict.status ?? null, cagrPct: item.latestResult?.metrics.cagrPct ?? null, benchmarkCagrPct: item.latestResult?.metrics.benchmarkCagrPct ?? null, sharpe: item.latestResult?.metrics.sharpe ?? null, updatedAt: item.updatedAt }));
+    const artifact: LabArtifact = { id: id(), type: "table", title: "저장된 전략", subtitle: `${rows.length}개`, columns: ["전략", "상태", "유니버스", "CAGR %", "벤치 CAGR %", "샤프", "판정"], rows: rows.map((row) => [row.name, row.statusLabel, row.universe.join(","), row.cagrPct, row.benchmarkCagrPct, row.sharpe, row.verdict ?? "—"]), notes: ["Backtest 화면과 동일한 데이터"] };
+    return { result: rows, artifacts: rows.length ? [artifact] : [], trace: { name: "list_strategies", label: "저장된 전략", status: "complete", detail: `${rows.length}개` } };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "전략 저장소 연결 실패";
+    return { result: { ok: false, reason }, artifacts: [], trace: { name: "list_strategies", label: "저장된 전략", status: "failed", detail: reason } };
+  }
+}
+
 export async function executeLabTool(name: string, input: unknown, context: ToolContext): Promise<ToolOutcome> {
   const args = (input && typeof input === "object" ? input : {}) as Input;
   switch (name) {
@@ -494,10 +619,14 @@ export async function executeLabTool(name: string, input: unknown, context: Tool
     case "market_calendar": return calendar(args, context);
     case "news_sentiment_tests": return sentimentTests(args, context);
     case "show_chart": return showChart(args);
+    case "propose_strategy": return proposeStrategy(args, context);
+    case "save_strategy": return saveStrategyTool(args, context);
+    case "run_strategy_backtest": return runStrategyTool(args, context);
+    case "list_strategies": return listStrategiesTool(context);
     default: return { result: { error: `알 수 없는 도구 ${name}` }, artifacts: [], trace: { name, label: name, status: "failed", detail: "알 수 없는 도구" } };
   }
 }
 
 export const TOOL_LABELS: Record<string, string> = {
-  resolve_symbols: "심볼 해석", get_price_history: "가격 이력", compare_assets: "자산 비교", technical_indicators: "기술 지표", event_study: "이벤트 스터디", backtest_strategy: "백테스트", risk_profile: "리스크 프로파일", seasonality: "계절성", largest_moves_with_news: "급등락·뉴스", search_news: "뉴스 검색", get_quote: "현재가", market_calendar: "경제 일정", news_sentiment_tests: "뉴스 감성 Test", show_chart: "TradingView 차트",
+  resolve_symbols: "심볼 해석", get_price_history: "가격 이력", compare_assets: "자산 비교", technical_indicators: "기술 지표", event_study: "이벤트 스터디", backtest_strategy: "백테스트", risk_profile: "리스크 프로파일", seasonality: "계절성", largest_moves_with_news: "급등락·뉴스", search_news: "뉴스 검색", get_quote: "현재가", market_calendar: "경제 일정", news_sentiment_tests: "뉴스 감성 Test", show_chart: "TradingView 차트", propose_strategy: "전략 제안", save_strategy: "전략 저장", run_strategy_backtest: "전략 백테스트", list_strategies: "저장된 전략", web_search: "웹 검색",
 };

@@ -5,6 +5,7 @@ import { newsAgentMessages, newsResearchRuns, newsTests } from "@/db/schema";
 import { loadDailyRows } from "../../../../lib/price-cache";
 import type { PriceRow } from "../../../../lib/market-data";
 import { researchOwnerCookie, researchOwnerFrom } from "@/lib/research-owner";
+import { touchConversation, validConversationId } from "@/lib/conversations";
 
 function parsePayload(value: string) {
   try { return JSON.parse(value) as unknown; } catch { return null; }
@@ -56,12 +57,13 @@ async function repairMissingBenchmarks(tests: Array<typeof newsTests.$inferSelec
 
 export async function GET(request: Request) {
   const ownerId = researchOwnerFrom(request);
+  const conversation = new URL(request.url).searchParams.get("conversation");
   try {
     await ensureSchema();
     const db = getDb();
     const [storedTests, messages, runs] = await Promise.all([
       db.select().from(newsTests).where(eq(newsTests.ownerId, ownerId)).orderBy(desc(newsTests.createdAt)).limit(100),
-      db.select().from(newsAgentMessages).where(eq(newsAgentMessages.ownerId, ownerId)).orderBy(asc(newsAgentMessages.createdAt)).limit(200),
+      conversation ? db.select().from(newsAgentMessages).where(and(eq(newsAgentMessages.ownerId, ownerId), eq(newsAgentMessages.conversationId, conversation))).orderBy(asc(newsAgentMessages.createdAt)).limit(200) : Promise.resolve([]),
       db.select().from(newsResearchRuns).where(eq(newsResearchRuns.ownerId, ownerId)).orderBy(desc(newsResearchRuns.updatedAt)).limit(20),
     ]);
     let tests = storedTests;
@@ -119,8 +121,10 @@ export async function POST(request: Request) {
       const role = message?.role === "agent" ? "agent" : "user";
       const content = typeof message?.content === "string" ? message.content.trim().slice(0, 12000) : "";
       if (!content) return Response.json({ error: "메시지가 비어 있습니다." }, { status: 400 });
-      const row = { id: typeof message?.id === "string" ? message.id : crypto.randomUUID(), ownerId, role, content, createdAt: new Date() };
+      const conversationId = validConversationId(payload.conversationId) ? payload.conversationId : null;
+      const row = { id: typeof message?.id === "string" ? message.id : crypto.randomUUID(), ownerId, conversationId, role, content, createdAt: new Date() };
       await getDb().insert(newsAgentMessages).values(row).onConflictDoNothing();
+      if (conversationId) await touchConversation(ownerId, "news", conversationId, { titleSeed: role === "user" ? content : undefined, preview: content, increment: 1 }).catch(() => undefined);
       return Response.json({ message: row, persisted: true }, { status: 201, headers: { "set-cookie": researchOwnerCookie(ownerId) } });
     }
     if (kind === "run") {

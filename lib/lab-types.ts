@@ -69,6 +69,16 @@ export type LabArtifact =
     events: Array<{ date: string; time: string; title: string; category: string; importance: string; note: string }>; notes: string[];
   }
   | { id: string; type: "tradingview"; title: string; symbol: string; interval: string; studies: string[]; notes: string[] }
+  | { id: string; type: "strategy-proposal"; title: string; spec: Record<string, unknown>; summary: { entry: string; exit: string; holding: string; universe: string; cost: string }; strategyId: string | null; status: string | null; notes: string[] }
+  | {
+    id: string; type: "strategy-backtest"; title: string; strategyId: string | null; strategyName: string; verdict: { status: "pass" | "fail" | "inconclusive"; reasons: string[] };
+    period: { from: string; to: string; sessions: number }; metrics: Record<string, number | string | null>;
+    equityCurve: Array<{ date: string; strategy: number; benchmark: number; market: number | null }>;
+    perSymbol: Array<{ symbol: string; totalReturnPct: number | null; benchmarkReturnPct: number | null; sharpe: number | null; maxDrawdownPct: number | null; trades: number; winRatePct: number | null; currentSignal: string }>;
+    robustness: { inSample: { from: string; to: string; cagrPct: number | null; sharpe: number | null }; outOfSample: { from: string; to: string; cagrPct: number | null; sharpe: number | null }; stabilityScore: number | null };
+    notes: string[];
+  }
+  | { id: string; type: "web-search"; title: string; query: string; results: Array<{ title: string; url: string; snippet: string }>; notes: string[] }
   | { id: string; type: "limitation"; title: string; explanation: string; suggestions: string[] };
 
 export type LabMessage = {
@@ -89,5 +99,5 @@ export type LabStreamEvent =
   | { type: "tool_start"; id: string; name: string; label: string; detail: string }
   | { type: "tool_end"; id: string; name: string; label: string; status: "complete" | "failed"; detail: string; durationMs: number }
   | { type: "artifact"; artifact: LabArtifact }
-  | { type: "done"; message: LabMessage }
+  | { type: "done"; message: LabMessage; conversationId: string }
   | { type: "error"; message: string; status?: number };

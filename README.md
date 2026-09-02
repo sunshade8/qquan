@@ -114,6 +114,26 @@ quotes, the economic calendar, saved News sentiment Tests, and TradingView chart
 result is a typed artifact (`lib/lab-types.ts`) rendered on the Research Canvas by
 `app/lab-charts.tsx`. All math lives in `lib/quant.ts` and is unit tested.
 
+Before the orchestrator reasons, a fast-tier grounding pass extracts every asset the question
+mentions and resolves it against live Yahoo Finance metadata (`lib/symbols.ts`), so listing
+status, tickers and IPO dates come from the market, not from the model's training data. The
+loop also carries Anthropic's server-side `web_search` tool for anything newer than the model.
+
+Conversations are first-class (`conversations` table, `/api/conversations`): every page load
+starts a fresh thread, earlier threads appear in History, and clicking one restores it in the
+Lab or News view.
+
+### Backtest (`/api/strategies/*`, `lib/strategy.ts`)
+
+Strategies are top-down objects: `hypothesis { thesis, mechanism, prediction, falsification }`
+→ universe → mechanical `entry`/`exit` conditions over indicators → `successCriteria`. JARVIS
+proposes them in Lab (`propose_strategy`), asks before saving (`save_strategy`), and the
+engine runs them on real daily bars with next-close execution, costs, equal-weight universes,
+a 70/30 in/out-of-sample split, parameter perturbation, and a deterministic pass/fail verdict.
+Passing strategies become "signal candidates"; `lib/trading.ts` computes live signals and sized
+order intents from the same rule, and `/api/strategies/signals` exposes them behind a gateway
+(dry run today; `tossGateway` is the hook for the Toss order API).
+
 ### News JARVIS (`/api/news/*`)
 
 `plan` turns a request into a validated execution plan, `analyze` scores a headline corpus with a
