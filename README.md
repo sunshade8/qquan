@@ -87,6 +87,42 @@ or enforce explicit server-side membership or allowlist checks.
 Use SIWC for account pages, user-specific dashboards, saved records, and write
 actions tied to the current ChatGPT user. Leave public content anonymous.
 
+## QQuant agents
+
+Two agents share one LLM layer (`lib/claude.ts`, official `@anthropic-ai/sdk`). Every call is
+assigned a *role*, and each role maps to a model tier so the frontier model is only used where
+it matters:
+
+| Tier | Env override | Default | Roles |
+| --- | --- | --- | --- |
+| frontier | `ANTHROPIC_MODEL` | `claude-opus-4-7` | Lab JARVIS orchestrator, News synthesizer, strategy builder |
+| balanced | `ANTHROPIC_MODEL_BALANCED` | `claude-sonnet-5` | headline sentiment analyst, pattern analyst, similarity auditor, request planner |
+| fast | `ANTHROPIC_MODEL_FAST` | `claude-haiku-4-5` | routing, summarisation |
+
+Prompt caching is on for every stable system prompt and the Lab tool list, adaptive thinking is
+enabled on 4.6+ models, and structured outputs (`output_config.format` + Zod) replace hand-parsed
+JSON. Real usage per role is visible in Settings → LLM API cost / Model allocation.
+
+### Lab JARVIS (`/api/lab/agent`)
+
+A streaming (SSE) tool-use loop with 14 deterministic tools in `lib/lab-tools.ts`: symbol
+resolution (Yahoo search + Korean aliases), price history with overlays, N-asset comparison with
+correlation matrix, technical indicators (SMA/EMA/RSI/MACD/Bollinger), event studies, rule
+backtests (SMA cross, momentum, RSI reversal, breakout, buy-and-hold), risk profiles (beta,
+Sharpe, Sortino, VaR/CVaR), seasonality, largest moves with linked headlines, news search,
+quotes, the economic calendar, saved News sentiment Tests, and TradingView charts. Every tool
+result is a typed artifact (`lib/lab-types.ts`) rendered on the Research Canvas by
+`app/lab-charts.tsx`. All math lives in `lib/quant.ts` and is unit tested.
+
+### News JARVIS (`/api/news/*`)
+
+`plan` turns a request into a validated execution plan, `analyze` scores a headline corpus with a
+structured schema and attaches deterministic SPY/QQQ/NASDAQ/NYSE outcomes, and `agent` runs the
+specialist chain (pattern analyst + auditor in parallel → strategist → synthesizer) over saved
+Test rows, streaming specialist status to the UI. The **Sentiment vs Market** panel in the News
+view shows, per Test, the sentiment score against the realized index return with correlation,
+direction hit-rate, and post-bullish/bearish averages.
+
 ## Useful Commands
 
 - `npm run dev`: start local development

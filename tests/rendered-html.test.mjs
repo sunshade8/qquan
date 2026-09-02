@@ -24,6 +24,8 @@ test("server-renders the QQuant product shell", async () => {
   assert.match(html, /Chart commands/);
   assert.match(html, /Backtest/);
   assert.match(html, /MARKET INTELLIGENCE HQ/);
+  assert.match(html, /Lab JARVIS/);
+  assert.match(html, /News JARVIS/);
   assert.match(html, />Lab</);
   assert.match(html, /aria-label="Primary navigation"/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
@@ -31,7 +33,7 @@ test("server-renders the QQuant product shell", async () => {
 
 test("keeps secrets server-only and starter assets removed", async () => {
   const [analysisRoute, envExample, clientSource] = await Promise.all([
-    readFile(new URL("../app/api/analyze/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/claude.ts", import.meta.url), "utf8"),
     readFile(new URL("../.env.example", import.meta.url), "utf8"),
     readFile(new URL("../app/quant-workspace.tsx", import.meta.url), "utf8"),
   ]);

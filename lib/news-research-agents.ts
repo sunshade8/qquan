@@ -1,21 +1,7 @@
 import { loadDailyRows } from "@/lib/price-cache";
+import type { ResearchTest } from "@/lib/news-summary";
 
-type Benchmark = { returnPct?: number } | { unavailable?: string } | null;
-export type ResearchTest = {
-  id: string;
-  periodStart: string;
-  periodEnd: string;
-  overallScore: number;
-  techScore: number;
-  valueScore: number;
-  nasdaq: Benchmark;
-  nyse: Benchmark;
-  forecastEvents?: Array<{ indicator?: string; scheduledReleaseDate?: string | null; scheduledTimeET?: string | null }>;
-};
-
-function valueOf(value: Benchmark) {
-  return value && "returnPct" in value && typeof value.returnPct === "number" ? value.returnPct : null;
-}
+export { deterministicTestSummary, type ResearchTest } from "@/lib/news-summary";
 
 function average(values: number[]) {
   return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
@@ -26,38 +12,6 @@ function median(values: number[]) {
   const sorted = [...values].sort((a, b) => a - b);
   const middle = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
-}
-
-export function deterministicTestSummary(tests: ResearchTest[]) {
-  const usable = tests.flatMap((test) => {
-    const nasdaq = valueOf(test.nasdaq);
-    const nyse = valueOf(test.nyse);
-    return nasdaq === null && nyse === null ? [] : [{ ...test, nasdaq, nyse }];
-  });
-  const nasdaq = usable.flatMap((test) => test.nasdaq === null ? [] : [test.nasdaq]);
-  const nyse = usable.flatMap((test) => test.nyse === null ? [] : [test.nyse]);
-  const sentimentComparable = usable.filter((test) => test.nasdaq !== null && Math.sign(test.overallScore) !== 0);
-  const aligned = sentimentComparable.filter((test) => Math.sign(test.overallScore) === Math.sign(test.nasdaq!)).length;
-  return {
-    analysisAsOfDate: new Date().toISOString().slice(0, 10),
-    totalTests: tests.length,
-    usableTests: usable.length,
-    averageSentiment: average(usable.map((test) => test.overallScore)),
-    medianSentiment: median(usable.map((test) => test.overallScore)),
-    averageNasdaqReturnPct: average(nasdaq),
-    medianNasdaqReturnPct: median(nasdaq),
-    averageNyseReturnPct: average(nyse),
-    signAlignmentRatePct: sentimentComparable.length ? (aligned / sentimentComparable.length) * 100 : null,
-    signAlignmentSampleSize: sentimentComparable.length,
-    averageTechMinusValue: average(usable.map((test) => test.techScore - test.valueScore)),
-    rows: usable.map((test) => ({
-      id: test.id, range: `${test.periodStart}→${test.periodEnd}`,
-      event: test.forecastEvents?.[0]?.indicator ?? null,
-      eventDate: test.forecastEvents?.[0]?.scheduledReleaseDate ?? test.periodEnd,
-      sentiment: test.overallScore, techMinusValue: test.techScore - test.valueScore,
-      nasdaqReturnPct: test.nasdaq, nyseReturnPct: test.nyse,
-    })),
-  };
 }
 
 function shiftDate(date: string, days: number) {

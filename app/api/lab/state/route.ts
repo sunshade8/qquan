@@ -1,5 +1,6 @@
 import { asc, eq } from "drizzle-orm";
 import { getDb } from "@/db";
+import { ensureSchema } from "@/db/ensure";
 import { labMessages } from "@/db/schema";
 import { researchOwnerCookie, researchOwnerFrom } from "@/lib/research-owner";
 
@@ -15,6 +16,7 @@ function parseArray(value: string) {
 export async function GET(request: Request) {
   const ownerId = researchOwnerFrom(request);
   try {
+    await ensureSchema();
     const rows = await getDb().select().from(labMessages).where(eq(labMessages.ownerId, ownerId)).orderBy(asc(labMessages.createdAt)).limit(200);
     return Response.json({
       messages: rows.map((row) => ({
@@ -43,8 +45,20 @@ export async function POST(request: Request) {
     createdAt: new Date(typeof message?.createdAt === "string" ? message.createdAt : Date.now()),
   };
   try {
+    await ensureSchema();
     await getDb().insert(labMessages).values(row).onConflictDoNothing();
     return Response.json({ persisted: true, message: row }, { status: 201, headers: { "set-cookie": researchOwnerCookie(ownerId) } });
+  } catch {
+    return Response.json({ error: "Lab 기록 저장소에 연결하지 못했습니다." }, { status: 503, headers: { "set-cookie": researchOwnerCookie(ownerId) } });
+  }
+}
+
+export async function DELETE(request: Request) {
+  const ownerId = researchOwnerFrom(request);
+  try {
+    await ensureSchema();
+    await getDb().delete(labMessages).where(eq(labMessages.ownerId, ownerId));
+    return Response.json({ cleared: true }, { headers: { "set-cookie": researchOwnerCookie(ownerId) } });
   } catch {
     return Response.json({ error: "Lab 기록 저장소에 연결하지 못했습니다." }, { status: 503, headers: { "set-cookie": researchOwnerCookie(ownerId) } });
   }

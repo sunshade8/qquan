@@ -1,12 +1,15 @@
 import { asc, count, desc, eq, min, sum } from "drizzle-orm";
 import { getDb } from "@/db";
+import { ensureSchema } from "@/db/ensure";
 import { llmUsage } from "@/db/schema";
+import { modelAllocation } from "@/lib/claude";
 import { CLAUDE_PRICING_EFFECTIVE, CLAUDE_PRICING_SOURCE, modelPrice } from "@/lib/llm-usage";
 import { researchOwnerCookie, researchOwnerFrom } from "@/lib/research-owner";
 
 export async function GET(request: Request) {
   const ownerId = researchOwnerFrom(request);
   try {
+    await ensureSchema();
     const db = getDb();
     const [totals] = await db.select({
       calls: count(), inputTokens: sum(llmUsage.inputTokens), outputTokens: sum(llmUsage.outputTokens),
@@ -31,9 +34,10 @@ export async function GET(request: Request) {
       features: features.map((row) => ({ ...row, calls: Number(row.calls) || 0, costUsd: Number(row.costUsd) || 0 })),
       recent,
       pricing: { currency: "USD", unit: "1M tokens", effectiveDate: CLAUDE_PRICING_EFFECTIVE, sourceUrl: CLAUDE_PRICING_SOURCE },
+      allocation: modelAllocation().map((item) => ({ ...item, price: modelPrice(item.model) })),
       note: "이 앱 버전에서 기록된 실제 API usage부터 누적됩니다. 공급자 콘솔의 과거 청구액은 소급 추정하지 않습니다.",
     }, { headers: { "set-cookie": researchOwnerCookie(ownerId) } });
   } catch {
-    return Response.json({ error: "LLM 사용량 기록을 불러오지 못했습니다." }, { status: 503, headers: { "set-cookie": researchOwnerCookie(ownerId) } });
+    return Response.json({ error: "LLM 사용량 기록을 불러오지 못했습니다.", allocation: modelAllocation().map((item) => ({ ...item, price: modelPrice(item.model) })) }, { status: 503, headers: { "set-cookie": researchOwnerCookie(ownerId) } });
   }
 }

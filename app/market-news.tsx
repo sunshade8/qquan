@@ -13,6 +13,8 @@ import X from "lucide-react/dist/esm/icons/x";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { NEWS_EVENT_DEFINITIONS, type ResearchStep, type ValidatedResearchPlan } from "@/lib/news-agent-plan";
 import type { AgentActivity } from "@/lib/lab-types";
+import { Markdown } from "./markdown";
+import { NewsSentimentPanelBridge } from "./news-sentiment-bridge";
 import { NewsSimilarity } from "./news-similarity";
 import type { MarketEvent } from "./market-calendar-data";
 
@@ -132,7 +134,46 @@ type ResearchRun = {
   totalEvents: number; completedEvents: number; failedEvents: number; stages: ResearchRunStage[];
   result: { summary?: string; testIds?: string[]; plan?: { range: string; steps: ResearchStep[]; planner: string } }; createdAt: string; updatedAt: string;
 };
-type AgentSpecialist = { id: string; label: string; status: "complete" | "skipped" };
+type AgentSpecialist = { id: string; label: string; status: "running" | "complete" | "skipped" | "failed"; model?: string; role?: string };
+type NewsAgentEvent =
+  | { type: "specialist"; specialist: AgentSpecialist }
+  | { type: "text"; delta: string }
+  | { type: "done"; answer: string; intent: string; specialists: AgentSpecialist[]; artifacts?: unknown; model: string }
+  | { type: "error"; message: string; status?: number };
+
+async function readAgentStream(response: Response, onEvent: (event: NewsAgentEvent) => void) {
+  if (!response.headers.get("content-type")?.includes("text/event-stream")) {
+    const data = await response.json().catch(() => ({})) as { answer?: string; error?: string; specialists?: AgentSpecialist[]; intent?: string; model?: string };
+    if (!response.ok || !data.answer) throw new Error(data.error || "News JARVIS에 연결하지 못했습니다.");
+    onEvent({ type: "done", answer: data.answer, intent: data.intent ?? "answer", specialists: data.specialists ?? [], model: data.model ?? "" });
+    return;
+  }
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("서버가 스트림을 반환하지 않았습니다.");
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finished = false;
+  while (!finished) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() ?? "";
+    for (const frame of frames) {
+      const line = frame.split("\n").find((item) => item.startsWith("data: "));
+      if (!line) continue;
+      try {
+        const event = JSON.parse(line.slice(6)) as NewsAgentEvent;
+        onEvent(event);
+        if (event.type === "done") finished = true;
+        if (event.type === "error") throw new Error(event.message);
+      } catch (reason) {
+        if (reason instanceof Error && reason.message !== "Unexpected end of JSON input") throw reason;
+      }
+    }
+  }
+  if (!finished) throw new Error("응답 스트림이 중간에 끊겼습니다.");
+}
 type AgentPlanResult = {
   plan: ValidatedResearchPlan;
   planner: string;
@@ -338,6 +379,7 @@ export function MarketNews({ onHistory, onActivityChange }: { onHistory?: (event
   const [batchStatus, setBatchStatus] = useState<BatchStatus | null>(null);
   const [researchRuns, setResearchRuns] = useState<ResearchRun[]>([]);
   const [lastSpecialists, setLastSpecialists] = useState<AgentSpecialist[]>([]);
+  const [agentStatus, setAgentStatus] = useState("");
   const [lastPlan, setLastPlan] = useState<ValidatedResearchPlan | null>(null);
   const [stateReady, setStateReady] = useState(false);
   const [activeTest, setActiveTest] = useState<NewsTest | null>(null);
@@ -351,8 +393,8 @@ export function MarketNews({ onHistory, onActivityChange }: { onHistory?: (event
       onActivityChange?.({ label: "News JARVIS", detail: `${batchStatus.phase} · ${batchStatus.label}`, progress: `${batchStatus.completed}/${batchStatus.total}` });
       return;
     }
-    onActivityChange?.(agentThinking ? { label: "News JARVIS", detail: "질문을 해석하고 실행 계획을 만드는 중", progress: "RUNNING" } : null);
-  }, [agentThinking, batchStatus, onActivityChange]);
+    onActivityChange?.(agentThinking ? { label: "News JARVIS", detail: agentStatus || "질문을 해석하고 실행 계획을 만드는 중", progress: "RUNNING" } : null);
+  }, [agentStatus, agentThinking, batchStatus, onActivityChange]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -635,6 +677,7 @@ export function MarketNews({ onHistory, onActivityChange }: { onHistory?: (event
     if (comparisonRequested && unique.length >= 2) setComparison({ tests: unique, excludedDuplicates: completed.length - unique.length });
     const needsDownstreamAnalysis = plan.requestedSteps.some((step) => step === "find_patterns" || step === "build_strategy" || step === "run_backtest");
     if (needsDownstreamAnalysis) {
+      setAgentStatus("후속 분석 · 전문 에이전트 실행 중");
       const response = await fetch("/api/news/agent", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -648,14 +691,13 @@ export function MarketNews({ onHistory, onActivityChange }: { onHistory?: (event
           context: { tests: unique },
         }),
       });
-      const data = await response.json() as { answer?: string; error?: string; specialists?: AgentSpecialist[] };
-      if (!response.ok) throw new Error(data.error || "후속 분석을 완료하지 못했습니다.");
-      setLastSpecialists([
-        { id: "planner", label: "Intent Planner", status: "complete" },
-        { id: "executor", label: "Research Executor", status: "complete" },
-        ...(data.specialists ?? []),
-      ]);
-      appendAgentMessage("agent", data.answer ?? "후속 분석 응답이 비어 있습니다.");
+      await readAgentStream(response, (event) => {
+        if (event.type === "specialist") setLastSpecialists((current) => [...current.filter((item) => item.id !== event.specialist.id), event.specialist]);
+        if (event.type === "done") {
+          setLastSpecialists([{ id: "planner", label: "Intent Planner", status: "complete" }, { id: "executor", label: "Research Executor", status: "complete" }, ...event.specialists]);
+          appendAgentMessage("agent", event.answer || "후속 분석 응답이 비어 있습니다.");
+        }
+      });
     }
     setBatchStatus(null);
   }
@@ -707,21 +749,23 @@ export function MarketNews({ onHistory, onActivityChange }: { onHistory?: (event
       }
       const chosen = articles.filter((article) => selected.has(article.id)).slice(0, 40)
         .map(({ id, title, source, publishedAt, topic: articleTopic, eventId, eventTitle, eventDate, eventTimeET, stage }) => ({ id, title, source, publishedAt, topic: articleTopic, eventId, eventTitle, eventDate, eventTimeET, stage }));
+      setAgentStatus("전문 에이전트 실행 중");
       const response = await fetch("/api/news/agent", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ question: prompt, plan: planned.plan, context: { retrieved, headlines: chosen, analysis, tests } }),
+        body: JSON.stringify({ question: prompt, plan: planned.plan, history: agentMessages.slice(-8).map(({ role, content }) => ({ role, content })), context: { retrieved, headlines: chosen, analysis, tests } }),
       });
-      const data = await response.json() as { answer?: string; error?: string; specialists?: AgentSpecialist[] };
-      if (!response.ok) throw new Error(data.error || "News Agent에 연결하지 못했습니다.");
-      setLastSpecialists(Array.isArray(data.specialists) ? data.specialists : []);
-      appendAgentMessage("agent", data.answer ?? "응답이 비어 있습니다.");
-      onHistory?.({ title: "News Agent", detail: prompt });
+      await readAgentStream(response, (event) => {
+        if (event.type === "specialist") { setLastSpecialists((current) => [...current.filter((item) => item.id !== event.specialist.id), event.specialist]); setAgentStatus(`${event.specialist.label} · ${event.specialist.status === "running" ? "실행 중" : "완료"}`); }
+        if (event.type === "done") { setLastSpecialists([{ id: "planner", label: "Intent Planner", status: "complete" }, ...event.specialists]); appendAgentMessage("agent", event.answer || "응답이 비어 있습니다."); }
+      });
+      onHistory?.({ title: "News JARVIS", detail: prompt });
     } catch (reason) {
       appendAgentMessage("agent", reason instanceof Error ? reason.message : "News Agent에 연결하지 못했습니다.");
     } finally {
       setBatchStatus(null);
       setAgentThinking(false);
+      setAgentStatus("");
     }
   }
 
@@ -842,6 +886,7 @@ export function MarketNews({ onHistory, onActivityChange }: { onHistory?: (event
               {researchRuns[0].stages.map((stage) => <span className={stage.status} key={stage.date} title={stage.detail}><i />{stage.date.slice(5)}<em>{stage.status === "complete" ? "Test" : stage.status === "reused" ? "재사용" : stage.status === "failed" ? "실패" : "진행"}</em></span>)}
             </div>
           </section>}
+          <NewsSentimentPanelBridge tests={tests} onAsk={(prompt) => setAgentQuestion(prompt)} />
           <div className="test-table" role="table" aria-label="뉴스 감성 테스트 기록">
             <div className="test-row test-head" role="row"><span>DATE RANGE</span><span>SENTIMENT</span><span>TECH</span><span>VALUE</span><span>NASDAQ</span><span>NYSE</span></div>
             {!stateReady && <div className="research-empty"><RefreshCw size={17} className="spin" /><strong>기록을 불러오는 중</strong></div>}
@@ -862,7 +907,7 @@ export function MarketNews({ onHistory, onActivityChange }: { onHistory?: (event
 
         <aside className="news-agent-panel">
           <header className="research-panel-head">
-            <div><span className="agent-mark"><Sparkles size={15} /></span><div><strong>News JARVIS</strong><small>8 specialist roles · persistent research</small></div></div>
+            <div><span className="agent-mark"><Sparkles size={15} /></span><div><strong>News JARVIS</strong><small>planner · analyst · auditor · strategist · synthesizer</small></div></div>
             <span><HistoryIcon size={12} /> {agentMessages.length}</span>
           </header>
           <div className="news-agent-context"><span>{retrieved ? `${retrieved.start} → ${retrieved.end}` : "no range"}</span><span>{selected.size} news</span><span>{tests.length} tests</span></div>
@@ -872,14 +917,15 @@ export function MarketNews({ onHistory, onActivityChange }: { onHistory?: (event
             <p>{lastPlan.range ? `${lastPlan.range.label} · ${lastPlan.range.from} → ${lastPlan.range.to}` : "기간 지정 없음"}</p>
             {!!lastPlan.requestedSteps.length && <div>{lastPlan.requestedSteps.map((step) => <span key={step}>{researchStepLabels[step]}</span>)}</div>}
           </div>}
-          {!!lastSpecialists.length && <div className="agent-specialists" aria-label="이번 응답에 참여한 전문 에이전트">{lastSpecialists.map((specialist) => <span key={specialist.id}><i />{specialist.label}</span>)}</div>}
+          {!!lastSpecialists.length && <div className="agent-specialists" aria-label="이번 응답에 참여한 전문 에이전트">{lastSpecialists.map((specialist) => <span key={specialist.id} className={specialist.status} title={specialist.model ? `${specialist.label} · ${specialist.model}` : specialist.label}><i />{specialist.label}{specialist.model && <small>{specialist.model.replace(/^claude-/, "")}</small>}</span>)}</div>}
           <div className="news-agent-prompts">
             {batchStatus ? <div className="batch-progress"><span><b>{batchStatus.phase}</b><small>{batchStatus.label}</small></span><strong>{batchStatus.completed}/{batchStatus.total}</strong><i><em style={{ width: `${(batchStatus.completed / batchStatus.total) * 100}%` }} /></i></div> : ["최근 6개월 CPI 발표를 수집→분석→비교해줘", "지금까지 분석한 결과의 공통점 찾아줘", "검증 가능한 전략과 3일 백테스트 결과를 만들어줘"].map((prompt) => <button key={prompt} disabled={agentThinking} onClick={() => setAgentQuestion(prompt)}>{prompt}</button>)}
           </div>
           <div className="news-agent-log" aria-live="polite">
             {stateReady && !agentMessages.length && <div className="research-empty"><Sparkles size={18} /><strong>세 영역을 함께 조사합니다.</strong><p>현재 뉴스 선택, 감성 분석, 누적 Test를 비교하거나 “부정 뉴스만 선택해줘”처럼 뉴스 선택을 바꿔보세요.</p></div>}
-            {agentMessages.map((message) => <article className={message.role} key={message.id}><span>{message.role === "user" ? "You" : "Agent"}</span><p>{message.content}</p></article>)}
-            {agentThinking && <div className="agent-thinking"><i /><i /><i /></div>}
+            {agentMessages.map((message) => <article className={message.role} key={message.id}><span>{message.role === "user" ? "You" : "JARVIS"}</span>{message.role === "user" ? <p>{message.content}</p> : <Markdown text={message.content} />}</article>)}
+            {agentThinking && <div className="agent-thinking" title={agentStatus}><i /><i /><i /></div>}
+            {agentThinking && agentStatus && <small className="news-agent-status">{agentStatus}</small>}
           </div>
           <form className="news-agent-composer" onSubmit={askNewsAgent}>
             <textarea value={agentQuestion} onChange={(event) => setAgentQuestion(event.target.value)} disabled={agentThinking} aria-label="News Agent에게 질문" placeholder="예: 이 sentiment와 실제 수익률이 같은 방향이었나?" rows={3} />

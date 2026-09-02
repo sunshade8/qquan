@@ -92,17 +92,16 @@ function easternDateLabel(value: string) {
 
 export function MarketCalendar() {
   const [today, setToday] = useState("");
-  const [month, setMonth] = useState(7);
-  const [selectedDate, setSelectedDate] = useState("2026-08-31");
+  const [month, setMonth] = useState(() => new Date().getFullYear() === YEAR ? new Date().getMonth() : 0);
+  const [selectedDate, setSelectedDate] = useState(() => new Date().getFullYear() === YEAR ? dateKey(new Date().getMonth(), new Date().getDate()) : `${YEAR}-01-01`);
   const [activeCategory, setActiveCategory] = useState<MarketEventCategory | "all">("all");
 
   useEffect(() => {
+    // Today is only known on the client; defer the highlight to avoid a hydration mismatch.
     const current = new Date();
     if (current.getFullYear() !== YEAR) return;
-    const currentDate = dateKey(current.getMonth(), current.getDate());
-    setToday(currentDate);
-    setMonth(current.getMonth());
-    setSelectedDate(currentDate);
+    const timer = window.setTimeout(() => setToday(dateKey(current.getMonth(), current.getDate())), 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   const monthEvents = useMemo(() => KOREA_MARKET_CALENDAR_2026.filter((event) => {
@@ -204,7 +203,7 @@ export function MarketCalendar() {
           <div className="agenda-scroll">
             {!groupedDays.length && <div className="agenda-empty">이 필터에 해당하는 일정이 없습니다.</div>}
             {groupedDays.map(([date, events]) => (
-              <section className={`agenda-day ${date === selectedDate ? "selected" : ""}`} key={date} onClick={() => setSelectedDate(date)}>
+              <section className={`agenda-day ${date === selectedDate ? "selected" : ""}`} key={date} role="button" tabIndex={0} onClick={() => setSelectedDate(date)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedDate(date); } }}>
                 <div className="agenda-date"><strong>{new Date(`${date}T12:00:00`).getDate()}</strong><span>{weekNames[new Date(`${date}T12:00:00`).getDay()]}</span></div>
                 <div className="agenda-events">
                   {events.map((event) => {

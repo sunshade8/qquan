@@ -77,6 +77,7 @@ type LlmUsageReport = {
   models: Array<{ model: string; calls: number; inputTokens: number; outputTokens: number; costUsd: number; price: { input: number; output: number; cacheWrite: number; cacheRead: number } | null }>;
   features: Array<{ feature: string; calls: number; costUsd: number }>;
   pricing: { currency: string; unit: string; effectiveDate: string; sourceUrl: string };
+  allocation?: Array<{ role: string; tier: "frontier" | "balanced" | "fast"; model: string; purpose: string; price: { input: number; output: number } | null }>;
   note: string;
 };
 
@@ -386,7 +387,10 @@ export function QuantWorkspace() {
     fetch("/api/llm-usage", { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
         const data = await response.json() as LlmUsageReport & { error?: string };
-        if (!response.ok) throw new Error(data.error || "LLM 사용량을 불러오지 못했습니다.");
+        if (!response.ok) {
+          if (data.allocation) setLlmUsage({ totals: { calls: 0, inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, costUsd: 0, trackingSince: null }, models: [], features: [], pricing: { currency: "USD", unit: "1M tokens", effectiveDate: "", sourceUrl: "" }, allocation: data.allocation, note: data.error || "" });
+          throw new Error(data.error || "LLM 사용량을 불러오지 못했습니다.");
+        }
         setLlmUsage(data);
         setLlmUsageError("");
       })
@@ -741,7 +745,10 @@ export function QuantWorkspace() {
               <article><div><strong>Toss Securities</strong><p>브로커 현재가·호가·최근 체결·장 시간 · 읽기 전용</p></div><span className={brokerSnapshot?.available ? "connected" : "missing"}><i />{brokerSnapshot?.available ? "Connected" : brokerSnapshot?.code === "ip_allowlist" ? "IP allowlist" : "Fallback"}</span></article>
               <article><div><strong>Yahoo Finance</strong><p>조정 일봉 10년 · 토스 교차검증 및 자동 폴백</p></div><span className={providers?.yahoo.status === "connected" ? "connected" : "missing"}><i />{providers?.yahoo.status === "connected" ? "Connected" : "Unavailable"}</span></article>
               <article><div><strong>Analysis dataset</strong><p>우선순위 Toss → Yahoo · 자동 갱신 캐시 24시간</p></div><span className={rows.length ? "connected" : "missing"}><i />{rows.length ? dataSource : "Loading"}</span></article>
-              <article><div><strong>Claude Opus 4.7</strong><p>News JARVIS, Lab Tool Agent와 Market Agent · 호출별 실제 토큰 기록</p></div><span className="connected"><i />Connected</span></article>
+              <article className="llm-cost-card">
+                <div className="llm-cost-head"><div><span>MODEL ALLOCATION</span><strong>역할별 Claude 모델</strong><p>비싼 frontier 모델은 오케스트레이션·최종 합성·전략 설계에만 쓰고, 대량 채점·감사·계획은 저렴한 티어로 돌립니다. ANTHROPIC_MODEL / ANTHROPIC_MODEL_BALANCED / ANTHROPIC_MODEL_FAST로 바꿀 수 있습니다.</p></div></div>
+                {llmUsage?.allocation ? <div className="model-allocation">{llmUsage.allocation.map((item) => <div key={item.role}><span><strong>{item.role}</strong><small>{item.purpose}</small></span><code>{item.model}{item.price ? ` · $${item.price.input}/$${item.price.output}` : ""}</code><em className={item.tier}>{item.tier}</em></div>)}</div> : <p className="llm-cost-note">{llmUsageError || "모델 배분을 불러오는 중"}</p>}
+              </article>
             </div>
           </section>
         )}

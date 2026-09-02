@@ -27,8 +27,13 @@ function shiftDate(date: string, days: number) {
 export async function findCompanyNews(company: string, date: string, windowDays = 2): Promise<CompanyNewsItem[]> {
   const from = shiftDate(date, -Math.max(1, windowDays));
   const to = shiftDate(date, Math.max(1, windowDays) + 1);
+  return searchNews(`"${company}"`, from, to, 8);
+}
+
+/** Google News RSS headline search bounded to a date range (inclusive of `from`, exclusive of `to`). */
+export async function searchNews(query: string, from: string, to: string, limit = 12): Promise<CompanyNewsItem[]> {
   const url = new URL("https://news.google.com/rss/search");
-  url.searchParams.set("q", `"${company}" after:${from} before:${to}`);
+  url.searchParams.set("q", `${query} after:${from} before:${to}`);
   url.searchParams.set("hl", "en-US");
   url.searchParams.set("gl", "US");
   url.searchParams.set("ceid", "US:en");
@@ -38,13 +43,14 @@ export async function findCompanyNews(company: string, date: string, windowDays 
     const response = await fetch(url, { headers, signal: controller.signal });
     if (!response.ok) throw new Error(`Google News RSS HTTP ${response.status}`);
     const xml = await response.text();
-    return [...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)].slice(0, 8).flatMap((match) => {
+    return [...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)].slice(0, Math.max(1, limit)).flatMap((match) => {
       const item = match[1];
-      const title = tag(item, "title");
+      const rawTitle = tag(item, "title");
       const link = tag(item, "link");
       const publishedAt = tag(item, "pubDate");
-      const source = tag(item, "source") || title.split(" - ").at(-1) || "Google News";
-      return title && link ? [{ title, source, url: link, publishedAt: publishedAt ? new Date(publishedAt).toISOString() : `${date}T00:00:00.000Z` }] : [];
+      const source = tag(item, "source") || rawTitle.split(" - ").at(-1) || "Google News";
+      const title = rawTitle.endsWith(` - ${source}`) ? rawTitle.slice(0, -(source.length + 3)).trim() : rawTitle;
+      return title && link ? [{ title, source, url: link, publishedAt: publishedAt ? new Date(publishedAt).toISOString() : `${from}T00:00:00.000Z` }] : [];
     });
   } finally {
     clearTimeout(timeout);

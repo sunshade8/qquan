@@ -1,5 +1,6 @@
 import { and, asc, desc, eq } from "drizzle-orm";
 import { getDb } from "@/db";
+import { ensureSchema } from "@/db/ensure";
 import { newsAgentMessages, newsResearchRuns, newsTests } from "@/db/schema";
 import { loadDailyRows } from "../../../../lib/price-cache";
 import type { PriceRow } from "../../../../lib/market-data";
@@ -56,6 +57,7 @@ async function repairMissingBenchmarks(tests: Array<typeof newsTests.$inferSelec
 export async function GET(request: Request) {
   const ownerId = researchOwnerFrom(request);
   try {
+    await ensureSchema();
     const db = getDb();
     const [storedTests, messages, runs] = await Promise.all([
       db.select().from(newsTests).where(eq(newsTests.ownerId, ownerId)).orderBy(desc(newsTests.createdAt)).limit(100),
@@ -93,6 +95,7 @@ export async function POST(request: Request) {
   const payload = await request.json() as Record<string, unknown>;
   const kind = payload.kind;
   try {
+    await ensureSchema();
     if (kind === "test") {
       const test = payload.test as Record<string, unknown> | undefined;
       if (!test || typeof test.periodStart !== "string" || typeof test.periodEnd !== "string") return Response.json({ error: "테스트 기간이 필요합니다." }, { status: 400 });
