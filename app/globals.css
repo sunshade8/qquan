@@ -1153,8 +1153,8 @@ em.verdict.inconclusive { color: #b56b00; background: rgba(216,135,0,.12); }
 .lab-tool-traces > span small { grid-column: 2 / 4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lab-composer { margin: 9px 10px 10px; border-radius: 11px; transition: border-color .15s ease, box-shadow .15s ease; }
 .lab-composer:focus-within { border-color: rgba(104,75,209,.42); box-shadow: 0 0 0 3px rgba(104,75,209,.07); }
-.lab-composer textarea { height: 66px; padding: 10px 11px 5px; font-size: 9px; }
-.lab-composer > footer { min-height: 35px; padding: 3px 5px 5px 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.lab-composer textarea { height: 58px; padding: 10px 11px 3px; font-size: 9px; }
+.lab-composer > footer { min-height: 32px; padding: 0 5px 5px 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .lab-composer > footer > span { min-width: 0; overflow: hidden; color: var(--tertiary); font-size: 6.8px; text-overflow: ellipsis; white-space: nowrap; }
 .lab-composer > footer > button { width: auto; min-width: 67px; height: 29px; padding: 0 10px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: 7.5px; font-weight: 750; }
 .lab-composer > footer > button:disabled { color: var(--tertiary); background: rgba(118,118,128,.12); }
