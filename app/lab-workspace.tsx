@@ -251,7 +251,7 @@ export function LabWorkspace({ conversationId, onConversationChange, onActivityC
         <header className="lab-agent-header">
           <div className="lab-agent-identity">
             <span className="agent-mark"><Sparkles size={15} /></span>
-            <div><span><strong>Lab JARVIS</strong><em className={running ? "running" : "ready"}>{running ? "RUNNING" : "READY"}</em></span><small>quant PM · 14 tools · persistent memory</small></div>
+            <div><span><strong>Lab JARVIS</strong><em className={running ? "running" : "ready"}>{running ? "RUNNING" : "READY"}</em></span><small>quant PM · 20 tools · persistent memory</small></div>
           </div>
           <nav className="lab-agent-actions" aria-label="대화 관리">
             <button disabled={!messages.length || running} onClick={() => onConversationChange?.(newConversationId())} title="현재 대화를 History에 보관하고 새 대화 시작"><MessageSquarePlus size={13} /><span>새 대화</span></button>

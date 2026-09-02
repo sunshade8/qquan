@@ -6,7 +6,8 @@ import { newsTests } from "@/db/schema";
 import { MARKET_EVENT_CALENDAR, MARKET_EVENT_CATEGORY_LABELS } from "@/app/market-calendar-data";
 import { findCompanyNews, searchNews } from "@/lib/company-news";
 import type { LabArtifact, LabToolTrace } from "@/lib/lab-types";
-import { fetchTossSnapshot, type PriceRow } from "@/lib/market-data";
+import { fetchTossSnapshot, fetchYahooIntradayWindow, type IntradayInterval, type PriceRow } from "@/lib/market-data";
+import { calculateIntradayReaction, summarizeIntradayStudy } from "@/lib/intraday-study";
 import { deterministicTestSummary, type ResearchTest } from "@/lib/news-research-agents";
 import { loadDailyRows } from "@/lib/price-cache";
 import {
@@ -24,6 +25,10 @@ function shiftDate(date: string, days: number) {
   const value = new Date(`${date}T00:00:00Z`);
   value.setUTCDate(value.getUTCDate() + days);
   return value.toISOString().slice(0, 10);
+}
+
+function daysBetween(from: string, to: string) {
+  return Math.floor((new Date(`${to}T00:00:00Z`).getTime() - new Date(`${from}T00:00:00Z`).getTime()) / 86_400_000);
 }
 
 function isDate(value: unknown): value is string {
@@ -117,6 +122,35 @@ export const LAB_TOOLS: Anthropic.Tool[] = [
         lookbackDays: { type: "integer", description: "기본 1825 (5년)" },
       },
       required: ["symbol", "feature", "operator", "threshold"],
+    },
+  },
+  {
+    name: "intraday_event_study",
+    description: "경제지표·실적·뉴스 이벤트의 정확한 날짜와 미국 동부시각(ET)을 기준으로 여러 자산의 발표 전/후 분봉 수익률을 계산한다. 기본 자산은 기술주 QQQ와 가치주 IWD, 기본 구간은 발표 전 30분·후 30분이다. 5분/15분 종가 경계로 계산하며 현재 Yahoo 공급 범위상 최근 약 60일만 보장한다. 이벤트 날짜·시각을 market_calendar 또는 web_search로 먼저 확인한 뒤 호출한다.",
+    input_schema: {
+      type: "object",
+      properties: {
+        events: {
+          type: "array", minItems: 1, maxItems: 24,
+          items: {
+            type: "object",
+            properties: {
+              date: { type: "string", description: "YYYY-MM-DD" },
+              timeET: { type: "string", description: "HH:mm 미국 동부시각" },
+              label: { type: "string", description: "이벤트 이름" },
+              actual: { type: "string", description: "실제 발표값(확인된 경우)" },
+              consensus: { type: "string", description: "컨센서스(확인된 경우)" },
+              surprise: { type: "string", enum: ["above", "below", "inline", "unknown"], description: "실제치의 예상 대비 분류" },
+            },
+            required: ["date", "timeET"],
+          },
+        },
+        symbols: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 4, description: "비교 자산. 기본 QQQ,IWD" },
+        interval: { type: "string", enum: ["5m", "15m"], description: "분봉 주기. 기본 5m" },
+        preMinutes: { type: "integer", minimum: 15, maximum: 120, description: "발표 전 계산 구간. 기본 30분" },
+        postMinutes: { type: "integer", minimum: 15, maximum: 240, description: "발표 후 계산 구간. 기본 30분" },
+      },
+      required: ["events"],
     },
   },
   {
@@ -377,6 +411,81 @@ async function runEventStudy(input: Input, context: ToolContext): Promise<ToolOu
   return { result: { asset: loaded.asset, ...study, period: artifact.period }, artifacts: [artifact], trace: { name: "event_study", label: `${loaded.asset.symbol} 이벤트 스터디`, status: "complete", detail: `${study.occurrences}회 발생 · 승률 ${study.positiveRatePct ?? "—"}%` } };
 }
 
+type IntradayEventInput = {
+  date: string;
+  timeET: string;
+  label: string;
+  actual: string | null;
+  consensus: string | null;
+  surprise: "above" | "below" | "inline" | "unknown";
+};
+
+async function intradayEventStudy(input: Input, context: ToolContext): Promise<ToolOutcome> {
+  const events = (Array.isArray(input.events) ? input.events : []).flatMap((value): IntradayEventInput[] => {
+    if (!value || typeof value !== "object") return [];
+    const row = value as Record<string, unknown>;
+    const date = String(row.date ?? "");
+    const timeET = String(row.timeET ?? "");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(timeET)) return [];
+    const surprise = ["above", "below", "inline"].includes(String(row.surprise)) ? String(row.surprise) as IntradayEventInput["surprise"] : "unknown";
+    return [{ date, timeET, label: String(row.label ?? "시장 이벤트").slice(0, 120), actual: row.actual ? String(row.actual).slice(0, 80) : null, consensus: row.consensus ? String(row.consensus).slice(0, 80) : null, surprise }];
+  }).slice(0, 24);
+  if (!events.length) return { result: { available: false, reason: "유효한 이벤트 날짜와 ET 시각이 필요합니다." }, artifacts: [], trace: { name: "intraday_event_study", label: "분봉 이벤트 스터디", status: "failed", detail: "이벤트 날짜·시각 없음" } };
+
+  const requestedSymbols = (Array.isArray(input.symbols) && input.symbols.length ? input.symbols : ["QQQ", "IWD"]).map(String).slice(0, 4);
+  const resolved = await resolveSymbols(requestedSymbols);
+  const interval = (input.interval === "15m" ? "15m" : "5m") as IntradayInterval;
+  const intervalMinutes = interval === "15m" ? 15 : 5;
+  const preMinutes = Math.min(120, Math.max(15, Number(input.preMinutes) || 30));
+  const postMinutes = Math.min(240, Math.max(15, Number(input.postMinutes) || 30));
+  const rows: Array<IntradayEventInput & { symbol: string; name: string; reaction: Omit<NonNullable<ReturnType<typeof calculateIntradayReaction>>, "normalizedPath"> | null; unavailable: string | null }> = [];
+
+  for (const event of events) {
+    const age = daysBetween(event.date, context.today);
+    const eventRows = await Promise.all(resolved.map(async (asset) => {
+      const symbol = asset.symbol ?? asset.input;
+      const base = { ...event, symbol, name: asset.name };
+      if (!asset.public || !asset.symbol) return { ...base, reaction: null, unavailable: asset.note ?? "거래 가능 종목을 확인하지 못했습니다." };
+      if (age < 0) return { ...base, reaction: null, unavailable: "아직 지나지 않은 이벤트입니다." };
+      if (age > 59) return { ...base, reaction: null, unavailable: `${interval} 공급 범위(최근 약 60일)를 벗어났습니다.` };
+      try {
+        const points = await fetchYahooIntradayWindow(asset.symbol, shiftDate(event.date, -1), shiftDate(event.date, 1), interval);
+        const calculated = calculateIntradayReaction(points, event.date, event.timeET, intervalMinutes, preMinutes, postMinutes);
+        if (!calculated) return { ...base, reaction: null, unavailable: "발표 시각 직전·직후의 완결 분봉이 없습니다." };
+        const reaction = {
+          baseTime: calculated.baseTime, basePrice: calculated.basePrice, preTime: calculated.preTime, preReturnPct: calculated.preReturnPct,
+          postTime: calculated.postTime, postReturnPct: calculated.postReturnPct, toRegularClosePct: calculated.toRegularClosePct,
+        };
+        return { ...base, reaction, unavailable: null };
+      } catch (error) {
+        return { ...base, reaction: null, unavailable: error instanceof Error ? error.message : "분봉 데이터를 가져오지 못했습니다." };
+      }
+    }));
+    rows.push(...eventRows);
+  }
+
+  const summaries = summarizeIntradayStudy(rows.map((row) => ({ symbol: row.symbol, surprise: row.surprise, reaction: row.reaction ? { ...row.reaction, normalizedPath: [] } : null })));
+  const available = rows.filter((row) => row.reaction).length;
+  const artifact: LabArtifact = {
+    id: id(), type: "table", title: `분봉 이벤트 스터디 · ${interval}`, subtitle: `${events.length}개 이벤트 · ${available}/${rows.length}개 자산-이벤트 관측 가능`,
+    columns: ["발표일·시각 ET", "이벤트", "실제/예상", "Surprise", "자산", `발표 전 ${preMinutes}분 %`, `발표 후 ${postMinutes}분 %`, "정규장 종가까지 %", "상태"],
+    rows: rows.map((row) => [
+      `${row.date} ${row.timeET}`, row.label, row.actual || row.consensus ? `${row.actual ?? "?"} / ${row.consensus ?? "?"}` : "—", row.surprise, row.symbol,
+      row.reaction?.preReturnPct ?? null, row.reaction?.postReturnPct ?? null, row.reaction?.toRegularClosePct ?? null, row.unavailable ?? "완료",
+    ]),
+    notes: [
+      `발표 직전 완결 ${interval} 봉을 기준가로 사용 · 미국 동부시각(ET)`,
+      `현재 공급자: Yahoo Finance · ${interval}은 최근 약 60일 범위만 보장`,
+      "Surprise는 입력된 실제치·컨센서스 분류를 그대로 사용하며 임의 추정하지 않음",
+    ],
+  };
+  return {
+    result: { methodology: { timezone: "America/New_York", interval, preMinutes, postMinutes, base: "last completed bar at or before release time", provider: "Yahoo Finance", guaranteedLookbackDays: 59 }, coverage: { events: events.length, symbols: resolved.length, requested: rows.length, available, unavailable: rows.length - available }, rows, summaries },
+    artifacts: [artifact],
+    trace: { name: "intraday_event_study", label: "분봉 이벤트 스터디", status: available ? "complete" : "failed", detail: `${available}/${rows.length}개 관측 · ${interval} · 전후 ${preMinutes}/${postMinutes}분` },
+  };
+}
+
 async function runBacktest(input: Input, context: ToolContext): Promise<ToolOutcome> {
   const { from, to } = windowFor(input, context.today, 1825);
   const loaded = await loadAsset(String(input.symbol ?? ""), shiftDate(from, -320), to);
@@ -610,6 +719,7 @@ export async function executeLabTool(name: string, input: unknown, context: Tool
     case "compare_assets": return compareAssets(args, context);
     case "technical_indicators": return technicalIndicators(args, context);
     case "event_study": return runEventStudy(args, context);
+    case "intraday_event_study": return intradayEventStudy(args, context);
     case "backtest_strategy": return runBacktest(args, context);
     case "risk_profile": return riskTable(args, context);
     case "seasonality": return seasonalityTool(args, context);
@@ -628,5 +738,5 @@ export async function executeLabTool(name: string, input: unknown, context: Tool
 }
 
 export const TOOL_LABELS: Record<string, string> = {
-  resolve_symbols: "심볼 해석", get_price_history: "가격 이력", compare_assets: "자산 비교", technical_indicators: "기술 지표", event_study: "이벤트 스터디", backtest_strategy: "백테스트", risk_profile: "리스크 프로파일", seasonality: "계절성", largest_moves_with_news: "급등락·뉴스", search_news: "뉴스 검색", get_quote: "현재가", market_calendar: "경제 일정", news_sentiment_tests: "뉴스 감성 Test", show_chart: "TradingView 차트", propose_strategy: "전략 제안", save_strategy: "전략 저장", run_strategy_backtest: "전략 백테스트", list_strategies: "저장된 전략", web_search: "웹 검색",
+  resolve_symbols: "심볼 해석", get_price_history: "가격 이력", compare_assets: "자산 비교", technical_indicators: "기술 지표", event_study: "이벤트 스터디", intraday_event_study: "분봉 이벤트 스터디", backtest_strategy: "백테스트", risk_profile: "리스크 프로파일", seasonality: "계절성", largest_moves_with_news: "급등락·뉴스", search_news: "뉴스 검색", get_quote: "현재가", market_calendar: "경제 일정", news_sentiment_tests: "뉴스 감성 Test", show_chart: "TradingView 차트", propose_strategy: "전략 제안", save_strategy: "전략 저장", run_strategy_backtest: "전략 백테스트", list_strategies: "저장된 전략", web_search: "웹 검색",
 };
