@@ -62,7 +62,7 @@ const OVERLAY_COLORS = ["#087aff", "#9a62da", "#d88700", "#18864b", "#d13b3b", "
 export const LAB_TOOLS: Anthropic.Tool[] = [
   {
     name: "resolve_symbols",
-    description: "회사명·한글 별칭·티커를 Yahoo Finance 심볼로 해석한다. 비상장사는 public=false로 반환한다. 어떤 종목인지 불확실할 때 먼저 호출한다.",
+    description: "회사명·한글 별칭·티커를 라이브 시장 메타데이터로 확인한다. symbol·상장 상태·상장일·확인 시각·출처를 반환하며, 확인 실패를 비상장으로 단정하지 않는다. 어떤 종목인지 불확실할 때 먼저 호출한다.",
     input_schema: { type: "object", properties: { queries: { type: "array", items: { type: "string" }, description: "회사명 또는 티커 목록" } }, required: ["queries"] },
   },
   {
@@ -419,7 +419,7 @@ async function newsSearch(input: Input, context: ToolContext): Promise<ToolOutco
 
 async function quote(input: Input, context: ToolContext): Promise<ToolOutcome> {
   const asset = await resolveSymbol(String(input.symbol ?? ""));
-  if (!asset.public || !asset.symbol) return { result: { available: false, reason: asset.note }, artifacts: [], trace: { name: "get_quote", label: "현재가", status: "failed", detail: asset.note ?? "비상장" } };
+  if (!asset.public || !asset.symbol) return { result: { available: false, reason: asset.note }, artifacts: [], trace: { name: "get_quote", label: "현재가", status: "failed", detail: asset.note ?? "종목 확인 실패" } };
   const [snapshot, daily] = await Promise.all([fetchTossSnapshot(asset.symbol), loadDailyRows(asset.symbol, shiftDate(context.today, -14), context.today)]);
   const last = daily.rows.at(-1);
   const previous = daily.rows.at(-2);
@@ -466,7 +466,7 @@ async function sentimentTests(_input: Input, context: ToolContext): Promise<Tool
 
 async function showChart(input: Input): Promise<ToolOutcome> {
   const asset = await resolveSymbol(String(input.symbol ?? ""));
-  if (!asset.public || !asset.symbol) return { result: { available: false, reason: asset.note }, artifacts: [limitation(`${asset.name} 차트 불가`, asset.note ?? "상장 종목이 아닙니다.", ["상장 종목 지정"])], trace: { name: "show_chart", label: "차트", status: "failed", detail: asset.note ?? "비상장" } };
+  if (!asset.public || !asset.symbol) return { result: { available: false, reason: asset.note }, artifacts: [limitation(`${asset.name} 차트 불가`, asset.note ?? "거래 가능 종목을 확인하지 못했습니다.", ["티커와 거래소 지정"])], trace: { name: "show_chart", label: "차트", status: "failed", detail: asset.note ?? "종목 확인 실패" } };
   const interval = typeof input.interval === "string" ? input.interval : "D";
   const studies = (Array.isArray(input.studies) ? input.studies as string[] : []).map((study) => STUDY_IDS[study]).filter(Boolean);
   const tradingView = asset.tradingView ?? `NASDAQ:${asset.symbol}`;
@@ -479,7 +479,7 @@ export async function executeLabTool(name: string, input: unknown, context: Tool
   switch (name) {
     case "resolve_symbols": {
       const resolved = await resolveSymbols((Array.isArray(args.queries) ? args.queries : []).map(String).slice(0, 10));
-      return { result: resolved, artifacts: [], trace: { name, label: "심볼 해석", status: "complete", detail: resolved.map((item) => item.symbol ?? `${item.name}(비상장)`).join(", ") } };
+      return { result: resolved, artifacts: [], trace: { name, label: "심볼 해석", status: "complete", detail: resolved.map((item) => item.symbol ?? `${item.name}(미확인)`).join(", ") } };
     }
     case "get_price_history": return priceHistory(args, context);
     case "compare_assets": return compareAssets(args, context);

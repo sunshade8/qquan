@@ -1,8 +1,12 @@
 /**
  * Turns company names, Korean nicknames, and tickers into tradable symbols.
- * Anything Yahoo Finance cannot find is reported as unresolved rather than
- * being silently replaced with a proxy.
+ *
+ * Static aliases are only candidate hints. Listing status is determined from
+ * live Yahoo Finance metadata so a company that later goes public is not
+ * permanently trapped in a stale "private company" list.
  */
+
+export type ListingStatus = "listed" | "candidate" | "unresolved";
 
 export type ResolvedSymbol = {
   input: string;
@@ -11,22 +15,17 @@ export type ResolvedSymbol = {
   exchange: string | null;
   quoteType: string | null;
   public: boolean;
+  listingStatus: ListingStatus;
+  listingDate: string | null;
+  source: string;
+  checkedAt: string;
+  confidence: "high" | "medium" | "low";
   tradingView: string | null;
   note: string | null;
 };
 
-const PRIVATE_COMPANIES: Array<{ pattern: RegExp; name: string }> = [
-  { pattern: /^space\s*x$/i, name: "SpaceX" },
-  { pattern: /^open\s*ai$/i, name: "OpenAI" },
-  { pattern: /^anthropic$/i, name: "Anthropic" },
-  { pattern: /^stripe$/i, name: "Stripe" },
-  { pattern: /^databricks$/i, name: "Databricks" },
-  { pattern: /^bytedance|틱톡|tiktok$/i, name: "ByteDance" },
-  { pattern: /^shein$/i, name: "Shein" },
-  { pattern: /^x\.?ai$/i, name: "xAI" },
-];
-
 const ALIASES: Array<{ pattern: RegExp; symbol: string; name: string; exchange?: string; tradingView?: string }> = [
+  { pattern: /^(?:space\s*x|스페이스\s*x|spcx)$/i, symbol: "SPCX", name: "Space Exploration Technologies Corp.", exchange: "NASDAQ" },
   { pattern: /^(?:nvidia|엔비디아|nvda)$/i, symbol: "NVDA", name: "NVIDIA", exchange: "NASDAQ" },
   { pattern: /^(?:apple|애플|aapl)$/i, symbol: "AAPL", name: "Apple", exchange: "NASDAQ" },
   { pattern: /^(?:microsoft|마이크로소프트|msft)$/i, symbol: "MSFT", name: "Microsoft", exchange: "NASDAQ" },
@@ -67,7 +66,9 @@ const YAHOO_EXCHANGE_TO_TRADINGVIEW: Record<string, string> = {
   NMS: "NASDAQ", NGM: "NASDAQ", NCM: "NASDAQ", NAS: "NASDAQ", NYQ: "NYSE", PCX: "AMEX", ASE: "AMEX", BTS: "AMEX", KSC: "KRX", KOE: "KRX", TAI: "TWSE", JPX: "TSE", LSE: "LSE", HKG: "HKEX", CCC: "CRYPTO",
 };
 
-const cache = new Map<string, ResolvedSymbol>();
+const LISTED_CACHE_MS = 6 * 60 * 60 * 1000;
+const RETRY_CACHE_MS = 5 * 60 * 1000;
+const cache = new Map<string, { value: ResolvedSymbol; expiresAt: number }>();
 
 function tradingViewFor(symbol: string, exchange: string | null) {
   if (!exchange) return null;
@@ -76,7 +77,31 @@ function tradingViewFor(symbol: string, exchange: string | null) {
   return `${code}:${clean}`;
 }
 
-type YahooSearch = { quotes?: Array<{ symbol?: string; shortname?: string; longname?: string; quoteType?: string; exchange?: string; exchDisp?: string; score?: number }> };
+type YahooQuote = { symbol?: string; shortname?: string; longname?: string; quoteType?: string; exchange?: string; exchDisp?: string; score?: number };
+type YahooSearch = { quotes?: YahooQuote[] };
+type YahooChartMeta = {
+  symbol?: string;
+  exchangeName?: string;
+  fullExchangeName?: string;
+  instrumentType?: string;
+  firstTradeDate?: number;
+  longName?: string;
+  shortName?: string;
+};
+type YahooChart = { chart?: { result?: Array<{ meta?: YahooChartMeta }>; error?: unknown } };
+
+async function yahooJson<T>(url: URL): Promise<T | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 6_000);
+  try {
+    const response = await fetch(url, { headers: { "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36", accept: "application/json" }, signal: controller.signal });
+    return response.ok ? await response.json() as T : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 async function searchYahoo(query: string) {
   const url = new URL("https://query2.finance.yahoo.com/v1/finance/search");
@@ -84,58 +109,109 @@ async function searchYahoo(query: string) {
   url.searchParams.set("quotesCount", "8");
   url.searchParams.set("newsCount", "0");
   url.searchParams.set("listsCount", "0");
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 6_000);
-  try {
-    const response = await fetch(url, { headers: { "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36", accept: "application/json" }, signal: controller.signal });
-    if (!response.ok) return [];
-    const payload = await response.json() as YahooSearch;
-    return (payload.quotes ?? []).filter((quote) => quote.symbol && ["EQUITY", "ETF", "INDEX", "CRYPTOCURRENCY", "FUTURE", "CURRENCY", "MUTUALFUND"].includes(quote.quoteType ?? ""));
-  } catch {
-    return [];
-  } finally {
-    clearTimeout(timeout);
-  }
+  const payload = await yahooJson<YahooSearch>(url);
+  return (payload?.quotes ?? []).filter((quote) => quote.symbol && ["EQUITY", "ETF", "INDEX", "CRYPTOCURRENCY", "FUTURE", "CURRENCY", "MUTUALFUND"].includes(quote.quoteType ?? ""));
+}
+
+async function yahooMeta(symbol: string) {
+  const url = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`);
+  url.searchParams.set("range", "5d");
+  url.searchParams.set("interval", "1d");
+  const payload = await yahooJson<YahooChart>(url);
+  return payload?.chart?.result?.[0]?.meta ?? null;
+}
+
+function cacheResult(key: string, value: ResolvedSymbol) {
+  const ttl = value.listingStatus === "listed" ? LISTED_CACHE_MS : RETRY_CACHE_MS;
+  cache.set(key, { value, expiresAt: Date.now() + ttl });
+  return value;
+}
+
+function fromMeta(input: string, meta: YahooChartMeta, fallback: { symbol: string; name: string; exchange?: string; tradingView?: string }): ResolvedSymbol {
+  const symbol = meta.symbol ?? fallback.symbol;
+  const exchangeCode = meta.exchangeName ?? fallback.exchange ?? null;
+  return {
+    input,
+    symbol,
+    name: meta.longName || meta.shortName || fallback.name,
+    exchange: meta.fullExchangeName || exchangeCode,
+    quoteType: meta.instrumentType ?? null,
+    public: true,
+    listingStatus: "listed",
+    listingDate: meta.firstTradeDate ? new Date(meta.firstTradeDate * 1000).toISOString().slice(0, 10) : null,
+    source: "Yahoo Finance live market metadata",
+    checkedAt: new Date().toISOString(),
+    confidence: "high",
+    tradingView: fallback.tradingView ?? tradingViewFor(symbol, exchangeCode),
+    note: null,
+  };
+}
+
+function quoteScore(quote: YahooQuote, query: string) {
+  const symbol = quote.symbol?.toLowerCase() ?? "";
+  const name = `${quote.longname ?? ""} ${quote.shortname ?? ""}`.toLowerCase();
+  const clean = query.toLowerCase().replace(/[^a-z0-9가-힣]/g, "");
+  const normalizedName = name.replace(/[^a-z0-9가-힣]/g, "");
+  const typeScore: Record<string, number> = { EQUITY: 500, ETF: 300, INDEX: 250, MUTUALFUND: 200, FUTURE: 100, CURRENCY: 80, CRYPTOCURRENCY: 50 };
+  return (typeScore[quote.quoteType ?? ""] ?? 0)
+    + (symbol === query.toLowerCase() ? 1_000 : 0)
+    + (clean && normalizedName.includes(clean) ? 350 : 0)
+    + Math.min(100, Number(quote.score) || 0);
 }
 
 export async function resolveSymbol(input: string): Promise<ResolvedSymbol> {
   const clean = input.trim().replace(/\s+/g, " ");
   const key = clean.toLowerCase();
   const cached = cache.get(key);
-  if (cached) return cached;
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  if (cached) cache.delete(key);
 
-  const privateCompany = PRIVATE_COMPANIES.find((item) => item.pattern.test(clean));
-  if (privateCompany) {
-    const resolved: ResolvedSymbol = { input: clean, symbol: null, name: privateCompany.name, exchange: null, quoteType: null, public: false, tradingView: null, note: `${privateCompany.name}는 비상장사라 검증 가능한 공개 주가 시계열이 없습니다.` };
-    cache.set(key, resolved);
-    return resolved;
-  }
   const alias = ALIASES.find((item) => item.pattern.test(clean));
   if (alias) {
-    const resolved: ResolvedSymbol = { input: clean, symbol: alias.symbol, name: alias.name, exchange: alias.exchange ?? null, quoteType: null, public: true, tradingView: alias.tradingView ?? tradingViewFor(alias.symbol, alias.exchange ?? null), note: null };
-    cache.set(key, resolved);
-    return resolved;
+    const meta = await yahooMeta(alias.symbol);
+    if (meta?.symbol) return cacheResult(key, fromMeta(clean, meta, alias));
+    return cacheResult(key, {
+      input: clean, symbol: alias.symbol, name: alias.name, exchange: alias.exchange ?? null, quoteType: null, public: true,
+      listingStatus: "candidate", listingDate: null, source: "Static symbol alias; live validation unavailable", checkedAt: new Date().toISOString(), confidence: "medium",
+      tradingView: alias.tradingView ?? tradingViewFor(alias.symbol, alias.exchange ?? null), note: "실시간 상장 상태 확인이 응답하지 않아 등록된 심볼 후보로 가격 조회를 계속합니다.",
+    });
   }
 
   const looksLikeTicker = /^[A-Z0-9.^=-]{1,12}$/i.test(clean) && !/^[가-힣]+$/.test(clean);
+  if (looksLikeTicker) {
+    const symbol = clean.toUpperCase();
+    const meta = await yahooMeta(symbol);
+    if (meta?.symbol) return cacheResult(key, fromMeta(clean, meta, { symbol, name: symbol }));
+  }
+
   const quotes = await searchYahoo(clean);
   const exact = looksLikeTicker ? quotes.find((quote) => quote.symbol?.toUpperCase() === clean.toUpperCase()) : undefined;
-  const best = exact ?? quotes[0];
+  const best = exact ?? [...quotes].sort((a, b) => quoteScore(b, clean) - quoteScore(a, clean))[0];
   if (best?.symbol) {
+    const meta = await yahooMeta(best.symbol);
+    if (meta?.symbol) return cacheResult(key, fromMeta(clean, meta, { symbol: best.symbol, name: best.longname || best.shortname || best.symbol, exchange: best.exchange }));
     const exchange = best.exchange ?? null;
-    const resolved: ResolvedSymbol = {
+    return cacheResult(key, {
       input: clean, symbol: best.symbol, name: best.longname || best.shortname || best.symbol, exchange: best.exchDisp ?? exchange, quoteType: best.quoteType ?? null, public: true,
-      tradingView: tradingViewFor(best.symbol, exchange), note: exact || !looksLikeTicker ? null : `'${clean}'와 정확히 일치하는 티커가 없어 ${best.symbol}(${best.shortname ?? ""})로 해석했습니다.`,
-    };
-    cache.set(key, resolved);
-    return resolved;
+      listingStatus: "candidate", listingDate: null, source: "Yahoo Finance search; live chart validation unavailable", checkedAt: new Date().toISOString(), confidence: exact ? "medium" : "low",
+      tradingView: tradingViewFor(best.symbol, exchange), note: exact ? "실시간 가격 메타데이터 확인이 지연되어 검색 결과 심볼로 조회를 계속합니다." : `'${clean}'와 정확히 일치하는 티커가 없어 ${best.symbol}(${best.shortname ?? ""}) 후보로 해석했습니다.`,
+    });
   }
+
   if (looksLikeTicker) {
-    // Yahoo search can be throttled; a ticker-shaped input is still worth a price lookup.
     const symbol = clean.toUpperCase();
-    return { input: clean, symbol, name: symbol, exchange: null, quoteType: null, public: true, tradingView: null, note: "심볼 검색이 응답하지 않아 입력값을 티커로 그대로 사용했습니다." };
+    return cacheResult(key, {
+      input: clean, symbol, name: symbol, exchange: null, quoteType: null, public: true,
+      listingStatus: "candidate", listingDate: null, source: "User-supplied ticker; live validation unavailable", checkedAt: new Date().toISOString(), confidence: "low", tradingView: null,
+      note: "심볼 조회가 응답하지 않아 입력한 티커로 가격 조회를 시도합니다.",
+    });
   }
-  return { input: clean, symbol: null, name: clean, exchange: null, quoteType: null, public: false, tradingView: null, note: `'${clean}'에 해당하는 상장 종목을 찾지 못했습니다. 티커를 직접 지정해주세요.` };
+
+  return cacheResult(key, {
+    input: clean, symbol: null, name: clean, exchange: null, quoteType: null, public: false,
+    listingStatus: "unresolved", listingDate: null, source: "Yahoo Finance live search", checkedAt: new Date().toISOString(), confidence: "low", tradingView: null,
+    note: `'${clean}'에 해당하는 거래 가능 종목을 현재 데이터 소스에서 확인하지 못했습니다. 비상장으로 단정할 수 없으므로 티커나 거래소를 지정해주세요.`,
+  });
 }
 
 export async function resolveSymbols(inputs: string[]) {
