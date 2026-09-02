@@ -1,4 +1,6 @@
 import { env } from "cloudflare:workers";
+import { callClaude, ClaudeApiError } from "@/lib/anthropic";
+import { researchOwnerCookie, researchOwnerFrom } from "@/lib/research-owner";
 
 type PriceRow = {
   date: string;
@@ -38,6 +40,7 @@ export async function POST(request: Request) {
   if (!apiKey) {
     return Response.json({ error: "Claude 서버 키가 연결되지 않았습니다. 새 키를 Settings에 연결해야 합니다." }, { status: 503 });
   }
+  const ownerId = researchOwnerFrom(request);
 
   const prompt = `You are a research agent inside a personal quantitative research program.
 
@@ -61,22 +64,11 @@ Recent OHLCV rows (oldest to newest): ${JSON.stringify(rows.slice(-400))}
 
 User question: ${question}`;
 
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({ model, max_tokens: 1800, messages: [{ role: "user", content: prompt }] }),
-  });
-
-  if (!response.ok) {
-    return Response.json({ error: "Claude 분석 호출에 실패했습니다." }, { status: response.status });
+  try {
+    const result = await callClaude({ apiKey, model, prompt, maxTokens: 1800, ownerId, feature: "market.research_agent" });
+    return Response.json({ answer: result.text, model, usage: result.usage, costUsd: result.costUsd }, { headers: { "set-cookie": researchOwnerCookie(ownerId) } });
+  } catch (error) {
+    const status = error instanceof ClaudeApiError ? error.status : 500;
+    return Response.json({ error: error instanceof Error ? error.message : "Claude 분석 호출에 실패했습니다." }, { status, headers: { "set-cookie": researchOwnerCookie(ownerId) } });
   }
-
-  const result = await response.json() as { content?: Array<{ type: string; text?: string }> };
-  const answer = result.content?.filter((item) => item.type === "text").map((item) => item.text).join("\n").trim();
-  if (!answer) return Response.json({ error: "Claude 응답이 비어 있습니다." }, { status: 502 });
-  return Response.json({ answer, model });
 }

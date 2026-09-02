@@ -1,4 +1,6 @@
 import { env } from "cloudflare:workers";
+import { callClaude, ClaudeApiError } from "@/lib/anthropic";
+import { researchOwnerCookie, researchOwnerFrom } from "@/lib/research-owner";
 import { type PriceRow } from "../../../../lib/market-data";
 import { loadDailyRows } from "../../../../lib/price-cache";
 import { MARKET_CALENDAR_2026 } from "../../../market-calendar-data";
@@ -101,6 +103,7 @@ export async function POST(request: Request) {
   const apiKey = bindings.ANTHROPIC_API_KEY ?? process.env.ANTHROPIC_API_KEY;
   const model = bindings.ANTHROPIC_MODEL ?? process.env.ANTHROPIC_MODEL ?? "claude-opus-4-7";
   if (!apiKey) return Response.json({ error: "Claude 서버 키가 연결되지 않았습니다." }, { status: 503 });
+  const ownerId = researchOwnerFrom(request);
 
   // Only the bars around the selected range are needed. Requesting ten years
   // for four symbols at once is what tripped Yahoo's per-IP rate limit and left
@@ -153,14 +156,11 @@ Deterministic adjusted-close market window: ${JSON.stringify(market)}
 Selected-range index outcomes (first to last available close; outcome data, not input evidence): ${JSON.stringify(benchmarks)}
 Headline corpus: ${JSON.stringify(headlines)}`;
 
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
-    body: JSON.stringify({ model, max_tokens: 3600, messages: [{ role: "user", content: prompt }] }),
-  });
-  if (!response.ok) return Response.json({ error: "Claude 뉴스 분석 호출에 실패했습니다." }, { status: response.status });
-  const result = await response.json() as { content?: Array<{ type: string; text?: string }> };
-  const text = result.content?.filter((item) => item.type === "text").map((item) => item.text).join("\n").trim();
-  if (!text) return Response.json({ error: "Claude 뉴스 분석 결과가 비어 있습니다." }, { status: 502 });
-  return Response.json({ analysis: normalizeAnalysis(parseJson(text), articles.length), market, benchmarks, events, model, articleCount: articles.length });
+  try {
+    const result = await callClaude({ apiKey, model, prompt, maxTokens: 3600, ownerId, feature: "news.sentiment_analyst" });
+    return Response.json({ analysis: normalizeAnalysis(parseJson(result.text), articles.length), market, benchmarks, events, model, articleCount: articles.length, usage: result.usage, costUsd: result.costUsd }, { headers: { "set-cookie": researchOwnerCookie(ownerId) } });
+  } catch (error) {
+    const status = error instanceof ClaudeApiError ? error.status : 500;
+    return Response.json({ error: error instanceof Error ? error.message : "Claude 뉴스 분석 호출에 실패했습니다." }, { status, headers: { "set-cookie": researchOwnerCookie(ownerId) } });
+  }
 }

@@ -109,7 +109,8 @@ const googleSourceNames: Record<string, string> = {
 };
 
 const noisyHeadlinePattern = /\bjob with\b|company announcement|newsletter(?: signup)?|print edition|trending news, latest updates, analysis|sector & industry performance|^(?:interviews|economics?|business|shows|style(?:\s*-\s*page \d+)?|united states|ap|minute by minute|bonds headlines|opinion \+ politics|us news \+ business|business \+ economics|economics \+ business)$/i;
-const releasedResultPattern = /(?:meets?|met|beat|beats|missed?|above|below|tops?|topped|rose|fell|increased|decreased).{0,48}(?:expectations?|forecast|consensus)|(?:expectations?|forecast|consensus).{0,48}(?:met|beat|missed?|above|below|topped)|\bas expected\b|\b(?:rose|fell|increased|decreased|came in)\s+(?:by\s+)?\d/i;
+const releasedResultPattern = /(?:meets?|met|beat|beats|missed?|above|below|tops?|topped|rose|rises|fell|falls|increased|increases|decreased|decreases|slowed|slows|accelerated|accelerates|surged|surges|undershot|undershoots|overshot|overshoots|came in).{0,60}(?:expected|expectations?|forecast|consensus)|(?:expected|expectations?|forecast|consensus).{0,60}(?:met|beat|missed?|above|below|topped|undershot|overshot)|\bas expected\b|\b(?:rose|rises|fell|falls|increased|increases|decreased|decreases|came in)\s+(?:by\s+)?\d/i;
+const usEventHeadlinePattern = /\bUS\b|\bU\.S\.\b|United States|Federal Reserve|\bFed\b|Wall Street|Treasur(?:y|ies)/i;
 
 // Google and Bing answer datacenter egress differently when no browser-shaped
 // headers are present: an empty channel instead of results. Sending a real
@@ -367,7 +368,9 @@ async function collectForecastSource(source: TrustedSource, start: string, end: 
   const today = koreaDate(new Date());
   const windowDays = daysBetween(start, today) + 1;
   const recent = windowDays > 0 && windowDays <= 60 && end >= shiftDate(today, -2);
-  const searches = eventRoot && eventForecastSearches[eventRoot] ? eventForecastSearches[eventRoot] : forecastSearches;
+  const baseSearches = eventRoot && eventForecastSearches[eventRoot] ? eventForecastSearches[eventRoot] : forecastSearches;
+  const eventMonth = new Intl.DateTimeFormat("en-US", { timeZone: "UTC", month: "long", year: "numeric" }).format(new Date(`${end}T00:00:00Z`));
+  const searches = eventRoot ? baseSearches.map((query, index) => index < 2 ? `${query} ${eventMonth}` : query) : baseSearches;
 
   const runGoogleRound = async (strategy: string, dateClause: string) => {
     const round = await Promise.all(searches.map((query) =>
@@ -423,7 +426,7 @@ export async function GET(request: Request) {
       seen.add(key);
       return true;
     })
-    .filter((article) => !eventRoot || article.eventId === eventRoot)
+    .filter((article) => !eventRoot || (article.eventId === eventRoot && usEventHeadlinePattern.test(article.title)))
     .slice(0, 100);
 
   const sourceCounts = new Map<string, number>();

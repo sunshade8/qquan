@@ -70,6 +70,13 @@ type StudyResult = {
 type ChatMessage = { id: string; role: "user" | "agent"; text: string; symbol: string; createdAt: string };
 type WorkspaceHistoryItem = { id: string; kind: "chat" | "news"; title: string; detail: string; context: string; createdAt: string };
 type MarketSession = { code: "pre" | "regular" | "after" | "closed"; label: string; time: string; zone: string; schedule: string };
+type LlmUsageReport = {
+  totals: { calls: number; inputTokens: number; outputTokens: number; cacheCreationInputTokens: number; cacheReadInputTokens: number; costUsd: number; trackingSince: string | null };
+  models: Array<{ model: string; calls: number; inputTokens: number; outputTokens: number; costUsd: number; price: { input: number; output: number; cacheWrite: number; cacheRead: number } | null }>;
+  features: Array<{ feature: string; calls: number; costUsd: number }>;
+  pricing: { currency: string; unit: string; effectiveDate: string; sourceUrl: string };
+  note: string;
+};
 
 const CHAT_STORAGE_KEY = "qquant.chat.v1";
 const HISTORY_STORAGE_KEY = "qquant.history.v1";
@@ -332,6 +339,8 @@ export function QuantWorkspace() {
   const [hypothesis, setHypothesis] = useState("");
   const [agentOpen, setAgentOpen] = useState(true);
   const [studies, setStudies] = useState<string[]>([]);
+  const [llmUsage, setLlmUsage] = useState<LlmUsageReport | null>(null);
+  const [llmUsageError, setLlmUsageError] = useState("");
 
   useEffect(() => {
     let savedMessages: ChatMessage[] = [];
@@ -366,6 +375,23 @@ export function QuantWorkspace() {
     const timer = window.setInterval(() => setMarketSession(resolveMarketSession()), 30_000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (view !== "settings") return;
+    const controller = new AbortController();
+    fetch("/api/llm-usage", { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        const data = await response.json() as LlmUsageReport & { error?: string };
+        if (!response.ok) throw new Error(data.error || "LLM 사용량을 불러오지 못했습니다.");
+        setLlmUsage(data);
+        setLlmUsageError("");
+      })
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setLlmUsageError(error instanceof Error ? error.message : "LLM 사용량을 불러오지 못했습니다.");
+      });
+    return () => controller.abort();
+  }, [view]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -678,11 +704,27 @@ export function QuantWorkspace() {
           <section className="simple-view">
             <header><div><span>Connections</span><h1>데이터와 모델 연결</h1></div></header>
             <div className="settings-list">
+              <article className="llm-cost-card">
+                <div className="llm-cost-head">
+                  <div><span>LLM API COST</span><strong>{llmUsage ? `$${llmUsage.totals.costUsd.toFixed(4)}` : "—"}</strong><p>{llmUsage ? `${llmUsage.totals.calls}회 실제 호출 · 추적 시작 ${llmUsage.totals.trackingSince ? new Date(llmUsage.totals.trackingSince).toLocaleDateString("ko-KR") : "이번 버전"}` : llmUsageError || "실제 usage를 집계하는 중"}</p></div>
+                  {llmUsage?.pricing && <a href={llmUsage.pricing.sourceUrl} target="_blank" rel="noreferrer">공식 가격 · {llmUsage.pricing.effectiveDate}</a>}
+                </div>
+                {llmUsage && <>
+                  <div className="llm-token-grid">
+                    <span><small>INPUT</small><b>{llmUsage.totals.inputTokens.toLocaleString()}</b></span>
+                    <span><small>OUTPUT</small><b>{llmUsage.totals.outputTokens.toLocaleString()}</b></span>
+                    <span><small>CACHE WRITE</small><b>{llmUsage.totals.cacheCreationInputTokens.toLocaleString()}</b></span>
+                    <span><small>CACHE READ</small><b>{llmUsage.totals.cacheReadInputTokens.toLocaleString()}</b></span>
+                  </div>
+                  <div className="llm-model-list">{llmUsage.models.map((item) => <div key={item.model}><span><strong>{item.model}</strong><small>{item.calls} calls · {item.inputTokens.toLocaleString()} in / {item.outputTokens.toLocaleString()} out</small></span><b>${item.costUsd.toFixed(4)}</b></div>)}</div>
+                  <p className="llm-cost-note">{llmUsage.note}</p>
+                </>}
+              </article>
               <article><div><strong>TradingView Advanced Chart</strong><p>차트, 드로잉, 보조지표</p></div><span className="connected"><i />Connected</span></article>
               <article><div><strong>Toss Securities</strong><p>브로커 현재가·호가·최근 체결·장 시간 · 읽기 전용</p></div><span className={brokerSnapshot?.available ? "connected" : "missing"}><i />{brokerSnapshot?.available ? "Connected" : brokerSnapshot?.code === "ip_allowlist" ? "IP allowlist" : "Fallback"}</span></article>
               <article><div><strong>Yahoo Finance</strong><p>조정 일봉 10년 · 토스 교차검증 및 자동 폴백</p></div><span className={providers?.yahoo.status === "connected" ? "connected" : "missing"}><i />{providers?.yahoo.status === "connected" ? "Connected" : "Unavailable"}</span></article>
               <article><div><strong>Analysis dataset</strong><p>우선순위 Toss → Yahoo · 자동 갱신 캐시 24시간</p></div><span className={rows.length ? "connected" : "missing"}><i />{rows.length ? dataSource : "Loading"}</span></article>
-              <article><div><strong>Claude</strong><p>사용자가 요청할 때만 데이터 해석</p></div><span className="connected"><i />Connected</span></article>
+              <article><div><strong>Claude Opus 4.7</strong><p>News JARVIS와 Market Agent · 호출별 실제 토큰 기록</p></div><span className="connected"><i />Connected</span></article>
             </div>
           </section>
         )}

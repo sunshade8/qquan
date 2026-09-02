@@ -22,6 +22,13 @@
       "when": 1788249571350,
       "tag": "0002_big_quasimodo",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1788289484917,
+      "tag": "0003_volatile_demogoblin",
+      "breakpoints": true
     }
   ]
 }

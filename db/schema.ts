@@ -93,3 +93,36 @@ export const newsAgentMessages = sqliteTable("news_agent_messages", {
 }, (table) => [
   index("idx_news_agent_owner_created").on(table.ownerId, table.createdAt),
 ]);
+
+export const newsResearchRuns = sqliteTable("news_research_runs", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull(),
+  command: text("command").notNull(),
+  label: text("label").notNull(),
+  status: text("status").notNull(),
+  totalEvents: integer("total_events").notNull(),
+  completedEvents: integer("completed_events").notNull().default(0),
+  failedEvents: integer("failed_events").notNull().default(0),
+  stagesPayload: text("stages_payload").notNull().default("[]"),
+  resultPayload: text("result_payload").notNull().default("{}"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => [index("idx_news_runs_owner_updated").on(table.ownerId, table.updatedAt)]);
+
+export const llmUsage = sqliteTable("llm_usage", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull(),
+  provider: text("provider").notNull(),
+  model: text("model").notNull(),
+  feature: text("feature").notNull(),
+  inputTokens: integer("input_tokens").notNull(),
+  outputTokens: integer("output_tokens").notNull(),
+  cacheCreationInputTokens: integer("cache_creation_input_tokens").notNull().default(0),
+  cacheReadInputTokens: integer("cache_read_input_tokens").notNull().default(0),
+  costUsd: real("cost_usd").notNull(),
+  priced: integer("priced", { mode: "boolean" }).notNull().default(true),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => [
+  index("idx_llm_usage_owner_created").on(table.ownerId, table.createdAt),
+  index("idx_llm_usage_owner_model").on(table.ownerId, table.model),
+]);

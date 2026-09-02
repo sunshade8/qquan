@@ -121,6 +121,13 @@ type NewsAgentMessage = { id: string; role: "user" | "agent"; content: string; c
 type NewsHistoryEvent = { title: string; detail: string };
 type BatchResearchPlan = { root: string; label: string; months: number; note: string | null; events: MarketEvent[] };
 type BatchStatus = { completed: number; total: number; label: string; phase: string };
+type ResearchRunStage = { date: string; status: "queued" | "running" | "complete" | "reused" | "failed"; detail: string; testId?: string };
+type ResearchRun = {
+  id: string; command: string; label: string; status: "running" | "complete" | "partial" | "failed";
+  totalEvents: number; completedEvents: number; failedEvents: number; stages: ResearchRunStage[];
+  result: { summary?: string; testIds?: string[] }; createdAt: string; updatedAt: string;
+};
+type AgentSpecialist = { id: string; label: string; status: "complete" | "skipped" };
 
 const topicOptions: Array<{ id: NewsTopic; label: string }> = [
   { id: "macro", label: "전체 거시" },
@@ -341,6 +348,8 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
   const [agentQuestion, setAgentQuestion] = useState("");
   const [agentThinking, setAgentThinking] = useState(false);
   const [batchStatus, setBatchStatus] = useState<BatchStatus | null>(null);
+  const [researchRuns, setResearchRuns] = useState<ResearchRun[]>([]);
+  const [lastSpecialists, setLastSpecialists] = useState<AgentSpecialist[]>([]);
   const [stateReady, setStateReady] = useState(false);
   const [activeTest, setActiveTest] = useState<NewsTest | null>(null);
   const [testDetail, setTestDetail] = useState<TestDetail | null>(null);
@@ -351,10 +360,11 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
   useEffect(() => {
     const controller = new AbortController();
     fetch("/api/news/research-state", { cache: "no-store", signal: controller.signal })
-      .then((response) => response.json() as Promise<{ tests?: NewsTest[]; messages?: NewsAgentMessage[] }>)
+      .then((response) => response.json() as Promise<{ tests?: NewsTest[]; messages?: NewsAgentMessage[]; runs?: ResearchRun[] }>)
       .then((data) => {
         setTests(Array.isArray(data.tests) ? data.tests : []);
         setAgentMessages(Array.isArray(data.messages) ? data.messages : []);
+        setResearchRuns(Array.isArray(data.runs) ? data.runs : []);
       })
       .catch(() => undefined)
       .finally(() => { if (!controller.signal.aborted) setStateReady(true); });
@@ -405,15 +415,16 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
     setComparison({ tests: uniqueLatest, excludedDuplicates: tests.length - uniqueLatest.length });
   }
 
-  async function persistRecord(kind: "test" | "message", value: NewsTest | NewsAgentMessage) {
+  async function persistRecord(kind: "test" | "message" | "run", value: NewsTest | NewsAgentMessage | ResearchRun) {
     try {
-      await fetch("/api/news/research-state", {
+      const response = await fetch("/api/news/research-state", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ kind, [kind]: value }),
       });
+      return response.ok;
     } catch {
-      // The current screen remains usable when durable storage is temporarily unavailable.
+      return false;
     }
   }
 
@@ -477,8 +488,8 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
       if (!response.ok) throw new Error(data.error || "뉴스 분석에 실패했습니다.");
       setAnalysis(data);
       const test = newsTestFromAnalysis(retrieved, data);
+      if (!await persistRecord("test", test)) throw new Error("분석은 완료됐지만 Test 저장에 실패했습니다.");
       setTests((current) => [...current, test].slice(-100));
-      void persistRecord("test", test);
       onHistory?.({ title: "뉴스 감성 분석", detail: `${retrieved.start} – ${retrieved.end} · ${chosen.length}건 · ${data.analysis.label ?? "분석 완료"}` });
     } catch (reason) {
       setAnalysisError(reason instanceof Error ? reason.message : "뉴스 분석에 실패했습니다.");
@@ -494,6 +505,11 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
     return message;
   }
 
+  async function publishResearchRun(run: ResearchRun) {
+    setResearchRuns((current) => [run, ...current.filter((item) => item.id !== run.id)].slice(0, 20));
+    return persistRecord("run", run);
+  }
+
   function agentSelectionCommand(prompt: string) {
     const normalized = prompt.replaceAll(" ", "");
     const signals = analysis?.analysis.articleSignals ?? [];
@@ -505,7 +521,7 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
     return `${requested}으로 분류된 뉴스 ${ids.length}건을 선택했습니다. 이 선택으로 다시 LLM 분석을 실행하면 새 Test 행이 생성됩니다.`;
   }
 
-  async function runBatchResearch(plan: BatchResearchPlan) {
+  async function runBatchResearch(plan: BatchResearchPlan, command: string) {
     if (!plan.events.length) {
       appendAgentMessage("agent", `${plan.note ? `${plan.note}\n` : ""}최근 ${plan.months}개월 안에 등록된 ${plan.label} 과거 발표가 없습니다.`);
       return;
@@ -516,35 +532,55 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
     const failed: string[] = [];
     const existingTests = [...tests].reverse();
     const eventDefinition = batchEventDefinitions.find((item) => item.root === plan.root);
+    const createdAt = new Date().toISOString();
+    let stages: ResearchRunStage[] = plan.events.map((event) => ({ date: event.date, status: "queued", detail: "대기" }));
+    let run: ResearchRun = {
+      id: recordId("run"), command, label: `${plan.months}개월 ${plan.label} 연구`, status: "running",
+      totalEvents: plan.events.length, completedEvents: 0, failedEvents: 0, stages,
+      result: {}, createdAt, updatedAt: createdAt,
+    };
+    await publishResearchRun(run);
 
     for (let index = 0; index < plan.events.length; index += 1) {
       const event = plan.events[index];
+      stages = stages.map((stage, stageIndex) => stageIndex === index ? { ...stage, status: "running", detail: "사전 뉴스 탐색" } : stage);
+      run = { ...run, stages, updatedAt: new Date().toISOString() };
+      await publishResearchRun(run);
       const existing = existingTests.find((test) => test.forecastEvents?.some((item) => (
         item.scheduledReleaseDate === event.date && Boolean(eventDefinition?.aliases.test(item.indicator))
       )));
       if (existing) {
         completed.push(existing);
+        stages = stages.map((stage, stageIndex) => stageIndex === index ? { ...stage, status: "reused", detail: "기존 Test 재사용", testId: existing.id } : stage);
+        run = { ...run, completedEvents: completed.length, stages, updatedAt: new Date().toISOString() };
+        await publishResearchRun(run);
         setBatchStatus({ completed: index + 1, total: plan.events.length, label: `${plan.label} · ${event.date}`, phase: "기존 Test 재사용" });
         continue;
       }
 
-      const newsStart = shiftDate(event.date, -5);
-      const newsEnd = event.date;
       try {
         setBatchStatus({ completed: index, total: plan.events.length, label: `${plan.label} · ${event.date}`, phase: "발표 전 뉴스 수집" });
-        const newsParams = new URLSearchParams({ start: newsStart, end: newsEnd, topic: "forecast", event: plan.root });
-        const newsResponse = await fetch(`/api/news?${newsParams}`, { cache: "no-store" });
-        const newsData = await newsResponse.json() as { articles?: NewsArticle[]; sources?: NewsSource[]; provider?: string; notice?: string | null; error?: string };
-        if (!newsResponse.ok) throw new Error(newsData.error || "뉴스 수집 실패");
-        const allArticles = newsData.articles ?? [];
-        const chosen = allArticles.filter((article) => article.eventId === plan.root && (!article.eventDate || article.eventDate === event.date) && publishedBeforeEvent(article.publishedAt, event)).slice(0, 40);
+        let newsStart = shiftDate(event.date, -7);
+        let chosen: NewsArticle[] = [];
+        let allArticles: NewsArticle[] = [];
+        let newsData: { articles?: NewsArticle[]; sources?: NewsSource[]; provider?: string; notice?: string | null; error?: string } = {};
+        for (const lookback of [7, 21]) {
+          newsStart = shiftDate(event.date, -lookback);
+          const newsParams = new URLSearchParams({ start: newsStart, end: event.date, topic: "forecast", event: plan.root });
+          const newsResponse = await fetch(`/api/news?${newsParams}`, { cache: "no-store" });
+          newsData = await newsResponse.json() as typeof newsData;
+          if (!newsResponse.ok) throw new Error(newsData.error || "뉴스 수집 실패");
+          allArticles = newsData.articles ?? [];
+          chosen = allArticles.filter((article) => article.eventId === plan.root && article.eventDate === event.date && publishedBeforeEvent(article.publishedAt, event)).slice(0, 40);
+          if (chosen.length) break;
+        }
         if (!chosen.length) throw new Error("해당 발표의 사전 전망 뉴스가 없음");
 
         setArticles(allArticles);
         setSources(newsData.sources ?? []);
         setProvider(newsData.provider ?? "Google News RSS");
         setNotice(newsData.notice ?? "");
-        setRetrieved({ start: newsStart, end: newsEnd, topic: "forecast" });
+        setRetrieved({ start: newsStart, end: event.date, topic: "forecast" });
         setSelected(new Set(chosen.map((article) => article.id)));
         setBatchStatus({ completed: index, total: plan.events.length, label: `${plan.label} · ${event.date}`, phase: `${chosen.length}건 LLM 분석` });
 
@@ -567,13 +603,20 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
           caveat: "발표 일정은 경제 캘린더 기준이며, 헤드라인에서 수치 컨센서스를 추출하지 못했을 수 있습니다.",
         };
         const test = newsTestFromAnalysis({ start: newsStart, end: event.date, topic: "forecast" }, analysisData, fallbackEvent);
+        if (!await persistRecord("test", test)) throw new Error("분석 결과의 Test 저장 실패");
         completed.push(test);
         setTests((current) => [...current, test].slice(-100));
-        void persistRecord("test", test);
+        stages = stages.map((stage, stageIndex) => stageIndex === index ? { ...stage, status: "complete", detail: `${chosen.length}개 뉴스 · ${test.overallLabel}`, testId: test.id } : stage);
+        run = { ...run, completedEvents: completed.length, stages, updatedAt: new Date().toISOString() };
+        await publishResearchRun(run);
         onHistory?.({ title: `${plan.label} 일괄 연구`, detail: `${event.date} · ${chosen.length}건 · ${test.overallLabel}` });
         setBatchStatus({ completed: index + 1, total: plan.events.length, label: `${plan.label} · ${event.date}`, phase: "Test 행 저장" });
       } catch (reason) {
-        failed.push(`${event.date}: ${reason instanceof Error ? reason.message : "처리 실패"}`);
+        const detail = reason instanceof Error ? reason.message : "처리 실패";
+        failed.push(`${event.date}: ${detail}`);
+        stages = stages.map((stage, stageIndex) => stageIndex === index ? { ...stage, status: "failed", detail } : stage);
+        run = { ...run, failedEvents: failed.length, stages, updatedAt: new Date().toISOString() };
+        await publishResearchRun(run);
         setBatchStatus({ completed: index + 1, total: plan.events.length, label: `${plan.label} · ${event.date}`, phase: "건너뜀" });
       }
     }
@@ -581,7 +624,14 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
     const unique = [...completed].reverse().filter((test, index, values) => values.findIndex((candidate) => candidate.periodEnd === test.periodEnd) === index).reverse();
     const note = plan.note ? `${plan.note}\n` : "";
     const failureText = failed.length ? `\n제외 ${failed.length}개: ${failed.join(" / ")}` : "";
-    appendAgentMessage("agent", `${note}최근 ${plan.months}개월 ${plan.label} 발표 ${plan.events.length}개 중 ${unique.length}개 Test를 준비했습니다. 발표 5일 전부터 발표 시각 직전까지의 전망 헤드라인만 사용했고, 발표 결과가 들어간 뉴스는 제외했습니다.${failureText}${unique.length >= 2 ? "\n전체 비교 화면을 열었습니다." : ""}`);
+    const summary = `${plan.events.length}개 발표 중 ${unique.length}개 Test 생성 · ${failed.length}개 실패`;
+    run = {
+      ...run, status: unique.length === plan.events.length ? "complete" : unique.length ? "partial" : "failed",
+      completedEvents: unique.length, failedEvents: failed.length, stages,
+      result: { summary, testIds: unique.map((test) => test.id) }, updatedAt: new Date().toISOString(),
+    };
+    const runPersisted = await publishResearchRun(run);
+    appendAgentMessage("agent", `${note}최근 ${plan.months}개월 ${plan.label} 발표 ${plan.events.length}개 중 ${unique.length}개 Test를 준비했습니다. 발표 7일 전을 우선 탐색하고 없으면 21일까지 확장했으며, 발표 시각 이후 뉴스는 제외했습니다.${failureText}${unique.length >= 2 ? "\n전체 비교 화면을 열었습니다." : ""}${runPersisted ? "\n실행 내역은 Test 상단의 Research run에 저장했습니다." : "\n실행 내역 저장소 연결은 확인이 필요합니다."}`);
     if (unique.length >= 2) setComparison({ tests: unique, excludedDuplicates: completed.length - unique.length });
     setBatchStatus(null);
     setAgentThinking(false);
@@ -595,7 +645,7 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
     setAgentQuestion("");
     const batchPlan = parseBatchResearchCommand(prompt, today);
     if (batchPlan) {
-      await runBatchResearch(batchPlan);
+      await runBatchResearch(batchPlan, prompt);
       return;
     }
     const commandReply = agentSelectionCommand(prompt);
@@ -612,8 +662,9 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ question: prompt, context: { retrieved, headlines: chosen, analysis, tests } }),
       });
-      const data = await response.json() as { answer?: string; error?: string };
+      const data = await response.json() as { answer?: string; error?: string; specialists?: AgentSpecialist[] };
       if (!response.ok) throw new Error(data.error || "News Agent에 연결하지 못했습니다.");
+      setLastSpecialists(Array.isArray(data.specialists) ? data.specialists : []);
       appendAgentMessage("agent", data.answer ?? "응답이 비어 있습니다.");
       onHistory?.({ title: "News Agent", detail: prompt });
     } catch (reason) {
@@ -730,6 +781,16 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
             <div><span className="test-mark"><FlaskConical size={15} /></span><div><strong>Test</strong><small>Sentiment vs realized index return</small></div></div>
             <div className="test-panel-actions"><span>{tests.length} runs</span><button type="button" onClick={openComparison} disabled={tests.length < 2}><ChartNoAxesCombined size={13} />전체 비교</button></div>
           </header>
+          {researchRuns[0] && <section className={`research-run-card ${researchRuns[0].status}`} aria-label="최근 자동 연구 실행">
+            <div>
+              <span>RESEARCH RUN</span>
+              <strong>{researchRuns[0].label}</strong>
+              <small>{researchRuns[0].result?.summary ?? `${researchRuns[0].completedEvents}/${researchRuns[0].totalEvents} 완료`}</small>
+            </div>
+            <div className="research-run-events">
+              {researchRuns[0].stages.map((stage) => <span className={stage.status} key={stage.date} title={stage.detail}><i />{stage.date.slice(5)}<em>{stage.status === "complete" ? "Test" : stage.status === "reused" ? "재사용" : stage.status === "failed" ? "실패" : "진행"}</em></span>)}
+            </div>
+          </section>}
           <div className="test-table" role="table" aria-label="뉴스 감성 테스트 기록">
             <div className="test-row test-head" role="row"><span>DATE RANGE</span><span>SENTIMENT</span><span>TECH</span><span>VALUE</span><span>NASDAQ</span><span>NYSE</span></div>
             {!stateReady && <div className="research-empty"><RefreshCw size={17} className="spin" /><strong>기록을 불러오는 중</strong></div>}
@@ -750,12 +811,13 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
 
         <aside className="news-agent-panel">
           <header className="research-panel-head">
-            <div><span className="agent-mark"><Sparkles size={15} /></span><div><strong>Agent</strong><small>News · Sentiment · Test context</small></div></div>
+            <div><span className="agent-mark"><Sparkles size={15} /></span><div><strong>News JARVIS</strong><small>8 specialist roles · persistent research</small></div></div>
             <span><HistoryIcon size={12} /> {agentMessages.length}</span>
           </header>
           <div className="news-agent-context"><span>{retrieved ? `${retrieved.start} → ${retrieved.end}` : "no range"}</span><span>{selected.size} news</span><span>{tests.length} tests</span></div>
+          {!!lastSpecialists.length && <div className="agent-specialists" aria-label="이번 응답에 참여한 전문 에이전트">{lastSpecialists.map((specialist) => <span key={specialist.id}><i />{specialist.label}</span>)}</div>}
           <div className="news-agent-prompts">
-            {batchStatus ? <div className="batch-progress"><span><b>{batchStatus.phase}</b><small>{batchStatus.label}</small></span><strong>{batchStatus.completed}/{batchStatus.total}</strong><i><em style={{ width: `${(batchStatus.completed / batchStatus.total) * 100}%` }} /></i></div> : ["최근 6개월 CPI 발표를 수집→분석→비교해줘", "Test 결과 해석", "예측→실제치 이벤트 연구 설계"].map((prompt) => <button key={prompt} disabled={agentThinking} onClick={() => setAgentQuestion(prompt)}>{prompt}</button>)}
+            {batchStatus ? <div className="batch-progress"><span><b>{batchStatus.phase}</b><small>{batchStatus.label}</small></span><strong>{batchStatus.completed}/{batchStatus.total}</strong><i><em style={{ width: `${(batchStatus.completed / batchStatus.total) * 100}%` }} /></i></div> : ["최근 6개월 CPI 발표를 수집→분석→비교해줘", "지금까지 분석한 결과의 공통점 찾아줘", "검증 가능한 전략과 3일 백테스트 결과를 만들어줘"].map((prompt) => <button key={prompt} disabled={agentThinking} onClick={() => setAgentQuestion(prompt)}>{prompt}</button>)}
           </div>
           <div className="news-agent-log" aria-live="polite">
             {stateReady && !agentMessages.length && <div className="research-empty"><Sparkles size={18} /><strong>세 영역을 함께 조사합니다.</strong><p>현재 뉴스 선택, 감성 분석, 누적 Test를 비교하거나 “부정 뉴스만 선택해줘”처럼 뉴스 선택을 바꿔보세요.</p></div>}

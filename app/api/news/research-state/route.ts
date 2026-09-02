@@ -1,44 +1,9 @@
-import { env } from "cloudflare:workers";
 import { and, asc, desc, eq } from "drizzle-orm";
 import { getDb } from "@/db";
-import { newsAgentMessages, newsTests } from "@/db/schema";
+import { newsAgentMessages, newsResearchRuns, newsTests } from "@/db/schema";
 import { loadDailyRows } from "../../../../lib/price-cache";
 import type { PriceRow } from "../../../../lib/market-data";
-
-const COOKIE_NAME = "qquant_research_device";
-let schemaReady: Promise<void> | undefined;
-
-function ensureNewsSchema() {
-  if (schemaReady) return schemaReady;
-  const binding = (env as unknown as { DB?: D1Database }).DB;
-  if (!binding) return Promise.reject(new Error("D1 unavailable"));
-  schemaReady = (async () => {
-    await binding.batch([
-      binding.prepare("CREATE TABLE IF NOT EXISTS news_tests (id text PRIMARY KEY NOT NULL, owner_id text NOT NULL, period_start text NOT NULL, period_end text NOT NULL, topic text NOT NULL, article_count integer NOT NULL, overall_score real NOT NULL, overall_label text NOT NULL, tech_score real NOT NULL, tech_label text NOT NULL, value_score real NOT NULL, value_label text NOT NULL, nasdaq_payload text NOT NULL, nyse_payload text NOT NULL, forecast_payload text NOT NULL DEFAULT '[]', created_at integer NOT NULL)"),
-      binding.prepare("CREATE INDEX IF NOT EXISTS idx_news_tests_owner_created ON news_tests (owner_id, created_at)"),
-      binding.prepare("CREATE TABLE IF NOT EXISTS news_agent_messages (id text PRIMARY KEY NOT NULL, owner_id text NOT NULL, role text NOT NULL, content text NOT NULL, created_at integer NOT NULL)"),
-      binding.prepare("CREATE INDEX IF NOT EXISTS idx_news_agent_owner_created ON news_agent_messages (owner_id, created_at)"),
-    ]);
-    const columns = await binding.prepare("PRAGMA table_info(news_tests)").all<{ name: string }>();
-    if (!columns.results.some((column) => column.name === "forecast_payload")) {
-      await binding.prepare("ALTER TABLE news_tests ADD COLUMN forecast_payload text NOT NULL DEFAULT '[]'").run();
-    }
-  })().catch((error) => {
-    schemaReady = undefined;
-    throw error;
-  });
-  return schemaReady;
-}
-
-function ownerFrom(request: Request) {
-  const match = request.headers.get("cookie")?.match(new RegExp(`(?:^|;\\s*)${COOKIE_NAME}=([^;]+)`));
-  const existing = match?.[1];
-  return existing && /^[a-f0-9-]{36}$/i.test(existing) ? existing : crypto.randomUUID();
-}
-
-function cookie(ownerId: string) {
-  return `${COOKIE_NAME}=${ownerId}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax; Secure`;
-}
+import { researchOwnerCookie, researchOwnerFrom } from "@/lib/research-owner";
 
 function parsePayload(value: string) {
   try { return JSON.parse(value) as unknown; } catch { return null; }
@@ -89,13 +54,13 @@ async function repairMissingBenchmarks(tests: Array<typeof newsTests.$inferSelec
 }
 
 export async function GET(request: Request) {
-  const ownerId = ownerFrom(request);
+  const ownerId = researchOwnerFrom(request);
   try {
-    await ensureNewsSchema();
     const db = getDb();
-    const [storedTests, messages] = await Promise.all([
+    const [storedTests, messages, runs] = await Promise.all([
       db.select().from(newsTests).where(eq(newsTests.ownerId, ownerId)).orderBy(desc(newsTests.createdAt)).limit(100),
       db.select().from(newsAgentMessages).where(eq(newsAgentMessages.ownerId, ownerId)).orderBy(asc(newsAgentMessages.createdAt)).limit(200),
+      db.select().from(newsResearchRuns).where(eq(newsResearchRuns.ownerId, ownerId)).orderBy(desc(newsResearchRuns.updatedAt)).limit(20),
     ]);
     let tests = storedTests;
     try {
@@ -111,18 +76,23 @@ export async function GET(request: Request) {
         nasdaq: parsePayload(item.nasdaqPayload), nyse: parsePayload(item.nysePayload), forecastEvents: parsePayload(item.forecastPayload), createdAt: item.createdAt,
       })),
       messages: messages.map((item) => ({ id: item.id, role: item.role, content: item.content, createdAt: item.createdAt })),
-    }, { headers: { "set-cookie": cookie(ownerId) } });
+      runs: runs.map((item) => ({
+        id: item.id, command: item.command, label: item.label, status: item.status,
+        totalEvents: item.totalEvents, completedEvents: item.completedEvents, failedEvents: item.failedEvents,
+        stages: parsePayload(item.stagesPayload), result: parsePayload(item.resultPayload),
+        createdAt: item.createdAt, updatedAt: item.updatedAt,
+      })),
+    }, { headers: { "set-cookie": researchOwnerCookie(ownerId) } });
   } catch {
-    return Response.json({ tests: [], messages: [], persistence: "unavailable" }, { headers: { "set-cookie": cookie(ownerId) } });
+    return Response.json({ tests: [], messages: [], runs: [], persistence: "unavailable" }, { headers: { "set-cookie": researchOwnerCookie(ownerId) } });
   }
 }
 
 export async function POST(request: Request) {
-  const ownerId = ownerFrom(request);
+  const ownerId = researchOwnerFrom(request);
   const payload = await request.json() as Record<string, unknown>;
   const kind = payload.kind;
   try {
-    await ensureNewsSchema();
     if (kind === "test") {
       const test = payload.test as Record<string, unknown> | undefined;
       if (!test || typeof test.periodStart !== "string" || typeof test.periodEnd !== "string") return Response.json({ error: "테스트 기간이 필요합니다." }, { status: 400 });
@@ -139,7 +109,7 @@ export async function POST(request: Request) {
         createdAt: new Date(typeof test.createdAt === "string" ? test.createdAt : Date.now()),
       };
       await getDb().insert(newsTests).values(row).onConflictDoNothing();
-      return Response.json({ test: { ...row, nasdaq: test.nasdaq ?? null, nyse: test.nyse ?? null }, persisted: true }, { status: 201, headers: { "set-cookie": cookie(ownerId) } });
+      return Response.json({ test: { ...row, nasdaq: test.nasdaq ?? null, nyse: test.nyse ?? null }, persisted: true }, { status: 201, headers: { "set-cookie": researchOwnerCookie(ownerId) } });
     }
     if (kind === "message") {
       const message = payload.message as Record<string, unknown> | undefined;
@@ -148,10 +118,31 @@ export async function POST(request: Request) {
       if (!content) return Response.json({ error: "메시지가 비어 있습니다." }, { status: 400 });
       const row = { id: typeof message?.id === "string" ? message.id : crypto.randomUUID(), ownerId, role, content, createdAt: new Date() };
       await getDb().insert(newsAgentMessages).values(row).onConflictDoNothing();
-      return Response.json({ message: row, persisted: true }, { status: 201, headers: { "set-cookie": cookie(ownerId) } });
+      return Response.json({ message: row, persisted: true }, { status: 201, headers: { "set-cookie": researchOwnerCookie(ownerId) } });
+    }
+    if (kind === "run") {
+      const run = payload.run as Record<string, unknown> | undefined;
+      if (!run || typeof run.id !== "string" || typeof run.command !== "string") return Response.json({ error: "연구 실행 정보가 필요합니다." }, { status: 400 });
+      const now = new Date();
+      const row = {
+        id: run.id, ownerId, command: run.command.slice(0, 2000), label: String(run.label || "News research").slice(0, 120),
+        status: String(run.status || "running").slice(0, 24), totalEvents: Math.max(0, Number(run.totalEvents) || 0),
+        completedEvents: Math.max(0, Number(run.completedEvents) || 0), failedEvents: Math.max(0, Number(run.failedEvents) || 0),
+        stagesPayload: JSON.stringify(Array.isArray(run.stages) ? run.stages : []),
+        resultPayload: JSON.stringify(run.result && typeof run.result === "object" ? run.result : {}),
+        createdAt: new Date(typeof run.createdAt === "string" ? run.createdAt : now), updatedAt: now,
+      };
+      await getDb().insert(newsResearchRuns).values(row).onConflictDoUpdate({
+        target: newsResearchRuns.id,
+        set: {
+          status: row.status, completedEvents: row.completedEvents, failedEvents: row.failedEvents,
+          stagesPayload: row.stagesPayload, resultPayload: row.resultPayload, updatedAt: row.updatedAt,
+        },
+      });
+      return Response.json({ run: row, persisted: true }, { status: 201, headers: { "set-cookie": researchOwnerCookie(ownerId) } });
     }
     return Response.json({ error: "지원하지 않는 기록입니다." }, { status: 400 });
   } catch {
-    return Response.json({ error: "기록 저장소에 연결하지 못했습니다." }, { status: 503, headers: { "set-cookie": cookie(ownerId) } });
+    return Response.json({ error: "기록 저장소에 연결하지 못했습니다." }, { status: 503, headers: { "set-cookie": researchOwnerCookie(ownerId) } });
   }
 }
