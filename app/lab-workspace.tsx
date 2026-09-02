@@ -2,6 +2,7 @@
 
 import ChartNoAxesCombined from "lucide-react/dist/esm/icons/chart-no-axes-combined";
 import Check from "lucide-react/dist/esm/icons/check";
+import Clock3 from "lucide-react/dist/esm/icons/clock-3";
 import FlaskConical from "lucide-react/dist/esm/icons/flask-conical";
 import Loader from "lucide-react/dist/esm/icons/loader";
 import Send from "lucide-react/dist/esm/icons/send";
@@ -14,7 +15,18 @@ import type { AgentActivity, LabArtifact, LabMessage, LabStreamEvent, LabToolTra
 import { ArtifactView, artifactKindLabel, type StrategyAction } from "./lab-charts";
 import { Markdown } from "./markdown";
 
-type LiveTurn = { text: string; tools: LabToolTrace[]; status: string };
+type LivePhase = "connecting" | "grounding" | "planning" | "tools" | "verifying" | "writing";
+type LiveTurn = { text: string; tools: LabToolTrace[]; status: string; detail: string; phase: LivePhase };
+
+const RUN_PHASES = [
+  { id: "connecting", label: "요청 접수" },
+  { id: "grounding", label: "사실 확인" },
+  { id: "tools", label: "도구 실행" },
+  { id: "verifying", label: "결과 종합" },
+  { id: "writing", label: "답변 작성" },
+] as const;
+
+const PHASE_INDEX: Record<LivePhase, number> = { connecting: 0, grounding: 1, planning: 1, tools: 2, verifying: 3, writing: 4 };
 
 const QUICK_PROMPTS = [
   "NVDA 최근 1년 차트와 핵심 지표 보여줘",
@@ -31,7 +43,34 @@ function messageId(prefix: string) {
 
 function ToolTraces({ tools }: { tools: LabToolTrace[] }) {
   if (!tools.length) return null;
-  return <div className="lab-tool-traces">{tools.map((trace, index) => <span className={trace.status} key={trace.id ?? `${trace.name}-${index}`}><i />{trace.label}<small>{trace.detail}{trace.durationMs ? ` · ${(trace.durationMs / 1000).toFixed(1)}s` : ""}</small></span>)}</div>;
+  const complete = tools.filter((tool) => tool.status !== "running").length;
+  return <div className="lab-tool-traces" role="list">
+    <header><span>실행 도구</span><small>{complete}/{tools.length}</small></header>
+    {tools.map((trace, index) => <span className={trace.status} role="listitem" key={trace.id ?? `${trace.name}-${index}`}>
+      <i />
+      <b>{trace.label}</b>
+      <em>{trace.status === "running" ? "실행 중" : trace.status === "failed" ? "확인 필요" : "완료"}</em>
+      <small>{trace.detail}{trace.durationMs ? ` · ${(trace.durationMs / 1000).toFixed(1)}s` : ""}</small>
+    </span>)}
+  </div>;
+}
+
+function AgentRunPanel({ live, elapsedSeconds }: { live: LiveTurn; elapsedSeconds: number }) {
+  const activeIndex = PHASE_INDEX[live.phase];
+  return <section className="lab-run-panel" aria-label="JARVIS 작업 진행 상황">
+    <header>
+      <span className="lab-run-orbit"><Loader size={14} className="spin" /></span>
+      <div><strong>{live.status}</strong><small>{live.detail || "요청을 분석하고 다음 단계를 준비하고 있습니다."}</small></div>
+      <time><Clock3 size={11} />{elapsedSeconds}s</time>
+    </header>
+    <ol className="lab-run-phases">
+      {RUN_PHASES.map((phase, index) => <li className={index < activeIndex ? "complete" : index === activeIndex ? "active" : "pending"} key={phase.id}>
+        <span>{index < activeIndex ? <Check size={9} /> : index + 1}</span>
+        <small>{phase.label}</small>
+      </li>)}
+    </ol>
+    <ToolTraces tools={live.tools} />
+  </section>;
 }
 
 export function newConversationId() {
@@ -54,6 +93,7 @@ export function LabWorkspace({ conversationId, onConversationChange, onActivityC
   const [activeArtifactId, setActiveArtifactId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [confirmClear, setConfirmClear] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const logRef = useRef<HTMLDivElement>(null);
   const artifacts = useMemo(() => messages.flatMap((message) => message.artifacts), [messages]);
   const liveArtifacts = useRef<LabArtifact[]>([]);
@@ -82,15 +122,28 @@ export function LabWorkspace({ conversationId, onConversationChange, onActivityC
   }, [onActivityChange, running, live?.status, live?.tools]);
 
   useEffect(() => {
+    if (!running) { queueMicrotask(() => setElapsedSeconds(0)); return; }
+    const timer = window.setInterval(() => setElapsedSeconds((current) => current + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [running]);
+
+  useEffect(() => {
     const log = logRef.current;
     if (log) log.scrollTop = log.scrollHeight;
   }, [messages, live?.text, live?.tools.length]);
 
   function applyEvent(event: LabStreamEvent) {
-    if (event.type === "status") setLive((current) => ({ text: current?.text ?? "", tools: current?.tools ?? [], status: event.detail ? `${event.label} · ${event.detail}` : event.label }));
-    else if (event.type === "text") setLive((current) => ({ text: `${current?.text ?? ""}${event.delta}`, tools: current?.tools ?? [], status: "답변 작성 중" }));
-    else if (event.type === "tool_start") setLive((current) => ({ text: current?.text ?? "", status: `${event.label} 실행 중`, tools: [...(current?.tools ?? []), { id: event.id, name: event.name, label: event.label, status: "running", detail: event.detail }] }));
-    else if (event.type === "tool_end") setLive((current) => ({ text: current?.text ?? "", status: `${event.label} ${event.status === "failed" ? "실패" : "완료"}`, tools: (current?.tools ?? []).map((tool) => tool.id === event.id ? { ...tool, status: event.status, detail: event.detail, durationMs: event.durationMs } : tool) }));
+    if (event.type === "status") setLive((current) => {
+      const phase: LivePhase = /종목|사실/.test(event.label) ? "grounding" : /결과|해석|종합/.test(event.label) ? "verifying" : /검색|도구/.test(event.label) ? "tools" : "planning";
+      return { text: current?.text ?? "", tools: current?.tools ?? [], status: event.label, detail: event.detail ?? "", phase };
+    });
+    else if (event.type === "text") setLive((current) => ({ text: `${current?.text ?? ""}${event.delta}`, tools: current?.tools ?? [], status: "답변 작성 중", detail: "검증된 숫자와 근거를 읽기 쉬운 답변으로 정리하고 있습니다.", phase: "writing" }));
+    else if (event.type === "tool_start") setLive((current) => ({ text: current?.text ?? "", status: `${event.label} 실행 중`, detail: event.detail || "필요한 데이터를 불러오고 계산하고 있습니다.", phase: "tools", tools: [...(current?.tools ?? []), { id: event.id, name: event.name, label: event.label, status: "running", detail: event.detail }] }));
+    else if (event.type === "tool_end") setLive((current) => {
+      const tools = (current?.tools ?? []).map((tool) => tool.id === event.id ? { ...tool, status: event.status, detail: event.detail, durationMs: event.durationMs } : tool);
+      const stillRunning = tools.some((tool) => tool.status === "running");
+      return { text: current?.text ?? "", status: stillRunning ? "데이터 도구 실행 중" : event.status === "failed" ? `${event.label} 결과 확인 중` : `${event.label} 완료`, detail: event.status === "failed" ? event.detail : stillRunning ? "여러 데이터 작업을 병렬로 처리하고 있습니다." : "도구 결과를 검증하고 다음 분석 단계로 연결합니다.", phase: stillRunning ? "tools" : "verifying", tools };
+    });
     else if (event.type === "artifact") { liveArtifacts.current = [...liveArtifacts.current, event.artifact]; setPendingArtifacts(liveArtifacts.current); setActiveArtifactId(event.artifact.id); }
     else if (event.type === "error") setError(event.message);
     else if (event.type === "done") {
@@ -106,8 +159,9 @@ export function LabWorkspace({ conversationId, onConversationChange, onActivityC
     setMessages((current) => [...current, userMessage].slice(-200));
     setQuestion("");
     setError("");
+    setElapsedSeconds(0);
     setRunning(true);
-    setLive({ text: "", tools: [], status: "연결 중" });
+    setLive({ text: "", tools: [], status: "요청 접수 중", detail: "JARVIS에 질문을 전달하고 작업 공간을 준비하고 있습니다.", phase: "connecting" });
     liveArtifacts.current = [];
     setPendingArtifacts([]);
     try {
@@ -198,14 +252,15 @@ export function LabWorkspace({ conversationId, onConversationChange, onActivityC
     </header>
     <div className="lab-layout">
       <aside className={`lab-agent ${messages.length ? "" : "with-prompts"}`}>
-        <header>
-          <span className="agent-mark"><Sparkles size={15} /></span>
-          <div><strong>Lab JARVIS</strong><small>quant PM · 14 tools · persistent memory</small></div>
-          <div className="lab-agent-actions">
-            <em className={running ? "running" : "ready"}>{running ? "RUNNING" : "READY"}</em>
-            {messages.length > 0 && !running && <button onClick={() => onConversationChange?.(newConversationId())} aria-label="새 대화" title="새 대화 (현재 대화는 History에 보관)"><MessageSquarePlus size={13} /></button>}
-            {messages.length > 0 && !running && <button className={confirmClear ? "danger" : ""} onClick={clearHistory} aria-label="이 대화 삭제" title={confirmClear ? "한 번 더 누르면 삭제" : "이 대화 삭제"}>{confirmClear ? <X size={13} /> : <Trash2 size={13} />}</button>}
+        <header className="lab-agent-header">
+          <div className="lab-agent-identity">
+            <span className="agent-mark"><Sparkles size={15} /></span>
+            <div><span><strong>Lab JARVIS</strong><em className={running ? "running" : "ready"}>{running ? "RUNNING" : "READY"}</em></span><small>quant PM · 14 tools · persistent memory</small></div>
           </div>
+          <nav className="lab-agent-actions" aria-label="대화 관리">
+            <button disabled={!messages.length || running} onClick={() => onConversationChange?.(newConversationId())} title="현재 대화를 History에 보관하고 새 대화 시작"><MessageSquarePlus size={13} /><span>새 대화</span></button>
+            <button disabled={!messages.length || running} className={confirmClear ? "danger" : ""} onClick={clearHistory} title={confirmClear ? "한 번 더 누르면 삭제" : "현재 대화 삭제"}>{confirmClear ? <X size={13} /> : <Trash2 size={13} />}<span>{confirmClear ? "삭제 확인" : "대화 삭제"}</span></button>
+          </nav>
         </header>
         {!messages.length && <div className="lab-quick-prompts">{QUICK_PROMPTS.map((prompt) => <button key={prompt} disabled={running} onClick={() => void askAgent(prompt)}>{prompt}</button>)}</div>}
         <div className="lab-conversation" aria-live="polite" ref={logRef}>
@@ -217,14 +272,14 @@ export function LabWorkspace({ conversationId, onConversationChange, onActivityC
             {message.artifacts.length > 0 && <div className="lab-artifact-links">{message.artifacts.map((artifact) => <button key={artifact.id} className={activeArtifact?.id === artifact.id ? "active" : ""} onClick={() => setActiveArtifactId(artifact.id)}>{artifactKindLabel(artifact)} · {artifact.title}</button>)}</div>}
           </article>)}
           {running && live && <article className="agent live">
-            <span>JARVIS<small> · {live.status}</small></span>
-            <ToolTraces tools={live.tools} />
-            {live.text ? <Markdown text={live.text} /> : <div className="lab-running-inline"><Loader size={13} className="spin" /><small>{live.status}</small></div>}
+            <span>JARVIS<small> · live workspace</small></span>
+            <AgentRunPanel live={live} elapsedSeconds={elapsedSeconds} />
+            {live.text ? <Markdown text={live.text} /> : null}
           </article>}
         </div>
         <form className="lab-composer" onSubmit={submit}>
-          <textarea value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={onKeyDown} disabled={running} rows={4} aria-label="Lab JARVIS에게 질문" placeholder="예: 반도체 3대장(NVDA, AVGO, TSM) 6개월 상대 성과와 리스크 비교해줘" />
-          <div><span className={error ? "error" : ""}>{error || "⌘/Ctrl + Enter로 전송 · 대화와 결과는 자동 저장"}</span><button disabled={!question.trim() || running} aria-label="Lab JARVIS에 보내기"><Send size={15} /></button></div>
+          <textarea value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={onKeyDown} disabled={running} rows={3} aria-label="Lab JARVIS에게 질문" placeholder="예: 반도체 3대장(NVDA, AVGO, TSM) 6개월 상대 성과와 리스크 비교해줘" />
+          <footer><span className={error ? "error" : ""}>{error || (running ? "현재 작업이 끝나면 다음 질문을 보낼 수 있습니다." : "⌘/Ctrl + Enter · 대화와 결과 자동 저장")}</span><button type="submit" disabled={!question.trim() || running} aria-label="Lab JARVIS에 메시지 보내기"><span>{running ? "작업 중" : "보내기"}</span>{running ? <Loader size={13} className="spin" /> : <Send size={13} />}</button></footer>
         </form>
       </aside>
       <section className="lab-canvas">
