@@ -89,23 +89,35 @@ actions tied to the current ChatGPT user. Leave public content anonymous.
 
 ## QQuant agents
 
-Two agents share one LLM layer (`lib/claude.ts`, official `@anthropic-ai/sdk`). Every call is
-assigned a *role*, and each role maps to a model tier so the frontier model is only used where
-it matters:
+Two agents share one LLM layer (`lib/claude.ts` for Anthropic, `lib/openai.ts` for the frontier
+tier). Every call is assigned a *role*, and each role maps to a model tier so the frontier model
+is only used where it matters:
 
 | Tier | Env override | Default | Roles |
 | --- | --- | --- | --- |
-| frontier | `ANTHROPIC_MODEL` | `claude-opus-4-7` | Lab JARVIS orchestrator, News synthesizer, strategy builder |
+| frontier | `ANTHROPIC_MODEL` (or OpenAI, below) | `claude-opus-4-7` | Lab JARVIS orchestrator, News synthesizer, strategy builder |
 | balanced | `ANTHROPIC_MODEL_BALANCED` | `claude-sonnet-5` | headline sentiment analyst, pattern analyst, similarity auditor, request planner |
 | fast | `ANTHROPIC_MODEL_FAST` | `claude-haiku-4-5` | routing, summarisation |
 
-Prompt caching is on for every stable system prompt and the Lab tool list, adaptive thinking is
-enabled on 4.6+ models, and structured outputs (`output_config.format` + Zod) replace hand-parsed
-JSON. Real usage per role is visible in Settings → LLM API cost / Model allocation.
+Set `LLM_FRONTIER_PROVIDER=openai` (plus `OPENAI_API_KEY`, `OPENAI_MODEL=gpt-5.5`,
+`OPENAI_REASONING_EFFORT=xhigh`) to run the frontier tier on OpenAI GPT-5.5 Thinking through the
+Responses API — the Lab orchestrator tool loop uses the built-in `web_search` tool instead of
+Anthropic's server tool. Balanced and fast tiers always stay on Anthropic, so `ANTHROPIC_API_KEY`
+is still required (grounding, auditors, routing).
+
+Prompt caching is on for every stable Anthropic system prompt and the Lab tool list, adaptive
+thinking is enabled on 4.6+ models (`reasoning.effort` on GPT-5.5), and structured outputs (Zod)
+replace hand-parsed JSON.
+
+Every usage row records the *role* that made the call, so Settings → LLM API cost / Model
+allocation shows each role's configured model next to its real call count and cost. A role
+sitting at 0 calls means no code path reaches it — the balanced (Sonnet) roles are only wired
+into the News routes, so a session that used the Lab alone will show `analyst`, `auditor` and
+`planner` at zero, and `summarizer` has no call site at all.
 
 ### Lab JARVIS (`/api/lab/agent`)
 
-A streaming (SSE) tool-use loop with 14 deterministic tools in `lib/lab-tools.ts`: symbol
+A streaming (SSE) tool-use loop with 25 tools in `lib/lab-tools.ts`: symbol
 resolution (Yahoo search + Korean aliases), price history with overlays, N-asset comparison with
 correlation matrix, technical indicators (SMA/EMA/RSI/MACD/Bollinger), event studies, rule
 backtests (SMA cross, momentum, RSI reversal, breakout, buy-and-hold), risk profiles (beta,
@@ -113,6 +125,39 @@ Sharpe, Sortino, VaR/CVaR), seasonality, largest moves with linked headlines, ne
 quotes, the economic calendar, saved News sentiment Tests, and TradingView charts. Every tool
 result is a typed artifact (`lib/lab-types.ts`) rendered on the Research Canvas by
 `app/lab-charts.tsx`. All math lives in `lib/quant.ts` and is unit tested.
+
+Three of those tools exist because the rest cannot start research on their own — every other tool
+needs a symbol the user already named:
+
+- **`screen_universe`** is the only tool that *discovers* symbols. It ranks a named universe
+  (`lib/universe.ts` — fixed, curated liquid samples, so a screen run today stays comparable to
+  the same screen next month) by one metric with optional filters. Metrics and ranking live in
+  `lib/screener.ts`; bars come from the D1 cache first, so only the first screen of a universe
+  pays the upstream cost. A symbol whose history is too short is excluded *with a reason* rather
+  than ranked on a fabricated value.
+- **`conditional_stats`** pools the forward returns following a condition across a whole universe
+  and compares them to the unconditional baseline of the same bars. Pooling is what makes a rare
+  per-symbol pattern testable — 3 occurrences on one ticker prove nothing, 700 across 30 do. The
+  reported t-statistic uses overlapping windows, so it is a screening signal, not a p-value.
+- **`sweep_conditions`** runs the same condition across a threshold x horizon grid and hands the
+  grid to a balanced-tier analyst that judges whether the effect survives its neighbours or is one
+  lucky cell. `conditional_stats` gives a point; this gives the surface.
+- **`audit_result`** sends a claim plus its evidence to a balanced-tier auditor in a *separate*
+  context, whose only job is to break it — effective sample size under overlapping windows,
+  confounders, counter-hypotheses, survivorship direction, data-snooping risk, and the one test
+  that would settle it. A model reviewing its own conclusion in its own context agrees with
+  itself, so the reviewer is deliberately a different model with a fresh context.
+- **`save_finding` / `list_findings`** persist conclusions to the `research_findings` table
+  (`lib/findings.ts` for the pure claim shape, `lib/findings-store.ts` for D1). A finding is
+  shaped like a claim — what was concluded, on what evidence, and what would overturn it — and
+  the notes relevant to a new question are injected into every Lab turn automatically, so
+  research accumulates across conversations instead of dying with the thread.
+
+The orchestrator delegates rather than doing everything itself. `sweep_conditions` and
+`audit_result` run on the balanced tier (`analyst` / `auditor`), and oversized tool payloads are
+compressed by the fast tier (`summarizer`) instead of being cut mid-JSON — hard truncation used to
+hand the orchestrator malformed JSON with a silently missing tail. Because all three are ordinary
+Lab tools, the Anthropic and OpenAI orchestrator loops pick them up identically.
 
 Before the orchestrator reasons, a fast-tier grounding pass extracts every asset the question
 mentions and resolves it against live Yahoo Finance metadata (`lib/symbols.ts`), so listing

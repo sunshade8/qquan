@@ -24,6 +24,8 @@ const STATEMENTS = [
   "CREATE INDEX IF NOT EXISTS idx_strategies_owner_updated ON strategies (owner_id, updated_at)",
   "CREATE TABLE IF NOT EXISTS strategy_runs (id text PRIMARY KEY NOT NULL, owner_id text NOT NULL, strategy_id text NOT NULL, spec_payload text NOT NULL, result_payload text NOT NULL, verdict text NOT NULL, created_at integer NOT NULL)",
   "CREATE INDEX IF NOT EXISTS idx_strategy_runs_strategy_created ON strategy_runs (strategy_id, created_at)",
+  "CREATE TABLE IF NOT EXISTS research_findings (id text PRIMARY KEY NOT NULL, owner_id text NOT NULL, title text NOT NULL, claim text NOT NULL, evidence_payload text DEFAULT '[]' NOT NULL, symbols text DEFAULT '' NOT NULL, tags text DEFAULT '' NOT NULL, confidence text DEFAULT 'medium' NOT NULL, status text DEFAULT 'open' NOT NULL, falsification text DEFAULT '' NOT NULL, source_conversation_id text, created_at integer NOT NULL, updated_at integer NOT NULL)",
+  "CREATE INDEX IF NOT EXISTS idx_research_findings_owner_updated ON research_findings (owner_id, updated_at)",
 ];
 
 // SQLite has no ADD COLUMN IF NOT EXISTS; a duplicate-column error just means the column is already there.
@@ -32,6 +34,9 @@ const COLUMN_ADDITIONS = [
   "ALTER TABLE news_agent_messages ADD COLUMN conversation_id text",
   "CREATE INDEX IF NOT EXISTS idx_lab_messages_conversation ON lab_messages (conversation_id, created_at)",
   "CREATE INDEX IF NOT EXISTS idx_news_agent_conversation ON news_agent_messages (conversation_id, created_at)",
+  // Usage rows recorded before this column existed keep a NULL role and are reported as "기록 이전".
+  "ALTER TABLE llm_usage ADD COLUMN role text",
+  "CREATE INDEX IF NOT EXISTS idx_llm_usage_owner_role ON llm_usage (owner_id, role)",
 ];
 
 let ready: Promise<void> | undefined;

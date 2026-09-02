@@ -116,6 +116,7 @@ export const llmUsage = sqliteTable("llm_usage", {
   provider: text("provider").notNull(),
   model: text("model").notNull(),
   feature: text("feature").notNull(),
+  role: text("role"),
   inputTokens: integer("input_tokens").notNull(),
   outputTokens: integer("output_tokens").notNull(),
   cacheCreationInputTokens: integer("cache_creation_input_tokens").notNull().default(0),
@@ -173,3 +174,21 @@ export const strategyRuns = sqliteTable("strategy_runs", {
   verdict: text("verdict").notNull(),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 }, (table) => [index("idx_strategy_runs_strategy_created").on(table.strategyId, table.createdAt)]);
+
+export const researchFindings = sqliteTable("research_findings", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull(),
+  title: text("title").notNull(),
+  claim: text("claim").notNull(),
+  evidencePayload: text("evidence_payload").notNull().default("[]"),
+  symbols: text("symbols").notNull().default(""),
+  tags: text("tags").notNull().default(""),
+  confidence: text("confidence").notNull().default("medium"),
+  status: text("status").notNull().default("open"),
+  falsification: text("falsification").notNull().default(""),
+  sourceConversationId: text("source_conversation_id"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => [
+  index("idx_research_findings_owner_updated").on(table.ownerId, table.updatedAt),
+]);

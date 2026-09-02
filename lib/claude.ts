@@ -3,6 +3,14 @@ import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { env } from "cloudflare:workers";
 import type { z } from "zod";
 import { recordLlmUsage, type AnthropicUsage } from "@/lib/llm-usage";
+import { ClaudeApiError } from "@/lib/llm-error";
+import {
+  describeOpenAiError,
+  frontierProvider,
+  generateStructuredOpenAI,
+  generateTextOpenAI,
+  openaiFrontierModel,
+} from "@/lib/openai";
 
 /**
  * Every Claude call in the app goes through this module.
@@ -52,11 +60,8 @@ export const ROLE_DESCRIPTIONS: Record<ModelRole, string> = {
   summarizer: "도구 결과·대화 압축",
 };
 
-export class ClaudeApiError extends Error {
-  constructor(message: string, public status: number) {
-    super(message);
-  }
-}
+export { ClaudeApiError } from "@/lib/llm-error";
+export { frontierProvider };
 
 function runtimeEnv() {
   return env as unknown as Record<string, string | undefined>;
@@ -67,8 +72,14 @@ function envValue(key: string) {
 }
 
 export function modelForTier(tier: ModelTier) {
+  // The frontier tier can be served by OpenAI (GPT-5.5 Thinking); balanced/fast stay on Anthropic.
+  if (tier === "frontier" && frontierProvider() === "openai") return openaiFrontierModel();
   const override = tier === "frontier" ? envValue("ANTHROPIC_MODEL") : tier === "balanced" ? envValue("ANTHROPIC_MODEL_BALANCED") : envValue("ANTHROPIC_MODEL_FAST");
   return override?.trim() || TIER_DEFAULTS[tier];
+}
+
+export function providerForTier(tier: ModelTier): "OpenAI" | "Anthropic" {
+  return tier === "frontier" && frontierProvider() === "openai" ? "OpenAI" : "Anthropic";
 }
 
 export function modelForRole(role: ModelRole) {
@@ -77,7 +88,7 @@ export function modelForRole(role: ModelRole) {
 
 export function modelAllocation() {
   return (Object.keys(ROLE_TIERS) as ModelRole[]).map((role) => ({
-    role, tier: ROLE_TIERS[role], model: modelForRole(role), purpose: ROLE_DESCRIPTIONS[role],
+    role, tier: ROLE_TIERS[role], model: modelForRole(role), provider: providerForTier(ROLE_TIERS[role]), purpose: ROLE_DESCRIPTIONS[role],
   }));
 }
 
@@ -128,6 +139,8 @@ export function sumUsage(items: AnthropicUsage[]): AnthropicUsage {
 /** Map SDK exceptions to a status + Korean message without string matching. */
 export function describeClaudeError(error: unknown): ClaudeApiError {
   if (error instanceof ClaudeApiError) return error;
+  const openai = describeOpenAiError(error);
+  if (openai) return openai;
   if (error instanceof Anthropic.AuthenticationError) return new ClaudeApiError("Claude API 키가 유효하지 않습니다.", 401);
   if (error instanceof Anthropic.RateLimitError) return new ClaudeApiError("Claude 호출 한도를 잠시 초과했습니다. 잠시 후 다시 시도해주세요.", 429);
   if (error instanceof Anthropic.BadRequestError) return new ClaudeApiError(`Claude 요청이 거부되었습니다: ${error.message}`, 400);
@@ -157,6 +170,7 @@ export type TextCall = {
 
 /** One-shot text generation. Uses streaming under the hood so long outputs never hit HTTP timeouts. */
 export async function generateText(call: TextCall) {
+  if (ROLE_TIERS[call.role] === "frontier" && frontierProvider() === "openai") return generateTextOpenAI(call);
   const model = modelForRole(call.role);
   const client = claudeClient();
   const messages = call.messages ?? [{ role: "user", content: call.prompt ?? "" }];
@@ -170,7 +184,7 @@ export async function generateText(call: TextCall) {
     });
     const message = await stream.finalMessage();
     const text = message.content.filter((block): block is Anthropic.TextBlock => block.type === "text").map((block) => block.text).join("\n").trim();
-    const costUsd = await recordLlmUsage(call.ownerId, model, call.feature, usageOf(message));
+    const costUsd = await recordLlmUsage(call.ownerId, model, call.feature, usageOf(message), "Anthropic", call.role);
     if (message.stop_reason === "refusal") throw new ClaudeApiError("Claude가 이 요청에 대한 응답을 거부했습니다.", 422);
     if (!text) throw new ClaudeApiError("Claude 응답이 비어 있습니다.", 502);
     return { text, model, usage: usageOf(message), costUsd, stopReason: message.stop_reason };
@@ -183,6 +197,7 @@ export type StructuredCall<T extends z.ZodType> = Omit<TextCall, "maxTokens"> & 
 
 /** Structured generation validated against a Zod schema via output_config.format. */
 export async function generateStructured<T extends z.ZodType>(call: StructuredCall<T>): Promise<{ data: z.infer<T>; model: string; usage: AnthropicUsage; costUsd: number | null }> {
+  if (ROLE_TIERS[call.role] === "frontier" && frontierProvider() === "openai") return generateStructuredOpenAI(call);
   const model = modelForRole(call.role);
   const client = claudeClient();
   const messages = call.messages ?? [{ role: "user", content: call.prompt ?? "" }];
@@ -195,7 +210,7 @@ export async function generateStructured<T extends z.ZodType>(call: StructuredCa
       output_config: { format: zodOutputFormat(call.schema), ...(supportsAdaptiveThinking(model) ? { effort: call.effort ?? "medium" } : {}) },
       ...(supportsAdaptiveThinking(model) ? { thinking: { type: "adaptive" as const } } : {}),
     });
-    const costUsd = await recordLlmUsage(call.ownerId, model, call.feature, usageOf(message));
+    const costUsd = await recordLlmUsage(call.ownerId, model, call.feature, usageOf(message), "Anthropic", call.role);
     if (message.stop_reason === "refusal") throw new ClaudeApiError("Claude가 이 요청에 대한 응답을 거부했습니다.", 422);
     if (message.parsed_output === null || message.parsed_output === undefined) throw new ClaudeApiError("Claude 구조화 응답을 해석하지 못했습니다.", 502);
     return { data: message.parsed_output as z.infer<T>, model, usage: usageOf(message), costUsd };

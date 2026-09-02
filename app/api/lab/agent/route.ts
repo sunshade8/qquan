@@ -5,8 +5,13 @@ import { getDb } from "@/db";
 import { ensureSchema } from "@/db/ensure";
 import { labMessages } from "@/db/schema";
 import { claudeClient, claudeConfigured, describeClaudeError, generateStructured, modelForRole, reasoningParams, sumUsage, usageOf } from "@/lib/claude";
+import { frontierProvider, openaiConfigured } from "@/lib/openai";
+import { runLabOpenAiLoop } from "@/lib/lab-openai-loop";
 import { touchConversation, validConversationId } from "@/lib/conversations";
+import { describeFindingsForContext, rankFindingsForQuestion } from "@/lib/findings";
+import { listFindings } from "@/lib/findings-store";
 import { executeLabTool, LAB_TOOLS, TOOL_LABELS } from "@/lib/lab-tools";
+import { compressToolResult } from "@/lib/lab-specialists";
 import type { LabArtifact, LabMessage, LabStreamEvent, LabToolTrace } from "@/lib/lab-types";
 import { recordLlmUsage } from "@/lib/llm-usage";
 import { researchOwnerCookie, researchOwnerFrom } from "@/lib/research-owner";
@@ -21,6 +26,27 @@ const SYSTEM_PROMPT = `당신은 QQuant Lab의 JARVIS다. 사용자의 개인 �
 - 당신의 학습 데이터는 오래됐다. 상장 여부, IPO, 티커, 합병, 상호 변경, 현재가, 최근 사건에 대한 기억은 틀렸을 수 있다고 전제한다. "비상장이다", "그런 티커는 없다" 같은 단정은 절대 기억으로 하지 않는다.
 - 회사·자산이 언급되면 먼저 도구로 현재 상태를 확인한다. 시스템이 미리 확인한 "검증된 종목" 블록이 있으면 그것을 사실로 삼는다. 검증 결과가 미확인이면 "현재 데이터 소스에서 확인하지 못했다"고 말하고 web_search로 최신 정보를 찾는다.
 - 학습 이후의 사건(최근 뉴스, 신규 상장, 실적, 정책)이 관련되면 web_search를 사용해 확인하고 출처를 밝힌다.
+
+종목 발굴 (중요)
+- 사용자가 종목을 특정하지 않고 "어떤 종목이", "~한 종목을 찾아줘", "가장 ~한", "상위/하위" 같이 물으면 screen_universe를 먼저 호출한다. 나머지 도구는 전부 종목을 이미 알고 있어야 동작하므로, 후보를 추측으로 나열하지 말고 스크리너로 뽑는다.
+- 스크리너가 뽑은 상위 종목은 그 자체가 결론이 아니라 후보다. 필요하면 technical_indicators·risk_profile·event_study로 이어서 검증한다.
+- 스크리너 유니버스는 고정 표본이라 지수의 실제 편입 종목과 다르고 상장폐지 종목이 빠져 있다. 결과를 보고할 때 이 한계를 한 줄로 명시한다.
+
+가설 검증
+- "A일 때 B가 일어나나?" 류의 질문은 단일 종목 event_study보다 conditional_stats를 우선한다. 여러 종목 표본을 풀링해 베이스라인과 비교하므로 표본 부족 문제를 피한다.
+- 표본 수(n), 베이스라인 대비 초과분, 종목별 편차를 반드시 함께 보고한다. n이 작거나 초과분이 베이스라인과 구분되지 않으면 "차이가 없다"고 분명히 말한다. t값은 관측 구간이 겹치므로 참고용이라고 밝힌다.
+- conditional_stats에서 유망한 결과(초과분 양수)가 나오면 그 한 칸을 결론으로 삼지 말고 sweep_conditions로 임계값·기간 그리드 전체를 확인한다. 인접 칸에서 무너지는 효과는 우연이다. 전략 규칙의 파라미터를 정하기 전에도 반드시 스윕한다.
+
+전문가 위임 (중요)
+- 당신은 오케스트레이터다. 판단 중 두 가지는 당신이 직접 하지 않고 위임한다.
+- 자기 검증 금지: 방금 당신이 도출한 결론을 스스로 검토하면 동의하게 된다. 의미 있는 결론을 사용자에게 보고하기 직전, 그리고 save_finding으로 저장하기 직전에 audit_result를 호출해 독립된 감사관 모델에게 반증을 맡긴다. evidence에는 근거가 된 도구 결과를 그대로 넣는다.
+- 감사 판정이 weakens/refutes/insufficient면 결론을 그대로 유지하지 말고 약화하거나 철회한다. 감사에서 나온 표본 적정성·교란 변수·결정적 검증을 답변에 반영한다. 감사가 지지(supports)했더라도 지적된 한계는 함께 전달한다.
+- 그리드 스윕의 과최적화 판정도 분석가 모델이 sweep_conditions 안에서 수행한다. 그 판정(analystReading)을 무시하고 최고 성적 칸만 인용하지 않는다.
+- 단순 조회(현재가, 차트, 일정)에는 위임하지 않는다. 위임은 결론을 주장할 때만 쓴다.
+
+연구 노트 (누적)
+- 도구로 검증된 의미 있는 결론에 도달하면 save_finding으로 저장할지 사용자에게 짧게 묻고, 동의하면 저장한다. claim에는 숫자와 기간을, evidence에는 어떤 도구가 어떤 값을 냈는지, falsification에는 이 결론을 버릴 조건을 적는다.
+- 턴 시작 시 [기존 연구 노트] 블록이 주어지면 이미 검증된 내용은 다시 계산하지 말고 그 위에 쌓는다. 새 데이터가 기존 노트와 어긋나면 그 사실을 지적하고, 사용자 동의를 받아 해당 노트를 id와 함께 status=refuted로 갱신한다.
 
 작동 원칙
 - 가격, 수익률, 상관, 지표, 백테스트, 뉴스, 일정처럼 데이터가 필요한 질문은 반드시 도구를 호출하고, 도구가 돌려준 숫자·날짜만 근거로 말한다.
@@ -98,10 +124,7 @@ function historyToMessages(history: LabMessage[]): Anthropic.MessageParam[] {
   return messages;
 }
 
-function truncateForModel(value: unknown) {
-  const text = JSON.stringify(value);
-  return text.length > 14_000 ? `${text.slice(0, 14_000)}… (truncated)` : text;
-}
+const TOOL_RESULT_LIMIT = 14_000;
 
 /**
  * Grounding pass: a cheap model lists the assets the question mentions, and the
@@ -157,12 +180,17 @@ export async function POST(request: Request) {
   const ownerId = researchOwnerFrom(request);
   const conversationId = validConversationId(payload.conversationId) ? payload.conversationId : crypto.randomUUID();
   const headers = { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-store, no-transform", "x-accel-buffering": "no", connection: "keep-alive", "set-cookie": researchOwnerCookie(ownerId) };
-  if (!claudeConfigured()) {
+  const useOpenAiFrontier = frontierProvider() === "openai";
+  if (useOpenAiFrontier && !openaiConfigured()) {
+    return new Response(encodeEvent({ type: "error", message: "OpenAI 서버 키가 연결되지 않았습니다.", status: 503 }), { status: 503, headers });
+  }
+  // The grounding pass and non-frontier roles still need Anthropic; on OpenAI-frontier
+  // mode a missing Anthropic key degrades grounding to a no-op rather than failing the turn.
+  if (!claudeConfigured() && !useOpenAiFrontier) {
     return new Response(encodeEvent({ type: "error", message: "Claude 서버 키가 연결되지 않았습니다.", status: 503 }), { status: 503, headers });
   }
 
-  const model = modelForRole("orchestrator");
-  const client = claudeClient();
+  let model = modelForRole("orchestrator");
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -172,14 +200,28 @@ export async function POST(request: Request) {
       const userMessage: LabMessage = { id: crypto.randomUUID(), role: "user", content: question, tools: [], artifacts: [], createdAt: new Date().toISOString() };
       emit({ type: "status", phase: "connecting", label: "요청 접수 완료", detail: "JARVIS 실행 세션을 열고 질문을 전달했습니다." });
       emit({ type: "status", phase: "grounding", label: "종목 사실 확인", detail: "라이브 시장 데이터로 검증 중" });
-      const [stored, grounded] = await Promise.all([loadHistory(ownerId, conversationId), groundEntities(question, ownerId)]);
+      const [stored, grounded, notes] = await Promise.all([
+        loadHistory(ownerId, conversationId),
+        groundEntities(question, ownerId),
+        // Prior conclusions carry into every turn; a findings-table failure must
+        // not fail the turn, so an unavailable store degrades to no notes.
+        listFindings(ownerId, 40).catch(() => []),
+      ]);
       const priorHistory = stored.length ? stored : (payload.history ?? []).slice(-MAX_HISTORY).map((item, index): LabMessage => ({ id: `client-${index}`, role: item.role === "agent" ? "agent" : "user", content: String(item.content ?? ""), tools: [], artifacts: [], createdAt: new Date().toISOString() }));
       await persist(ownerId, conversationId, userMessage);
       const grounding = describeGrounding(grounded);
       if (grounded.length) emit({ type: "status", phase: "grounding", label: "종목 확인 완료", detail: grounded.map((item) => item.symbol ? `${item.input}→${item.symbol}` : `${item.input}: 미확인`).join(", ") });
 
+      const relevantNotes = notes.length ? rankFindingsForQuestion(notes, question, 5) : [];
+      const notesBlock = describeFindingsForContext(relevantNotes);
+      if (relevantNotes.length) emit({ type: "status", phase: "grounding", label: "연구 노트 참조", detail: `${relevantNotes.length}건의 기존 결론을 컨텍스트에 넣었습니다.` });
+
       const messages = historyToMessages(priorHistory);
-      messages.push({ role: "user", content: grounding ? `${question}\n\n[시스템 사전 검증]\n${grounding}` : question });
+      const contextBlocks = [
+        grounding ? `[시스템 사전 검증]\n${grounding}` : null,
+        notesBlock ? `[기존 연구 노트 · 이미 검증된 결론이므로 재계산하지 말고 이 위에 쌓을 것]\n${notesBlock}` : null,
+      ].filter(Boolean);
+      messages.push({ role: "user", content: contextBlocks.length ? `${question}\n\n${contextBlocks.join("\n\n")}` : question });
       const artifacts: LabArtifact[] = [];
       const traces: LabToolTrace[] = [];
       const usages = [];
@@ -187,6 +229,24 @@ export async function POST(request: Request) {
       const context = { ownerId, today: today(), conversationId };
 
       try {
+        if (useOpenAiFrontier) {
+          const result = await runLabOpenAiLoop({
+            emit,
+            initialMessages: messages.map((message): { role: "user" | "assistant"; content: string } => ({
+              role: message.role === "assistant" ? "assistant" : "user",
+              content: typeof message.content === "string" ? message.content : "",
+            })).filter((message) => message.content.trim()),
+            instructions: `${SYSTEM_PROMPT}\n\n오늘 날짜: ${context.today}. 사용자는 한국(KST)에 있고 주로 미국 시장을 본다.`,
+            context,
+            artifacts,
+            traces,
+            maxSteps: MAX_STEPS,
+          });
+          answer = result.answer;
+          for (const item of result.usages) usages.push(item);
+          model = result.model;
+        } else {
+        const client = claudeClient();
         emit({ type: "status", phase: "planning", label: "질문 해석·실행 계획", detail: "필요한 데이터와 분석 도구를 선택하고 있습니다." });
         for (let step = 0; step < MAX_STEPS; step += 1) {
           if (step > 0) emit({ type: "status", phase: "verifying", label: "도구 결과 검증·해석", detail: `${traces.length}개 실행 결과를 질문과 대조하고 있습니다.` });
@@ -246,7 +306,7 @@ export async function POST(request: Request) {
               const trace: LabToolTrace = { id: traceId, ...outcome.trace, startedAt: new Date(startedAt).toISOString(), durationMs };
               traces.push(trace);
               emit({ type: "tool_end", id: traceId, name: use.name, label: trace.label, status: trace.status === "failed" ? "failed" : "complete", detail: trace.detail, durationMs });
-              return { type: "tool_result", tool_use_id: use.id, content: truncateForModel(outcome.result), is_error: trace.status === "failed" };
+              return { type: "tool_result", tool_use_id: use.id, content: await compressToolResult(use.name, outcome.result, ownerId, TOOL_RESULT_LIMIT), is_error: trace.status === "failed" };
             } catch (error) {
               const detail = error instanceof Error ? error.message : "도구 실행 실패";
               const durationMs = Date.now() - startedAt;
@@ -258,9 +318,10 @@ export async function POST(request: Request) {
           messages.push({ role: "user", content: results });
           emit({ type: "status", phase: "verifying", label: "결과 종합", detail: `${traces.length}개 도구 결과를 교차 확인하고 있습니다.` });
         }
+        }
 
         const totalUsage = sumUsage(usages);
-        const costUsd = await recordLlmUsage(ownerId, model, "lab.jarvis", totalUsage);
+        const costUsd = await recordLlmUsage(ownerId, model, "lab.jarvis", totalUsage, useOpenAiFrontier ? "OpenAI" : "Anthropic", "orchestrator");
         const agentMessage: LabMessage = {
           id: crypto.randomUUID(), role: "agent", content: answer.trim() || "도구 실행은 끝났지만 설명을 만들지 못했습니다. 질문을 조금 더 구체적으로 다시 시도해주세요.",
           tools: traces, artifacts, createdAt: new Date().toISOString(), model, costUsd,

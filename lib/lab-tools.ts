@@ -15,6 +15,14 @@ import {
   type EventFeature, type EventOperator, type StrategyId, EVENT_FEATURE_LABELS,
 } from "@/lib/quant";
 import { resolveSymbol, resolveSymbols, type ResolvedSymbol } from "@/lib/symbols";
+import { describeUniverses, resolveUniverse, UNIVERSE_IDS } from "@/lib/universe";
+import {
+  pooledConditionalStudy, screenUniverse, sweepConditions, SCREEN_METRIC_LABELS, SCREEN_METRICS,
+  type PooledCondition, type ScreenCandidate, type ScreenFilter, type ScreenMetric, type ScreenRank,
+} from "@/lib/screener";
+import { auditResult, interpretSweep, AUDIT_RISK_LABELS, AUDIT_VERDICT_LABELS } from "@/lib/lab-specialists";
+import { FINDING_CONFIDENCE_LABELS, FINDING_STATUS_LABELS } from "@/lib/findings";
+import { listFindings, saveFinding } from "@/lib/findings-store";
 import { describeSpec, normalizeSpec, presetConditions, type BacktestResult } from "@/lib/strategy";
 import { backtestSpec, getStrategy, listStrategies, runAndRecord, saveStrategy, STRATEGY_STATUS_LABELS } from "@/lib/strategy-store";
 
@@ -265,6 +273,117 @@ export const LAB_TOOLS: Anthropic.Tool[] = [
     name: "list_strategies",
     description: "Backtest 화면에 저장된 전략 목록과 최근 결과·상태(가설/백테스트 완료/시그널 후보/기각/페이퍼/실거래)를 불러온다.",
     input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "screen_universe",
+    description: `종목을 '발견'하는 유일한 도구. 유니버스 전체를 훑어 조건에 맞는 종목을 지표 기준으로 순위 매긴다. 사용자가 종목을 지정하지 않고 "어떤 종목이", "~한 종목 찾아줘", "상위/하위", "가장 ~한" 같이 물으면 반드시 이 도구를 먼저 쓴다. 다른 모든 도구는 종목을 이미 알고 있어야 동작하므로, 후보 발굴은 여기서 시작한다.
+사용 가능한 유니버스: ${describeUniverses().map((item) => `${item.id}(${item.label} ${item.count}종목)`).join(", ")}.
+symbols로 티커를 직접 줄 수도 있다(반드시 티커여야 하며, 한국어 종목명이면 resolve_symbols로 먼저 변환한다).
+지표: ${SCREEN_METRICS.map((metric) => `${metric}=${SCREEN_METRIC_LABELS[metric]}`).join(", ")}. period는 return/volatility/sharpe/drawdown 계열에서는 거래일 룩백, sma_distance·rsi14·volume_ratio에서는 지표 길이다.`,
+    input_schema: {
+      type: "object",
+      properties: {
+        universe: { type: "string", enum: [...UNIVERSE_IDS], description: "미리 정의된 유니버스 id. symbols를 주지 않으면 필수." },
+        symbols: { type: "array", items: { type: "string" }, description: "티커 직접 지정 (최대 40). universe 대신 사용." },
+        rankBy: {
+          type: "object",
+          properties: { metric: { type: "string", enum: [...SCREEN_METRICS] }, period: { type: "integer" }, direction: { type: "string", enum: ["desc", "asc"] } },
+          required: ["metric"],
+          description: "순위 기준. direction 기본 desc(높은 값 우선).",
+        },
+        filters: {
+          type: "array", maxItems: 4,
+          items: {
+            type: "object",
+            properties: { metric: { type: "string", enum: [...SCREEN_METRICS] }, period: { type: "integer" }, op: { type: "string", enum: ["gt", "lt", "gte", "lte"] }, value: { type: "number" } },
+            required: ["metric", "op", "value"],
+          },
+          description: "선택 조건. 모두 만족하는 종목만 남는다.",
+        },
+        limit: { type: "integer", description: "반환 종목 수. 기본 15, 최대 40." },
+        lookbackDays: { type: "integer", description: "불러올 일봉 기간(달력일). 기본 500. 긴 period를 쓰면 늘린다." },
+      },
+      required: ["rankBy"],
+    },
+  },
+  {
+    name: "conditional_stats",
+    description: "유니버스 전체에 대해 '조건 X가 성립한 날 이후 N거래일 수익률'을 모아, 같은 기간의 무조건 수익률(베이스라인)과 비교한다. 단일 종목 event_study와 달리 여러 종목의 표본을 풀링하므로, 한 종목에서 3번 나온 패턴처럼 표본이 부족해 판단할 수 없는 경우를 해결한다. 가설을 숫자로 검증할 때 쓴다. t값도 함께 주지만 관측 구간이 겹치므로 참고용이다.",
+    input_schema: {
+      type: "object",
+      properties: {
+        universe: { type: "string", enum: [...UNIVERSE_IDS] },
+        symbols: { type: "array", items: { type: "string" }, description: "티커 직접 지정 (최대 40)" },
+        condition: {
+          type: "object",
+          properties: {
+            metric: { type: "string", enum: ["return", "rsi14", "volatility", "volume_ratio", "drawdown", "sma_distance", "gap", "range"] },
+            period: { type: "integer" },
+            op: { type: "string", enum: ["gt", "lt"] },
+            value: { type: "number" },
+          },
+          required: ["metric", "op", "value"],
+        },
+        horizonDays: { type: "integer", description: "이후 거래일 수. 기본 5" },
+        lookbackDays: { type: "integer", description: "기본 1095 (3년)" },
+      },
+      required: ["condition"],
+    },
+  },
+  {
+    name: "save_finding",
+    description: "검증된 리서치 결론을 연구 노트에 영구 저장한다. 대화는 사라지지만 노트는 다음 대화에 자동으로 다시 불려온다. 도구로 숫자를 확인해 의미 있는 결론에 도달했을 때 호출한다. claim은 숫자를 포함한 완결된 문장, evidence는 어떤 도구가 어떤 값을 냈는지, falsification은 이 결론이 틀렸다면 무엇이 관측될지를 적는다. 기존 노트를 갱신하려면 id를 함께 준다(반증됐으면 status를 refuted로).",
+    input_schema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "기존 노트 갱신 시에만" },
+        title: { type: "string", description: "짧은 제목" },
+        claim: { type: "string", description: "숫자와 기간을 포함한 결론 문장" },
+        evidence: { type: "array", items: { type: "string" }, description: "근거. 예: 'conditional_stats: RSI<30 이후 5일 평균 +1.2%, 베이스라인 +0.3%, n=214'" },
+        symbols: { type: "array", items: { type: "string" } },
+        tags: { type: "array", items: { type: "string" } },
+        confidence: { type: "string", enum: ["high", "medium", "low"] },
+        status: { type: "string", enum: ["open", "confirmed", "refuted", "stale"] },
+        falsification: { type: "string", description: "어떤 결과가 나오면 이 결론을 버리는가" },
+      },
+      required: ["title", "claim", "evidence"],
+    },
+  },
+  {
+    name: "list_findings",
+    description: "저장된 연구 노트를 최신순으로 불러온다. 매 턴 시작 시 관련 노트가 자동 주입되지만, 전체 목록을 보거나 과거 결론을 재확인할 때 호출한다.",
+    input_schema: { type: "object", properties: { limit: { type: "integer", description: "기본 20" } } },
+  },
+  {
+    name: "sweep_conditions",
+    description: "하나의 조건을 임계값 × 기간 그리드 전체에 대해 돌려, 효과가 실재하는지 아니면 한 칸의 우연인지 본다. conditional_stats가 셀 하나를 주는 반면 이 도구는 표면 전체를 준다. 유망한 conditional_stats 결과가 나왔거나, 전략 규칙의 파라미터를 정하기 전에 반드시 호출한다. 결과 해석은 별도 분석가 모델(balanced 티어)이 담당하며 과최적화 여부를 판정한다.",
+    input_schema: {
+      type: "object",
+      properties: {
+        universe: { type: "string", enum: [...UNIVERSE_IDS] },
+        symbols: { type: "array", items: { type: "string" } },
+        metric: { type: "string", enum: ["return", "rsi14", "volatility", "volume_ratio", "drawdown", "sma_distance", "gap", "range"] },
+        period: { type: "integer", description: "지표 길이 또는 룩백" },
+        op: { type: "string", enum: ["gt", "lt"] },
+        thresholds: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 6, description: "테스트할 임계값들. 예: [25, 30, 35]" },
+        horizons: { type: "array", items: { type: "integer" }, minItems: 1, maxItems: 5, description: "이후 거래일 수들. 예: [1, 5, 10, 20]" },
+        lookbackDays: { type: "integer", description: "기본 1095 (3년)" },
+      },
+      required: ["metric", "op", "thresholds"],
+    },
+  },
+  {
+    name: "audit_result",
+    description: "도출한 결론을 별도의 감사관 모델(balanced 티어, 독립 컨텍스트)에게 넘겨 반증을 시도하게 한다. 자기가 만든 결론을 자기가 검토하면 동의하게 되므로, 다른 모델이 공격한다. save_finding으로 저장하기 직전, 그리고 사용자에게 의미 있는 결론을 보고하기 직전에 호출한다. 감사 결과(표본 적정성, 교란 변수, 반대 가설, 데이터 스누핑 위험, 결정적 검증)를 답변에 반영한다.",
+    input_schema: {
+      type: "object",
+      properties: {
+        claim: { type: "string", description: "검증할 결론. 숫자와 기간을 포함한 완결된 문장." },
+        evidence: { type: "object", description: "그 결론을 뒷받침하는 도구 결과 데이터. conditional_stats/sweep_conditions/screen_universe 결과를 그대로 넣는다." },
+        question: { type: "string", description: "사용자의 원래 질문" },
+      },
+      required: ["claim", "evidence"],
+    },
   },
 ];
 
@@ -708,6 +827,305 @@ async function listStrategiesTool(context: ToolContext): Promise<ToolOutcome> {
   }
 }
 
+/**
+ * Loads daily bars for a whole universe. Bars come from the D1 cache first
+ * (`loadDailyRows`), so only the first screen of a universe pays the upstream
+ * cost; the pool bounds concurrency because Yahoo throttles bursts from the
+ * Worker's shared egress IP and a Worker has a finite subrequest budget.
+ */
+async function loadUniverseBars(symbols: string[], from: string, to: string, concurrency = 6) {
+  const candidates: ScreenCandidate[] = [];
+  const failed: Array<{ symbol: string; reason: string }> = [];
+  const queue = [...symbols];
+  const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
+    for (let symbol = queue.shift(); symbol; symbol = queue.shift()) {
+      try {
+        const load = await loadDailyRows(symbol, from, to);
+        if (load.rows.length < 30) failed.push({ symbol, reason: load.reason ?? `일봉 ${load.rows.length}개로 부족합니다.` });
+        else candidates.push({ symbol, name: symbol, rows: load.rows });
+      } catch (error) {
+        failed.push({ symbol, reason: error instanceof Error ? error.message : "일봉 로드 실패" });
+      }
+    }
+  });
+  await Promise.all(workers);
+  candidates.sort((left, right) => symbols.indexOf(left.symbol) - symbols.indexOf(right.symbol));
+  return { candidates, failed };
+}
+
+function normalizeMetric(value: unknown): ScreenMetric | null {
+  return typeof value === "string" && (SCREEN_METRICS as string[]).includes(value) ? value as ScreenMetric : null;
+}
+
+function optionalPeriod(value: unknown) {
+  const period = Number(value);
+  return Number.isFinite(period) && period >= 2 ? Math.round(period) : undefined;
+}
+
+async function screenUniverseTool(input: Input, context: ToolContext): Promise<ToolOutcome> {
+  const rankInput = (input.rankBy && typeof input.rankBy === "object" ? input.rankBy : {}) as Input;
+  const rankMetric = normalizeMetric(rankInput.metric);
+  if (!rankMetric) {
+    const reason = `rankBy.metric이 필요합니다. 사용 가능: ${SCREEN_METRICS.join(", ")}`;
+    return { result: { available: false, reason }, artifacts: [], trace: { name: "screen_universe", label: "종목 스크리닝", status: "failed", detail: reason } };
+  }
+  const rank: ScreenRank = { metric: rankMetric, period: optionalPeriod(rankInput.period), direction: rankInput.direction === "asc" ? "asc" : "desc" };
+  const filters: ScreenFilter[] = (Array.isArray(input.filters) ? input.filters : []).flatMap((item) => {
+    const filter = (item && typeof item === "object" ? item : {}) as Input;
+    const metric = normalizeMetric(filter.metric);
+    const value = Number(filter.value);
+    const op = filter.op === "lt" || filter.op === "gte" || filter.op === "lte" ? filter.op : "gt";
+    return metric && Number.isFinite(value) ? [{ metric, period: optionalPeriod(filter.period), op, value } as ScreenFilter] : [];
+  }).slice(0, 4);
+
+  const { symbols, label, note } = resolveUniverse(input, 40);
+  const { from, to } = windowFor({ lookbackDays: input.lookbackDays }, context.today, 500);
+  const { candidates, failed } = await loadUniverseBars(symbols, from, to);
+  if (!candidates.length) {
+    const reason = `${label}의 일봉을 하나도 불러오지 못했습니다. ${failed[0]?.reason ?? ""}`.trim();
+    return { result: { available: false, reason, failed }, artifacts: [limitation("스크리닝 불가", reason, ["잠시 후 다시 시도", "symbols로 종목 수를 줄여 지정"])], trace: { name: "screen_universe", label: "종목 스크리닝", status: "failed", detail: reason } };
+  }
+
+  const limit = Math.min(40, Math.max(1, Number(input.limit) || 15));
+  const screen = screenUniverse(candidates, rank, filters, limit);
+  const columns = ["종목", "종가", ...screen.columns.map((column) => column.label)];
+  const rows = screen.rows.map((row) => [row.symbol, row.close, ...screen.columns.map((column) => row.values[column.key] ?? null)]);
+  const notes = [
+    `${label} · ${candidates.length}종목 스캔 · ${from} → ${to}`,
+    `정렬: ${screen.rankLabel} ${rank.direction === "desc" ? "높은 순" : "낮은 순"}`,
+    filters.length ? `필터 ${filters.length}개 적용 후 ${screen.rows.length}종목` : `상위 ${screen.rows.length}종목`,
+    note,
+    failed.length ? `데이터 실패 ${failed.length}종목: ${failed.slice(0, 5).map((item) => item.symbol).join(", ")}` : null,
+    "고정 표본이라 지수 실제 편입 종목과 다를 수 있고, 상장폐지 종목이 빠져 생존편향이 있습니다.",
+  ].filter((item): item is string => Boolean(item));
+
+  const artifact: LabArtifact = { id: id(), type: "table", title: `스크리닝 · ${screen.rankLabel}`, subtitle: `${label} · 상위 ${screen.rows.length}종목`, columns, rows, notes };
+  return {
+    result: {
+      universe: label, scanned: candidates.length, matched: screen.rows.length, period: { from, to },
+      rankBy: { metric: rank.metric, period: rank.period, direction: rank.direction, label: screen.rankLabel },
+      filters, rows: screen.rows, excluded: screen.excluded.slice(0, 10), failed: failed.slice(0, 10),
+      caveat: "고정 표본 · 생존편향 있음",
+    },
+    artifacts: [artifact],
+    trace: { name: "screen_universe", label: `스크리닝 · ${label}`, status: "complete", detail: `${candidates.length}종목 중 ${screen.rows.length}개 · ${screen.rankLabel}` },
+  };
+}
+
+async function conditionalStatsTool(input: Input, context: ToolContext): Promise<ToolOutcome> {
+  const conditionInput = (input.condition && typeof input.condition === "object" ? input.condition : {}) as Input;
+  const metric = normalizeMetric(conditionInput.metric);
+  const value = Number(conditionInput.value);
+  if (!metric || !Number.isFinite(value)) {
+    const reason = "condition.metric과 condition.value가 필요합니다.";
+    return { result: { available: false, reason }, artifacts: [], trace: { name: "conditional_stats", label: "조건부 통계", status: "failed", detail: reason } };
+  }
+  const condition: PooledCondition = { metric, period: optionalPeriod(conditionInput.period), op: conditionInput.op === "lt" ? "lt" : "gt", value };
+  const horizon = Math.min(60, Math.max(1, Number(input.horizonDays) || 5));
+
+  const { symbols, label, note } = resolveUniverse(input, 40);
+  const { from, to } = windowFor({ lookbackDays: input.lookbackDays }, context.today, 1095);
+  const { candidates, failed } = await loadUniverseBars(symbols, from, to);
+  if (!candidates.length) {
+    const reason = `${label}의 일봉을 불러오지 못했습니다. ${failed[0]?.reason ?? ""}`.trim();
+    return { result: { available: false, reason }, artifacts: [limitation("조건부 통계 불가", reason, ["잠시 후 다시 시도", "symbols로 종목을 직접 지정"])], trace: { name: "conditional_stats", label: "조건부 통계", status: "failed", detail: reason } };
+  }
+
+  // "rsi14" already carries its length in the label, so only append a period for
+  // metrics whose label does not name one (return, volatility, sma_distance, ...).
+  const namesPeriod = /\(\d+\)/.test(SCREEN_METRIC_LABELS[metric]);
+  const conditionLabel = `${SCREEN_METRIC_LABELS[metric]}${condition.period && !namesPeriod ? `(${condition.period})` : ""} ${condition.op === "gt" ? ">" : "<"} ${value}`;
+  const study = pooledConditionalStudy(candidates, condition, horizon, conditionLabel);
+  if (!study.conditional.samples) {
+    const reason = `${candidates.length}종목 ${from}~${to} 구간에서 '${conditionLabel}'을 만족하는 날이 없습니다.`;
+    return { result: { available: false, reason, symbolsScanned: candidates.length }, artifacts: [limitation("표본 없음", reason, ["임계값을 완화", "lookbackDays를 늘려 기간 확대"])], trace: { name: "conditional_stats", label: "조건부 통계", status: "failed", detail: "조건 충족 표본 0건" } };
+  }
+
+  const artifact: LabArtifact = {
+    id: id(), type: "event-study", title: `조건부 통계 · ${conditionLabel}`, symbol: label, period: { from, to },
+    condition: conditionLabel, horizon,
+    stats: {
+      "발생": study.conditional.samples,
+      "조건부 승률": study.conditional.positiveRatePct,
+      "조건부 평균": study.conditional.averagePct,
+      "베이스라인 평균": study.baseline.averagePct,
+      "평균 초과": study.edge.averageDiffPct,
+      "조건부 중앙값": study.conditional.medianPct,
+      "표준편차": study.conditional.stdDevPct,
+    },
+    distribution: study.distribution,
+    events: [],
+    notes: [
+      `${label} · ${study.symbolsWithSamples}/${study.symbolsScanned}종목에서 표본 발생 · ${from} → ${to}`,
+      `조건부 n=${study.conditional.samples} vs 베이스라인 n=${study.baseline.samples} · 승률 차이 ${study.edge.positiveRateDiffPct ?? "—"}%p · t=${study.edge.tStat ?? "—"}`,
+      "관측 구간이 겹치므로 t값은 참고용이며, 실효 표본은 n보다 작습니다.",
+      note,
+      failed.length ? `데이터 실패 ${failed.length}종목` : null,
+    ].filter((item): item is string => Boolean(item)),
+  };
+
+  return {
+    result: {
+      universe: label, period: { from, to }, condition: conditionLabel, horizon,
+      conditional: study.conditional, baseline: study.baseline, edge: study.edge,
+      symbolsWithSamples: study.symbolsWithSamples, symbolsScanned: study.symbolsScanned,
+      perSymbol: study.perSymbol.slice(0, 15),
+      caveat: "겹치는 관측 구간 · 고정 표본 생존편향",
+    },
+    artifacts: [artifact],
+    trace: { name: "conditional_stats", label: `조건부 통계 · ${conditionLabel}`, status: "complete", detail: `n=${study.conditional.samples} · 평균 ${study.conditional.averagePct ?? "—"}% vs 기준 ${study.baseline.averagePct ?? "—"}%` },
+  };
+}
+
+async function saveFindingTool(input: Input, context: ToolContext): Promise<ToolOutcome> {
+  try {
+    const saved = await saveFinding(context.ownerId, context.conversationId ?? null, {
+      id: typeof input.id === "string" ? input.id : undefined,
+      title: String(input.title ?? ""),
+      claim: String(input.claim ?? ""),
+      evidence: Array.isArray(input.evidence) ? input.evidence.map(String) : [],
+      symbols: Array.isArray(input.symbols) ? input.symbols.map(String) : [],
+      tags: Array.isArray(input.tags) ? input.tags.map(String) : [],
+      confidence: typeof input.confidence === "string" ? input.confidence : undefined,
+      status: typeof input.status === "string" ? input.status : undefined,
+      falsification: typeof input.falsification === "string" ? input.falsification : "",
+    });
+    if (!saved.ok) return { result: { ok: false, errors: saved.errors }, artifacts: [], trace: { name: "save_finding", label: "연구 노트 저장", status: "failed", detail: saved.errors.join(" ") } };
+    const finding = saved.finding;
+    const artifact: LabArtifact = {
+      id: id(), type: "table", title: `연구 노트 ${saved.created ? "저장" : "갱신"} · ${finding.title}`,
+      subtitle: `${FINDING_STATUS_LABELS[finding.status]} · 신뢰도 ${FINDING_CONFIDENCE_LABELS[finding.confidence]}`,
+      columns: ["항목", "내용"],
+      rows: [
+        ["결론", finding.claim],
+        ["근거", finding.evidence.join(" / ")],
+        ["종목", finding.symbols.join(", ") || "—"],
+        ["반증 조건", finding.falsification || "—"],
+        ["노트 id", finding.id.slice(0, 8)],
+      ],
+      notes: ["다음 대화에서 관련 질문을 하면 이 노트가 자동으로 다시 불려옵니다."],
+    };
+    return { result: { ok: true, created: saved.created, finding }, artifacts: [artifact], trace: { name: "save_finding", label: `연구 노트 ${saved.created ? "저장" : "갱신"}`, status: "complete", detail: finding.title } };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "연구 노트 저장 실패";
+    return { result: { ok: false, reason }, artifacts: [], trace: { name: "save_finding", label: "연구 노트 저장", status: "failed", detail: reason } };
+  }
+}
+
+async function listFindingsTool(input: Input, context: ToolContext): Promise<ToolOutcome> {
+  try {
+    const findings = await listFindings(context.ownerId, Number(input.limit) || 20);
+    const artifact: LabArtifact = {
+      id: id(), type: "table", title: "연구 노트", subtitle: `${findings.length}건`,
+      columns: ["제목", "결론", "종목", "신뢰도", "상태", "갱신"],
+      rows: findings.map((finding) => [finding.title, finding.claim, finding.symbols.join(",") || "—", FINDING_CONFIDENCE_LABELS[finding.confidence], FINDING_STATUS_LABELS[finding.status], finding.updatedAt.slice(0, 10)]),
+      notes: findings.length ? [] : ["아직 저장된 노트가 없습니다. 검증된 결론이 나오면 save_finding으로 남기세요."],
+    };
+    return { result: findings, artifacts: [artifact], trace: { name: "list_findings", label: "연구 노트", status: "complete", detail: `${findings.length}건` } };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "연구 노트 조회 실패";
+    return { result: { ok: false, reason }, artifacts: [], trace: { name: "list_findings", label: "연구 노트", status: "failed", detail: reason } };
+  }
+}
+
+async function sweepConditionsTool(input: Input, context: ToolContext): Promise<ToolOutcome> {
+  const metric = normalizeMetric(input.metric);
+  const thresholds = (Array.isArray(input.thresholds) ? input.thresholds : []).map(Number).filter(Number.isFinite).slice(0, 6);
+  if (!metric || thresholds.length < 2) {
+    const reason = "metric과 thresholds(2개 이상)가 필요합니다.";
+    return { result: { available: false, reason }, artifacts: [], trace: { name: "sweep_conditions", label: "그리드 스윕", status: "failed", detail: reason } };
+  }
+  const horizons = (Array.isArray(input.horizons) ? input.horizons : [1, 5, 10, 20]).map(Number).filter((value) => Number.isFinite(value) && value >= 1).slice(0, 5);
+  const op: "gt" | "lt" = input.op === "lt" ? "lt" : "gt";
+  const period = optionalPeriod(input.period);
+
+  const { symbols, label, note } = resolveUniverse(input, 40);
+  const { from, to } = windowFor({ lookbackDays: input.lookbackDays }, context.today, 1095);
+  const { candidates, failed } = await loadUniverseBars(symbols, from, to);
+  if (!candidates.length) {
+    const reason = `${label}의 일봉을 불러오지 못했습니다. ${failed[0]?.reason ?? ""}`.trim();
+    return { result: { available: false, reason }, artifacts: [limitation("스윕 불가", reason, ["잠시 후 다시 시도", "symbols로 종목을 직접 지정"])], trace: { name: "sweep_conditions", label: "그리드 스윕", status: "failed", detail: reason } };
+  }
+
+  const namesPeriod = /\(\d+\)/.test(SCREEN_METRIC_LABELS[metric]);
+  const conditionLabel = `${SCREEN_METRIC_LABELS[metric]}${period && !namesPeriod ? `(${period})` : ""} ${op === "gt" ? ">" : "<"} {임계값}`;
+  const sweep = sweepConditions(candidates, metric, op, thresholds, horizons.length ? horizons : [5], period);
+  const robustness = sweep.robustness;
+
+  // The grid itself is deterministic; the balanced-tier analyst reads it for
+  // overfitting, which is judgement the orchestrator should not make about its
+  // own hypothesis.
+  const interpretation = await interpretSweep({ sweep, conditionLabel, universeLabel: label, ownerId: context.ownerId });
+
+  const artifact: LabArtifact = {
+    id: id(), type: "table", title: `그리드 스윕 · ${conditionLabel}`,
+    subtitle: `${label} · ${sweep.thresholds.length}개 임계값 × ${sweep.horizons.length}개 기간`,
+    columns: ["임계값", "기간(일)", "표본 n", "조건부 (%)", "기준 (%)", "초과 (%p)", "승률차 (%p)"],
+    rows: sweep.cells.map((cell) => [cell.threshold, cell.horizon, cell.samples, cell.conditionalAvgPct, cell.baselineAvgPct, cell.edgePct, cell.positiveRateDiffPct]),
+    notes: [
+      `${from} → ${to} · ${sweep.symbolsScanned}종목 스캔`,
+      `초과분 양수 칸 ${robustness.positiveEdgeCells}/${robustness.cellsWithSamples} (${robustness.positiveEdgeRatePct ?? "—"}%) · 중앙값 ${robustness.medianEdgePct ?? "—"}%p · 범위 ${robustness.minEdgePct ?? "—"} ~ ${robustness.maxEdgePct ?? "—"}`,
+      `부호 일관성 ${robustness.signConsistent ? "있음" : "없음"} · 극단으로 갈수록 강해짐: ${robustness.strengthensWithExtremity === null ? "판정 불가" : robustness.strengthensWithExtremity ? "그렇다" : "아니다"}`,
+      interpretation.ok ? `분석가 판정: ${interpretation.data.split("\n")[0]}` : `분석가 해석 생략: ${interpretation.reason}`,
+      "최고 성적 칸 하나를 결론으로 삼으면 과최적화입니다. 표면 전체를 보세요.",
+      note,
+    ].filter((item): item is string => Boolean(item)),
+  };
+
+  return {
+    result: {
+      universe: label, period: { from, to }, condition: conditionLabel, metric, op, thresholds: sweep.thresholds, horizons: sweep.horizons,
+      cells: sweep.cells, robustness, symbolsScanned: sweep.symbolsScanned, symbolsWithSamples: sweep.symbolsWithSamples,
+      analystReading: interpretation.ok ? interpretation.data : null,
+      analystModel: interpretation.ok ? interpretation.model : null,
+      analystSkipped: interpretation.ok ? null : interpretation.reason,
+      caveat: "겹치는 관측 구간 · 고정 표본 생존편향 · 그리드 전체를 보고 판단할 것",
+    },
+    artifacts: [artifact],
+    trace: {
+      name: "sweep_conditions", label: `그리드 스윕 · ${conditionLabel}`, status: "complete",
+      detail: `${robustness.cellsWithSamples}칸 중 ${robustness.positiveEdgeCells}칸 양수 · 중앙 초과 ${robustness.medianEdgePct ?? "—"}%p`,
+    },
+  };
+}
+
+async function auditResultTool(input: Input, context: ToolContext): Promise<ToolOutcome> {
+  const claim = String(input.claim ?? "").trim();
+  if (claim.length < 10) {
+    const reason = "claim에 검증할 결론을 문장으로 적어야 합니다.";
+    return { result: { ok: false, reason }, artifacts: [], trace: { name: "audit_result", label: "결론 감사", status: "failed", detail: reason } };
+  }
+  const audit = await auditResult({ claim, evidence: input.evidence ?? {}, question: typeof input.question === "string" ? input.question : undefined, ownerId: context.ownerId });
+  if (!audit.ok) {
+    return {
+      result: { ok: false, reason: audit.reason },
+      artifacts: [limitation("감사 생략", audit.reason, ["ANTHROPIC_API_KEY 연결 후 재시도"])],
+      trace: { name: "audit_result", label: "결론 감사", status: "failed", detail: audit.reason },
+    };
+  }
+  const report = audit.data;
+  const artifact: LabArtifact = {
+    id: id(), type: "table", title: `결론 감사 · ${AUDIT_VERDICT_LABELS[report.verdict]}`,
+    subtitle: `${audit.model} · 데이터 스누핑 위험 ${AUDIT_RISK_LABELS[report.dataSnoopingRisk]}`,
+    columns: ["항목", "감사 결과"],
+    rows: [
+      ["판정", `${AUDIT_VERDICT_LABELS[report.verdict]} — ${report.headline}`],
+      ["표본 적정성", report.sampleAdequacy],
+      ["교란 변수", report.confounders.join(" / ") || "—"],
+      ["반대 가설", report.counterHypotheses.join(" / ") || "—"],
+      ["데이터 스누핑", `${AUDIT_RISK_LABELS[report.dataSnoopingRisk]} — ${report.dataSnoopingReason}`],
+      ["생존편향 영향", report.survivorshipImpact],
+      ["결정적 검증", report.decisiveTest],
+    ],
+    notes: ["오케스트레이터와 다른 모델·다른 컨텍스트에서 독립적으로 실행된 감사입니다."],
+  };
+  return {
+    result: { ok: true, audit: report, model: audit.model, instruction: "이 감사 결과를 답변에 반영하고, 판정이 weakens/refutes/insufficient면 결론을 그에 맞게 약화하거나 철회한다." },
+    artifacts: [artifact],
+    trace: { name: "audit_result", label: `결론 감사 · ${AUDIT_VERDICT_LABELS[report.verdict]}`, status: "complete", detail: report.headline.slice(0, 90) },
+  };
+}
+
 export async function executeLabTool(name: string, input: unknown, context: ToolContext): Promise<ToolOutcome> {
   const args = (input && typeof input === "object" ? input : {}) as Input;
   switch (name) {
@@ -733,10 +1151,18 @@ export async function executeLabTool(name: string, input: unknown, context: Tool
     case "save_strategy": return saveStrategyTool(args, context);
     case "run_strategy_backtest": return runStrategyTool(args, context);
     case "list_strategies": return listStrategiesTool(context);
+    case "screen_universe": return screenUniverseTool(args, context);
+    case "conditional_stats": return conditionalStatsTool(args, context);
+    case "save_finding": return saveFindingTool(args, context);
+    case "list_findings": return listFindingsTool(args, context);
+    case "sweep_conditions": return sweepConditionsTool(args, context);
+    case "audit_result": return auditResultTool(args, context);
     default: return { result: { error: `알 수 없는 도구 ${name}` }, artifacts: [], trace: { name, label: name, status: "failed", detail: "알 수 없는 도구" } };
   }
 }
 
 export const TOOL_LABELS: Record<string, string> = {
   resolve_symbols: "심볼 해석", get_price_history: "가격 이력", compare_assets: "자산 비교", technical_indicators: "기술 지표", event_study: "이벤트 스터디", intraday_event_study: "분봉 이벤트 스터디", backtest_strategy: "백테스트", risk_profile: "리스크 프로파일", seasonality: "계절성", largest_moves_with_news: "급등락·뉴스", search_news: "뉴스 검색", get_quote: "현재가", market_calendar: "경제 일정", news_sentiment_tests: "뉴스 감성 Test", show_chart: "TradingView 차트", propose_strategy: "전략 제안", save_strategy: "전략 저장", run_strategy_backtest: "전략 백테스트", list_strategies: "저장된 전략", web_search: "웹 검색",
+  screen_universe: "종목 스크리닝", conditional_stats: "조건부 통계", save_finding: "연구 노트 저장", list_findings: "연구 노트",
+  sweep_conditions: "그리드 스윕", audit_result: "결론 감사",
 };

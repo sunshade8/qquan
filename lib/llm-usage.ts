@@ -11,14 +11,16 @@ export type AnthropicUsage = {
 
 type Price = { input: number; output: number; cacheWrite: number; cacheRead: number };
 
-// USD per one million tokens. Cache write is 1.25x input, cache read is 0.1x input.
-// Source: Anthropic list prices as of 2026-06-24.
+// USD per one million tokens. For Anthropic, cache write is 1.25x input, cache read is 0.1x input.
+// Anthropic list prices as of 2026-06-24. OpenAI GPT-5.5 entry is a placeholder —
+// TODO: confirm against the OpenAI pricing page (cacheWrite is unused for OpenAI, cacheRead ~= 0.1x input).
 const prices: Array<[RegExp, Price]> = [
   [/claude-(?:fable|mythos)-5/i, { input: 10, output: 50, cacheWrite: 12.5, cacheRead: 1 }],
   [/claude-opus-(?:4-(?:5|6|7|8)|5)/i, { input: 5, output: 25, cacheWrite: 6.25, cacheRead: .5 }],
   [/claude-sonnet-5/i, { input: 2, output: 10, cacheWrite: 2.5, cacheRead: .2 }],
   [/claude-sonnet-4-(?:5|6)/i, { input: 3, output: 15, cacheWrite: 3.75, cacheRead: .3 }],
   [/claude-haiku-4-5/i, { input: 1, output: 5, cacheWrite: 1.25, cacheRead: .1 }],
+  [/gpt-5\.5/i, { input: 5, output: 25, cacheWrite: 5, cacheRead: .5 }],
 ];
 
 export const CLAUDE_PRICING_SOURCE = "https://www.anthropic.com/pricing";
@@ -38,12 +40,12 @@ export function usageCostUsd(model: string, usage: AnthropicUsage) {
   return Number(((input * price.input + output * price.output + cacheWrite * price.cacheWrite + cacheRead * price.cacheRead) / 1_000_000).toFixed(8));
 }
 
-export async function recordLlmUsage(ownerId: string, model: string, feature: string, usage: AnthropicUsage) {
+export async function recordLlmUsage(ownerId: string, model: string, feature: string, usage: AnthropicUsage, provider: "Anthropic" | "OpenAI" = "Anthropic", role: string | null = null) {
   const costUsd = usageCostUsd(model, usage);
   try {
     await ensureSchema();
     await getDb().insert(llmUsage).values({
-      id: crypto.randomUUID(), ownerId, provider: "Anthropic", model, feature,
+      id: crypto.randomUUID(), ownerId, provider, model, feature, role,
       inputTokens: Math.max(0, Number(usage.input_tokens) || 0),
       outputTokens: Math.max(0, Number(usage.output_tokens) || 0),
       cacheCreationInputTokens: Math.max(0, Number(usage.cache_creation_input_tokens) || 0),

@@ -1042,7 +1042,7 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 
 /* ---------- Settings · model allocation ---------- */
 .model-allocation { display: grid; gap: 4px; }
-.model-allocation > div { display: grid; grid-template-columns: minmax(0,1fr) auto auto; gap: 10px; align-items: center; padding: 7px 0; border-top: 1px solid var(--line); }
+.model-allocation > div { display: grid; grid-template-columns: minmax(0,1fr) auto auto auto; gap: 10px; align-items: center; padding: 7px 0; border-top: 1px solid var(--line); }
 .model-allocation > div > span { min-width: 0; display: grid; gap: 1px; }
 .model-allocation strong { font-size: 9.5px; }
 .model-allocation small { color: var(--tertiary); font-size: 7.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1051,6 +1051,9 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .model-allocation em.frontier { color: #684bd1; background: rgba(104,75,209,.1); }
 .model-allocation em.balanced { color: var(--blue); background: var(--blue-soft); }
 .model-allocation em.fast { color: var(--green); background: rgba(24,134,75,.09); }
+.model-allocation b { font-size: 8px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.model-allocation b.used { color: var(--secondary); }
+.model-allocation b.unused { color: var(--red); opacity: .85; }
 .news-agent-status { display: block; color: var(--tertiary); font-size: 7.5px; }
 .lab-chart .volume.negative { fill: rgba(209,59,59,.3); }
 /* Test panel: optional blocks (research run, sentiment panel) must not shift the grid rows. */

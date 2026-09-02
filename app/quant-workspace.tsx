@@ -78,7 +78,8 @@ type LlmUsageReport = {
   models: Array<{ model: string; calls: number; inputTokens: number; outputTokens: number; costUsd: number; price: { input: number; output: number; cacheWrite: number; cacheRead: number } | null }>;
   features: Array<{ feature: string; calls: number; costUsd: number }>;
   pricing: { currency: string; unit: string; effectiveDate: string; sourceUrl: string };
-  allocation?: Array<{ role: string; tier: "frontier" | "balanced" | "fast"; model: string; purpose: string; price: { input: number; output: number } | null }>;
+  allocation?: Array<{ role: string; tier: "frontier" | "balanced" | "fast"; model: string; provider?: string; purpose: string; price: { input: number; output: number } | null; calls?: number; costUsd?: number; lastUsedAt?: string | number | null }>;
+  unattributed?: { calls: number; costUsd: number };
   note: string;
 };
 
@@ -787,8 +788,10 @@ export function QuantWorkspace() {
               <article><div><strong>Yahoo Finance</strong><p>조정 일봉 10년 · 토스 교차검증 및 자동 폴백</p></div><span className={providers?.yahoo.status === "connected" ? "connected" : "missing"}><i />{providers?.yahoo.status === "connected" ? "Connected" : "Unavailable"}</span></article>
               <article><div><strong>Analysis dataset</strong><p>우선순위 Toss → Yahoo · 자동 갱신 캐시 24시간</p></div><span className={rows.length ? "connected" : "missing"}><i />{rows.length ? dataSource : "Loading"}</span></article>
               <article className="llm-cost-card">
-                <div className="llm-cost-head"><div><span>MODEL ALLOCATION</span><strong>역할별 Claude 모델</strong><p>비싼 frontier 모델은 오케스트레이션·최종 합성·전략 설계에만 쓰고, 대량 채점·감사·계획은 저렴한 티어로 돌립니다. ANTHROPIC_MODEL / ANTHROPIC_MODEL_BALANCED / ANTHROPIC_MODEL_FAST로 바꿀 수 있습니다.</p></div></div>
-                {llmUsage?.allocation ? <div className="model-allocation">{llmUsage.allocation.map((item) => <div key={item.role}><span><strong>{item.role}</strong><small>{item.purpose}</small></span><code>{item.model}{item.price ? ` · $${item.price.input}/$${item.price.output}` : ""}</code><em className={item.tier}>{item.tier}</em></div>)}</div> : <p className="llm-cost-note">{llmUsageError || "모델 배분을 불러오는 중"}</p>}
+                <div className="llm-cost-head"><div><span>MODEL ALLOCATION</span><strong>역할별 LLM 배분과 실제 호출</strong><p>각 역할이 <em>쓰도록 설정된</em> 모델과, 그 역할로 <em>실제 기록된</em> 호출 수를 함께 보여줍니다. 호출 0회는 그 역할에 도달하는 코드 경로가 없다는 뜻입니다. frontier는 LLM_FRONTIER_PROVIDER=openai로 GPT-5.5 Thinking에 연결하며, balanced/fast는 항상 Anthropic(ANTHROPIC_MODEL_BALANCED / ANTHROPIC_MODEL_FAST)입니다.</p></div></div>
+                {llmUsage?.allocation ? <><div className="model-allocation">{llmUsage.allocation.map((item) => <div key={item.role}><span><strong>{item.role}</strong><small>{item.purpose}</small></span><code>{item.provider ? `${item.provider} · ` : ""}{item.model}{item.price ? ` · $${item.price.input}/$${item.price.output}` : ""}</code><b className={item.calls ? "used" : "unused"}>{item.calls ? `${item.calls}회 · $${(item.costUsd ?? 0).toFixed(4)}` : "호출 없음"}</b><em className={item.tier}>{item.tier}</em></div>)}</div>
+                {llmUsage.allocation.some((item) => !item.calls) ? <p className="llm-cost-note">호출 0회 역할: {llmUsage.allocation.filter((item) => !item.calls).map((item) => item.role).join(", ")} — 이 역할을 호출하는 코드 경로가 아직 없거나, 해당 기능을 사용하지 않았습니다.</p> : null}
+                {llmUsage.unattributed?.calls ? <p className="llm-cost-note">역할 미기록 {llmUsage.unattributed.calls}회 (${llmUsage.unattributed.costUsd.toFixed(4)}) — role 기록 추가 이전에 쌓인 usage입니다.</p> : null}</> : <p className="llm-cost-note">{llmUsageError || "모델 배분을 불러오는 중"}</p>}
               </article>
             </div>
           </section>
