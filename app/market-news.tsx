@@ -245,12 +245,18 @@ function numericScore(value: number | undefined) {
   return Math.max(-100, Math.min(100, Number(value) || 0));
 }
 
-function newsTestFromAnalysis(query: RetrievedQuery, data: AnalysisResult, fallbackEvent?: ForecastEvent): NewsTest {
+function hasCompleteMarketOutcome(test: NewsTest) {
+  return [test.nasdaq, test.nyse].every((benchmark) => (
+    benchmark !== null && "returnPct" in benchmark && typeof benchmark.returnPct === "number"
+  ));
+}
+
+function newsTestFromAnalysis(query: RetrievedQuery, data: AnalysisResult, fallbackEvent?: ForecastEvent, existingId?: string): NewsTest {
   const forecastEvents = data.analysis.forecastEvents?.length
     ? data.analysis.forecastEvents
     : fallbackEvent ? [fallbackEvent] : [];
   return {
-    id: recordId("test"), periodStart: query.start, periodEnd: query.end, topic: query.topic,
+    id: existingId ?? recordId("test"), periodStart: query.start, periodEnd: query.end, topic: query.topic,
     articleCount: data.articleCount, overallScore: numericScore(data.analysis.score), overallLabel: data.analysis.label ?? "중립",
     techScore: numericScore(data.analysis.segments?.tech?.score), techLabel: data.analysis.segments?.tech?.label ?? "중립",
     valueScore: numericScore(data.analysis.segments?.value?.score), valueLabel: data.analysis.segments?.value?.label ?? "중립",
@@ -549,7 +555,7 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
       const existing = existingTests.find((test) => test.forecastEvents?.some((item) => (
         item.scheduledReleaseDate === event.date && Boolean(eventDefinition?.aliases.test(item.indicator))
       )));
-      if (existing) {
+      if (existing && hasCompleteMarketOutcome(existing)) {
         completed.push(existing);
         stages = stages.map((stage, stageIndex) => stageIndex === index ? { ...stage, status: "reused", detail: "기존 Test 재사용", testId: existing.id } : stage);
         run = { ...run, completedEvents: completed.length, stages, updatedAt: new Date().toISOString() };
@@ -602,10 +608,10 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
           evidenceIds: chosen.map((article) => article.id),
           caveat: "발표 일정은 경제 캘린더 기준이며, 헤드라인에서 수치 컨센서스를 추출하지 못했을 수 있습니다.",
         };
-        const test = newsTestFromAnalysis({ start: newsStart, end: event.date, topic: "forecast" }, analysisData, fallbackEvent);
+        const test = newsTestFromAnalysis({ start: newsStart, end: event.date, topic: "forecast" }, analysisData, fallbackEvent, existing?.id);
         if (!await persistRecord("test", test)) throw new Error("분석 결과의 Test 저장 실패");
         completed.push(test);
-        setTests((current) => [...current, test].slice(-100));
+        setTests((current) => [...current.filter((item) => item.id !== test.id), test].slice(-100));
         stages = stages.map((stage, stageIndex) => stageIndex === index ? { ...stage, status: "complete", detail: `${chosen.length}개 뉴스 · ${test.overallLabel}`, testId: test.id } : stage);
         run = { ...run, completedEvents: completed.length, stages, updatedAt: new Date().toISOString() };
         await publishResearchRun(run);
