@@ -26,6 +26,19 @@ const STATEMENTS = [
   "CREATE INDEX IF NOT EXISTS idx_strategy_runs_strategy_created ON strategy_runs (strategy_id, created_at)",
   "CREATE TABLE IF NOT EXISTS research_findings (id text PRIMARY KEY NOT NULL, owner_id text NOT NULL, title text NOT NULL, claim text NOT NULL, evidence_payload text DEFAULT '[]' NOT NULL, symbols text DEFAULT '' NOT NULL, tags text DEFAULT '' NOT NULL, confidence text DEFAULT 'medium' NOT NULL, status text DEFAULT 'open' NOT NULL, falsification text DEFAULT '' NOT NULL, source_conversation_id text, created_at integer NOT NULL, updated_at integer NOT NULL)",
   "CREATE INDEX IF NOT EXISTS idx_research_findings_owner_updated ON research_findings (owner_id, updated_at)",
+  // The spine: every store keys off `event_root`, and point-in-time correctness
+  // depends on keeping the first-released value separate from later revisions.
+  "CREATE TABLE IF NOT EXISTS market_events (id text PRIMARY KEY NOT NULL, event_root text NOT NULL, event_date text NOT NULL, event_time_et text DEFAULT '' NOT NULL, released_before_close integer DEFAULT true NOT NULL, category text DEFAULT '' NOT NULL, importance text DEFAULT 'medium' NOT NULL, title text DEFAULT '' NOT NULL, unit text DEFAULT '' NOT NULL, actual_initial real, actual_revised real, consensus real, previous real, surprise real, surprise_z real, surprise_basis text DEFAULT '' NOT NULL, source text DEFAULT '' NOT NULL, updated_at integer NOT NULL)",
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_market_events_root_date ON market_events (event_root, event_date)",
+  "CREATE INDEX IF NOT EXISTS idx_market_events_date ON market_events (event_date)",
+  "CREATE TABLE IF NOT EXISTS paper_positions (id text PRIMARY KEY NOT NULL, owner_id text NOT NULL, strategy_id text NOT NULL, symbol text NOT NULL, quantity real NOT NULL, average_price real NOT NULL, opened_at text NOT NULL, closed_at text, realized_pnl_usd real DEFAULT 0 NOT NULL, status text DEFAULT 'open' NOT NULL, updated_at integer NOT NULL)",
+  "CREATE INDEX IF NOT EXISTS idx_paper_positions_owner_strategy ON paper_positions (owner_id, strategy_id)",
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_positions_open ON paper_positions (owner_id, strategy_id, symbol, status)",
+  "CREATE TABLE IF NOT EXISTS paper_fills (id text PRIMARY KEY NOT NULL, owner_id text NOT NULL, strategy_id text NOT NULL, symbol text NOT NULL, side text NOT NULL, quantity real NOT NULL, signal_date text NOT NULL, fill_date text NOT NULL, reference_price real NOT NULL, fill_price real NOT NULL, slippage_bps real DEFAULT 0 NOT NULL, cost_usd real DEFAULT 0 NOT NULL, reason text DEFAULT '' NOT NULL, gateway text DEFAULT 'dry_run' NOT NULL, created_at integer NOT NULL)",
+  "CREATE INDEX IF NOT EXISTS idx_paper_fills_owner_strategy ON paper_fills (owner_id, strategy_id)",
+  "CREATE INDEX IF NOT EXISTS idx_paper_fills_signal_date ON paper_fills (signal_date)",
+  "CREATE TABLE IF NOT EXISTS paper_daily_pnl (id text PRIMARY KEY NOT NULL, owner_id text NOT NULL, strategy_id text NOT NULL, trading_date text NOT NULL, equity_usd real NOT NULL, realized_pnl_usd real DEFAULT 0 NOT NULL, unrealized_pnl_usd real DEFAULT 0 NOT NULL, return_pct real, benchmark_return_pct real, open_positions integer DEFAULT 0 NOT NULL, created_at integer NOT NULL)",
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_pnl_strategy_date ON paper_daily_pnl (owner_id, strategy_id, trading_date)",
 ];
 
 // SQLite has no ADD COLUMN IF NOT EXISTS; a duplicate-column error just means the column is already there.
@@ -37,6 +50,10 @@ const COLUMN_ADDITIONS = [
   // Usage rows recorded before this column existed keep a NULL role and are reported as "기록 이전".
   "ALTER TABLE llm_usage ADD COLUMN role text",
   "CREATE INDEX IF NOT EXISTS idx_llm_usage_owner_role ON llm_usage (owner_id, role)",
+  // Lineage: which finding a strategy mechanises, so a refuted finding can flag its strategies.
+  "ALTER TABLE strategies ADD COLUMN source_finding_id text",
+  // Findings join the event spine the same way strategy operands do.
+  "ALTER TABLE research_findings ADD COLUMN event_roots text DEFAULT '' NOT NULL",
 ];
 
 let ready: Promise<void> | undefined;

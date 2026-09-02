@@ -33,19 +33,6 @@ export const marketSyncRuns = sqliteTable("market_sync_runs", {
   message: text("message").notNull().default(""),
 });
 
-export const hypotheses = sqliteTable("hypotheses", {
-  id: text("id").primaryKey(),
-  title: text("title").notNull(),
-  symbolUniverse: text("symbol_universe").notNull(),
-  thesis: text("thesis").notNull(),
-  entryRule: text("entry_rule").notNull(),
-  exitRule: text("exit_rule").notNull(),
-  sizingRule: text("sizing_rule").notNull(),
-  status: text("status").notNull().default("draft"),
-  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
-  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
-}, (table) => [index("idx_hypotheses_updated_at").on(table.updatedAt)]);
-
 export const backtestRuns = sqliteTable("backtest_runs", {
   id: text("id").primaryKey(),
   hypothesisId: text("hypothesis_id").notNull(),
@@ -161,6 +148,7 @@ export const strategies = sqliteTable("strategies", {
   specPayload: text("spec_payload").notNull(),
   latestResultPayload: text("latest_result_payload").notNull().default("null"),
   sourceConversationId: text("source_conversation_id"),
+  sourceFindingId: text("source_finding_id"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 }, (table) => [index("idx_strategies_owner_updated").on(table.ownerId, table.updatedAt)]);
@@ -182,6 +170,7 @@ export const researchFindings = sqliteTable("research_findings", {
   claim: text("claim").notNull(),
   evidencePayload: text("evidence_payload").notNull().default("[]"),
   symbols: text("symbols").notNull().default(""),
+  eventRoots: text("event_roots").notNull().default(""),
   tags: text("tags").notNull().default(""),
   confidence: text("confidence").notNull().default("medium"),
   status: text("status").notNull().default("open"),
@@ -191,4 +180,82 @@ export const researchFindings = sqliteTable("research_findings", {
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 }, (table) => [
   index("idx_research_findings_owner_updated").on(table.ownerId, table.updatedAt),
+]);
+
+export const marketEvents = sqliteTable("market_events", {
+  id: text("id").primaryKey(),
+  eventRoot: text("event_root").notNull(),
+  eventDate: text("event_date").notNull(),
+  eventTimeEt: text("event_time_et").notNull().default(""),
+  releasedBeforeClose: integer("released_before_close", { mode: "boolean" }).notNull().default(true),
+  category: text("category").notNull().default(""),
+  importance: text("importance").notNull().default("medium"),
+  title: text("title").notNull().default(""),
+  unit: text("unit").notNull().default(""),
+  actualInitial: real("actual_initial"),
+  actualRevised: real("actual_revised"),
+  consensus: real("consensus"),
+  previous: real("previous"),
+  surprise: real("surprise"),
+  surpriseZ: real("surprise_z"),
+  surpriseBasis: text("surprise_basis").notNull().default(""),
+  source: text("source").notNull().default(""),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => [
+  uniqueIndex("idx_market_events_root_date").on(table.eventRoot, table.eventDate),
+  index("idx_market_events_date").on(table.eventDate),
+]);
+
+export const paperPositions = sqliteTable("paper_positions", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull(),
+  strategyId: text("strategy_id").notNull(),
+  symbol: text("symbol").notNull(),
+  quantity: real("quantity").notNull(),
+  averagePrice: real("average_price").notNull(),
+  openedAt: text("opened_at").notNull(),
+  closedAt: text("closed_at"),
+  realizedPnlUsd: real("realized_pnl_usd").notNull().default(0),
+  status: text("status").notNull().default("open"),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => [
+  index("idx_paper_positions_owner_strategy").on(table.ownerId, table.strategyId),
+  uniqueIndex("idx_paper_positions_open").on(table.ownerId, table.strategyId, table.symbol, table.status),
+]);
+
+export const paperFills = sqliteTable("paper_fills", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull(),
+  strategyId: text("strategy_id").notNull(),
+  symbol: text("symbol").notNull(),
+  side: text("side").notNull(),
+  quantity: real("quantity").notNull(),
+  signalDate: text("signal_date").notNull(),
+  fillDate: text("fill_date").notNull(),
+  referencePrice: real("reference_price").notNull(),
+  fillPrice: real("fill_price").notNull(),
+  slippageBps: real("slippage_bps").notNull().default(0),
+  costUsd: real("cost_usd").notNull().default(0),
+  reason: text("reason").notNull().default(""),
+  gateway: text("gateway").notNull().default("dry_run"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => [
+  index("idx_paper_fills_owner_strategy").on(table.ownerId, table.strategyId),
+  index("idx_paper_fills_signal_date").on(table.signalDate),
+]);
+
+export const paperDailyPnl = sqliteTable("paper_daily_pnl", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull(),
+  strategyId: text("strategy_id").notNull(),
+  tradingDate: text("trading_date").notNull(),
+  equityUsd: real("equity_usd").notNull(),
+  realizedPnlUsd: real("realized_pnl_usd").notNull().default(0),
+  unrealizedPnlUsd: real("unrealized_pnl_usd").notNull().default(0),
+  returnPct: real("return_pct"),
+  benchmarkReturnPct: real("benchmark_return_pct"),
+  openPositions: integer("open_positions").notNull().default(0),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => [
+  uniqueIndex("idx_paper_pnl_strategy_date").on(table.ownerId, table.strategyId, table.tradingDate),
 ]);

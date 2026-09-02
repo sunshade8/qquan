@@ -4,13 +4,14 @@ import { ensureSchema } from "@/db/ensure";
 import { strategies, strategyRuns } from "@/db/schema";
 import { loadDailyRows } from "@/lib/price-cache";
 import type { Bar } from "@/lib/quant";
-import { runStrategyBacktest, warmupDays, type BacktestResult, type StrategySpec } from "@/lib/strategy";
+import { runStrategyBacktest, specEventRoots, warmupDays, type BacktestResult, type EventContext, type StrategySpec } from "@/lib/strategy";
+import { listMarketEvents } from "@/lib/market-events-store";
 import { resolveSymbol } from "@/lib/symbols";
 import { brokerSnapshotFor, evaluateLiveSignal, orderIntentFor, type LiveSignal, type OrderIntent } from "@/lib/trading";
 
 export type StrategyStatus = "draft" | "backtested" | "candidate" | "rejected" | "paper" | "live";
 export type StoredStrategy = {
-  id: string; name: string; status: StrategyStatus; spec: StrategySpec; latestResult: BacktestResult | null; sourceConversationId: string | null; createdAt: string; updatedAt: string;
+  id: string; name: string; status: StrategyStatus; spec: StrategySpec; latestResult: BacktestResult | null; sourceConversationId: string | null; sourceFindingId: string | null; createdAt: string; updatedAt: string;
 };
 
 export const STRATEGY_STATUS_LABELS: Record<StrategyStatus, string> = {
@@ -30,7 +31,8 @@ function parse<T>(value: string, fallback: T): T {
 function rowToStrategy(row: typeof strategies.$inferSelect): StoredStrategy {
   return {
     id: row.id, name: row.name, status: (row.status as StrategyStatus) || "draft", spec: parse(row.specPayload, null as unknown as StrategySpec), latestResult: parse(row.latestResultPayload, null),
-    sourceConversationId: row.sourceConversationId, createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString(),
+    sourceConversationId: row.sourceConversationId, sourceFindingId: row.sourceFindingId,
+    createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString(),
   };
 }
 
@@ -53,11 +55,38 @@ export async function loadStrategyData(spec: StrategySpec) {
   return { data, missing, marketRows, resolvedUniverse };
 }
 
+/**
+ * Calendar facts for every event root a spec references. A spec with no calendar
+ * operand loads nothing, so price-only strategies are unaffected.
+ */
+export async function loadEventContext(spec: StrategySpec, from: string, to: string): Promise<EventContext> {
+  const roots = specEventRoots(spec);
+  if (!roots.length) return {};
+  try {
+    const rows = await listMarketEvents(roots, from, to);
+    const context: EventContext = {};
+    for (const root of roots) context[root] = [];
+    for (const row of rows) {
+      (context[row.eventRoot] ??= []).push({
+        date: row.eventDate, releasedBeforeClose: row.releasedBeforeClose,
+        surprise: row.surprise, surpriseZ: row.surpriseZ,
+      });
+    }
+    return context;
+  } catch (error) {
+    // A missing event table must not silently turn a calendar rule into a
+    // price-only rule that backtests as something else entirely.
+    console.error("[strategy-store] event context load failed", error instanceof Error ? error.message : error);
+    return {};
+  }
+}
+
 export async function backtestSpec(spec: StrategySpec) {
   const { data, missing, marketRows, resolvedUniverse } = await loadStrategyData(spec);
   const normalized: StrategySpec = { ...spec, universe: resolvedUniverse.length ? resolvedUniverse : spec.universe };
-  const result = runStrategyBacktest(normalized, data, marketRows, missing);
-  return { result, missing };
+  const events = await loadEventContext(normalized, shiftDate(spec.period.from, -warmupDays(spec) - 400), spec.period.to);
+  const result = runStrategyBacktest(normalized, data, marketRows, missing, events);
+  return { result, missing, eventRoots: specEventRoots(normalized) };
 }
 
 export async function listStrategies(ownerId: string) {
@@ -72,7 +101,7 @@ export async function getStrategy(ownerId: string, id: string) {
   return rows.length && rows[0].specPayload ? rowToStrategy(rows[0]) : null;
 }
 
-export async function saveStrategy(ownerId: string, spec: StrategySpec, options: { id?: string; status?: StrategyStatus; sourceConversationId?: string | null; latestResult?: BacktestResult | null } = {}) {
+export async function saveStrategy(ownerId: string, spec: StrategySpec, options: { id?: string; status?: StrategyStatus; sourceConversationId?: string | null; sourceFindingId?: string | null; latestResult?: BacktestResult | null } = {}) {
   await ensureSchema();
   const db = getDb();
   const now = new Date();
@@ -81,9 +110,11 @@ export async function saveStrategy(ownerId: string, spec: StrategySpec, options:
   const row = {
     id, ownerId, name: spec.name, status: options.status ?? existing?.status ?? "draft", specPayload: JSON.stringify(spec),
     latestResultPayload: JSON.stringify(options.latestResult ?? existing?.latestResult ?? null),
-    sourceConversationId: options.sourceConversationId ?? existing?.sourceConversationId ?? null, createdAt: existing ? new Date(existing.createdAt) : now, updatedAt: now,
+    sourceConversationId: options.sourceConversationId ?? existing?.sourceConversationId ?? null,
+    sourceFindingId: options.sourceFindingId ?? existing?.sourceFindingId ?? null,
+    createdAt: existing ? new Date(existing.createdAt) : now, updatedAt: now,
   };
-  await db.insert(strategies).values(row).onConflictDoUpdate({ target: strategies.id, set: { name: row.name, status: row.status, specPayload: row.specPayload, latestResultPayload: row.latestResultPayload, sourceConversationId: row.sourceConversationId, updatedAt: now } });
+  await db.insert(strategies).values(row).onConflictDoUpdate({ target: strategies.id, set: { name: row.name, status: row.status, specPayload: row.specPayload, latestResultPayload: row.latestResultPayload, sourceConversationId: row.sourceConversationId, sourceFindingId: row.sourceFindingId, updatedAt: now } });
   return rowToStrategy(row);
 }
 
@@ -123,12 +154,15 @@ export async function liveSignalsFor(strategy: StoredStrategy, capitalUsd: numbe
   const today = new Date().toISOString().slice(0, 10);
   const from = shiftDate(today, -warmupDays(spec) - 30);
   const signals: LiveSignal[] = [];
+  // Live signals must read the same calendar the backtest read, or a rule that
+  // was validated against event timing would trade on price alone.
+  const events = await loadEventContext(spec, shiftDate(today, -800), shiftDate(today, 120));
   for (const query of spec.universe) {
     const asset = await resolveSymbol(query);
     if (!asset.public || !asset.symbol) continue;
     const [load, broker] = await Promise.all([loadDailyRows(asset.symbol, from, today), brokerSnapshotFor(asset.symbol)]);
     if (load.rows.length < 30) continue;
-    signals.push(evaluateLiveSignal(asset.symbol, load.rows, spec, broker));
+    signals.push(evaluateLiveSignal(asset.symbol, load.rows, spec, broker, events));
   }
   const intents = signals.flatMap((signal) => { const intent = orderIntentFor(strategy.id, signal, spec, capitalUsd, heldSymbols.includes(signal.symbol)); return intent ? [intent] : []; });
   return { signals, intents, asOf: new Date().toISOString() };

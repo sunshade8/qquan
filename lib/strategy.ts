@@ -12,8 +12,21 @@ import {
   type Bar,
 } from "./quant.ts";
 
-export type IndicatorKind = "close" | "open" | "high" | "low" | "volume" | "sma" | "ema" | "rsi" | "macd_hist" | "macd_line" | "return" | "drawdown" | "volume_ratio" | "bb_pos" | "atr_pct" | "highest_close" | "lowest_close" | "volatility";
-export type Operand = { kind: IndicatorKind; period?: number } | { kind: "value"; value: number };
+export type IndicatorKind =
+  | "close" | "open" | "high" | "low" | "volume" | "sma" | "ema" | "rsi" | "macd_hist" | "macd_line"
+  | "return" | "drawdown" | "volume_ratio" | "bb_pos" | "atr_pct" | "highest_close" | "lowest_close" | "volatility"
+  // Calendar operands. These are what let a News finding ("CPI 발표 2일 전") become a
+  // mechanical rule; every other indicator is derived from price and cannot express one.
+  | "sessions_to_event" | "sessions_since_event" | "event_surprise" | "event_surprise_z";
+
+export const CALENDAR_KINDS = new Set<IndicatorKind>(["sessions_to_event", "sessions_since_event", "event_surprise", "event_surprise_z"]);
+
+export function isCalendarOperand(operand: Operand) {
+  return operand.kind !== "value" && CALENDAR_KINDS.has(operand.kind);
+}
+
+/** `event` names an `eventRoot` from `lib/market-events.ts` and is required by calendar kinds. */
+export type Operand = { kind: IndicatorKind; period?: number; event?: string } | { kind: "value"; value: number };
 export type ConditionOp = ">" | "<" | ">=" | "<=" | "cross_above" | "cross_below";
 export type Condition = { left: Operand; op: ConditionOp; right: Operand };
 
@@ -118,11 +131,13 @@ export type BacktestResult = {
 
 export const INDICATOR_LABELS: Record<IndicatorKind, string> = {
   close: "종가", open: "시가", high: "고가", low: "저가", volume: "거래량", sma: "SMA", ema: "EMA", rsi: "RSI", macd_hist: "MACD 히스토그램", macd_line: "MACD", return: "N일 수익률(%)", drawdown: "고점 대비 낙폭(%)", volume_ratio: "거래량/N일 평균", bb_pos: "볼린저 위치(0~1)", atr_pct: "ATR(%)", highest_close: "N일 최고 종가", lowest_close: "N일 최저 종가", volatility: "N일 변동성(연환산 %)",
+  sessions_to_event: "다음 이벤트까지 거래일", sessions_since_event: "직전 이벤트 이후 거래일", event_surprise: "직전 이벤트 서프라이즈", event_surprise_z: "직전 이벤트 서프라이즈 (z)",
 };
 
 export function describeOperand(operand: Operand) {
   if (operand.kind === "value") return String(operand.value);
   const label = INDICATOR_LABELS[operand.kind];
+  if (CALENDAR_KINDS.has(operand.kind)) return `${label}[${operand.event ?? "이벤트 미지정"}]`;
   return operand.period ? `${label}(${operand.period})` : label;
 }
 
@@ -138,11 +153,91 @@ export function describeSpec(spec: StrategySpec) {
   return { entry, exit, holding: holding || "조건 청산만", universe: spec.universe.join(", "), cost: `${spec.costBps}bps 편도` };
 }
 
-function seriesFor(rows: Bar[], operand: Operand, cache: Map<string, Array<number | null>>): Array<number | null> {
+/**
+ * Calendar facts a rule can read, keyed by `eventRoot`.
+ *
+ * Dates are calendar dates as published; the engine maps them onto trading
+ * sessions itself, because "2 sessions before CPI" is what a rule can actually
+ * trade and CPI can land on a holiday.
+ */
+export type EventOccurrence = { date: string; releasedBeforeClose: boolean; surprise: number | null; surpriseZ: number | null };
+export type EventContext = Record<string, EventOccurrence[]>;
+
+/**
+ * Sessions from each bar to the next occurrence (0 on the event day itself),
+ * and from the previous occurrence. Counting in sessions rather than calendar
+ * days is what makes `sessions_to_event == 2` mean "two closes from now".
+ */
+function eventDistanceSeries(rows: Bar[], occurrences: EventOccurrence[], direction: "to" | "since"): Array<number | null> {
+  const dates = rows.map((row) => row.date);
+  // Index of the first session on or after each event date; events that fall on a
+  // holiday therefore attach to the next session the market actually traded.
+  const anchors: number[] = [];
+  for (const occurrence of occurrences) {
+    let index = dates.findIndex((date) => date >= occurrence.date);
+    if (index === -1) index = dates.length; // event is beyond the loaded window
+    anchors.push(index);
+  }
+  anchors.sort((left, right) => left - right);
+  const values: Array<number | null> = rows.map(() => null);
+  if (!anchors.length) return values;
+  if (direction === "to") {
+    let cursor = 0;
+    for (let index = 0; index < rows.length; index += 1) {
+      while (cursor < anchors.length && anchors[cursor] < index) cursor += 1;
+      values[index] = cursor < anchors.length ? anchors[cursor] - index : null;
+    }
+    return values;
+  }
+  let cursor = -1;
+  for (let index = 0; index < rows.length; index += 1) {
+    while (cursor + 1 < anchors.length && anchors[cursor + 1] <= index) cursor += 1;
+    values[index] = cursor >= 0 ? index - anchors[cursor] : null;
+  }
+  return values;
+}
+
+/**
+ * The surprise of the most recent release a bar could already know.
+ *
+ * A release before 16:00 ET is in that day's close; anything later is not
+ * readable until the next session. Getting this wrong is look-ahead of exactly
+ * one bar, which is enough to manufacture an edge out of nothing.
+ */
+function eventSurpriseSeries(rows: Bar[], occurrences: EventOccurrence[], field: "surprise" | "surpriseZ"): Array<number | null> {
+  const values: Array<number | null> = rows.map(() => null);
+  const known = occurrences
+    .filter((occurrence) => occurrence[field] !== null)
+    .map((occurrence) => ({ ...occurrence, value: occurrence[field]! }))
+    .sort((left, right) => left.date.localeCompare(right.date));
+  if (!known.length) return values;
+  let cursor = -1;
+  for (let index = 0; index < rows.length; index += 1) {
+    const date = rows[index].date;
+    while (
+      cursor + 1 < known.length &&
+      (known[cursor + 1].releasedBeforeClose ? known[cursor + 1].date <= date : known[cursor + 1].date < date)
+    ) cursor += 1;
+    values[index] = cursor >= 0 ? known[cursor].value : null;
+  }
+  return values;
+}
+
+function seriesFor(rows: Bar[], operand: Operand, cache: Map<string, Array<number | null>>, events: EventContext = {}): Array<number | null> {
   if (operand.kind === "value") return rows.map(() => operand.value);
-  const key = `${operand.kind}:${operand.period ?? ""}`;
+  const key = `${operand.kind}:${operand.period ?? ""}:${operand.event ?? ""}`;
   const cached = cache.get(key);
   if (cached) return cached;
+  if (CALENDAR_KINDS.has(operand.kind)) {
+    // An unknown or missing event root yields nulls rather than zeros, so a
+    // typo'd root makes the condition never fire instead of always firing.
+    const occurrences = operand.event ? events[operand.event] ?? [] : [];
+    const calendar = operand.kind === "sessions_to_event" ? eventDistanceSeries(rows, occurrences, "to")
+      : operand.kind === "sessions_since_event" ? eventDistanceSeries(rows, occurrences, "since")
+      : eventSurpriseSeries(rows, occurrences, operand.kind === "event_surprise" ? "surprise" : "surpriseZ");
+    cache.set(key, calendar);
+    return calendar;
+  }
   const closes = rows.map((row) => row.close);
   const period = Math.max(1, Math.round(operand.period ?? defaultPeriod(operand.kind)));
   let values: Array<number | null>;
@@ -204,10 +299,10 @@ function evaluate(condition: Condition, index: number, left: Array<number | null
 }
 
 /** Signal state per bar for one symbol: true = the rule wants to be long after this close. */
-export function signalSeries(rows: Bar[], spec: StrategySpec) {
+export function signalSeries(rows: Bar[], spec: StrategySpec, events: EventContext = {}) {
   const cache = new Map<string, Array<number | null>>();
-  const entry = spec.entry.map((condition) => ({ condition, left: seriesFor(rows, condition.left, cache), right: seriesFor(rows, condition.right, cache) }));
-  const exit = spec.exit.map((condition) => ({ condition, left: seriesFor(rows, condition.left, cache), right: seriesFor(rows, condition.right, cache) }));
+  const entry = spec.entry.map((condition) => ({ condition, left: seriesFor(rows, condition.left, cache, events), right: seriesFor(rows, condition.right, cache, events) }));
+  const exit = spec.exit.map((condition) => ({ condition, left: seriesFor(rows, condition.left, cache, events), right: seriesFor(rows, condition.right, cache, events) }));
   const signals: boolean[] = rows.map(() => false);
   const reasons: string[] = rows.map(() => "");
   let holding = false;
@@ -232,8 +327,8 @@ export function signalSeries(rows: Bar[], spec: StrategySpec) {
   return { signals, reasons };
 }
 
-function symbolBacktest(symbol: string, rows: Bar[], spec: StrategySpec, from: string): SymbolBacktest & { dailyReturns: Array<{ date: string; value: number }>; tradesDetail: Trade[] } {
-  const { signals, reasons } = signalSeries(rows, spec);
+function symbolBacktest(symbol: string, rows: Bar[], spec: StrategySpec, from: string, events: EventContext = {}): SymbolBacktest & { dailyReturns: Array<{ date: string; value: number }>; tradesDetail: Trade[] } {
+  const { signals, reasons } = signalSeries(rows, spec, events);
   const startIndex = Math.max(1, rows.findIndex((row) => row.date >= from));
   const cost = spec.costBps / 10_000;
   let equity = 1;
@@ -311,13 +406,13 @@ function slice(rows: Bar[], from: string, to: string) {
 }
 
 function perturbSpec(spec: StrategySpec, factor: number): StrategySpec {
-  const scale = (operand: Operand): Operand => operand.kind === "value" || !operand.period ? operand : { ...operand, period: Math.max(2, Math.round(operand.period * factor)) };
+  const scale = (operand: Operand): Operand => operand.kind === "value" || !operand.period || CALENDAR_KINDS.has(operand.kind) ? operand : { ...operand, period: Math.max(2, Math.round(operand.period * factor)) };
   const scaleCondition = (condition: Condition): Condition => ({ ...condition, left: scale(condition.left), right: scale(condition.right) });
   return { ...spec, entry: spec.entry.map(scaleCondition), exit: spec.exit.map(scaleCondition) };
 }
 
-function quickMetrics(spec: StrategySpec, data: Record<string, Bar[]>, from: string, to: string) {
-  const usable = Object.entries(data).flatMap(([symbol, rows]) => { const bounded = rows.filter((row) => row.date <= to); return bounded.length > 30 ? [symbolBacktest(symbol, bounded, spec, from)] : []; });
+function quickMetrics(spec: StrategySpec, data: Record<string, Bar[]>, from: string, to: string, events: EventContext = {}) {
+  const usable = Object.entries(data).flatMap(([symbol, rows]) => { const bounded = rows.filter((row) => row.date <= to); return bounded.length > 30 ? [symbolBacktest(symbol, bounded, spec, from, events)] : []; });
   if (!usable.length) return { cagrPct: null, sharpe: null, maxDrawdownPct: null };
   const { strategyDaily } = combine(usable);
   const equity = strategyDaily.reduce((value, item) => value * (1 + item), 1);
@@ -329,9 +424,9 @@ function quickMetrics(spec: StrategySpec, data: Record<string, Bar[]>, from: str
  * Runs the spec over pre-loaded bars. `data` must include warm-up bars before
  * `spec.period.from` so indicators are defined on the first tradable session.
  */
-export function runStrategyBacktest(spec: StrategySpec, data: Record<string, Bar[]>, marketRows: Bar[] | null, missingSymbols: Array<{ symbol: string; reason: string }> = []): BacktestResult | null {
+export function runStrategyBacktest(spec: StrategySpec, data: Record<string, Bar[]>, marketRows: Bar[] | null, missingSymbols: Array<{ symbol: string; reason: string }> = [], events: EventContext = {}): BacktestResult | null {
   const { from, to } = spec.period;
-  const usable = Object.entries(data).flatMap(([symbol, rows]) => { const bounded = rows.filter((row) => row.date <= to); return bounded.filter((row) => row.date >= from).length >= 30 ? [symbolBacktest(symbol, bounded, spec, from)] : []; });
+  const usable = Object.entries(data).flatMap(([symbol, rows]) => { const bounded = rows.filter((row) => row.date <= to); return bounded.filter((row) => row.date >= from).length >= 30 ? [symbolBacktest(symbol, bounded, spec, from, events)] : []; });
   if (!usable.length) return null;
   const { dates, strategyDaily } = combine(usable);
   const benchmarkMaps = usable.map((item) => { const rows = data[item.symbol].filter((row) => row.date <= to); return new Map(rows.slice(1).map((row, index) => [row.date, row.close / rows[index].close - 1])); });
@@ -350,10 +445,10 @@ export function runStrategyBacktest(spec: StrategySpec, data: Record<string, Bar
 
   const splitIndex = Math.floor(dates.length * 0.7);
   const splitDate = dates[splitIndex] ?? to;
-  const inSample = { from: dates[0], to: dates[Math.max(0, splitIndex - 1)], ...quickMetrics(spec, data, from, dates[Math.max(0, splitIndex - 1)]) };
-  const outOfSample = { from: splitDate, to, ...quickMetrics(spec, data, splitDate, to) };
-  const perturbations = [0.8, 1.2].map((factor) => ({ label: `지표 기간 ×${factor}`, ...quickMetrics(perturbSpec(spec, factor), data, from, to) }))
-    .concat([{ label: `비용 ${spec.costBps * 2}bps`, ...quickMetrics({ ...spec, costBps: spec.costBps * 2 }, data, from, to) }]);
+  const inSample = { from: dates[0], to: dates[Math.max(0, splitIndex - 1)], ...quickMetrics(spec, data, from, dates[Math.max(0, splitIndex - 1)], events) };
+  const outOfSample = { from: splitDate, to, ...quickMetrics(spec, data, splitDate, to, events) };
+  const perturbations = [0.8, 1.2].map((factor) => ({ label: `지표 기간 ×${factor}`, ...quickMetrics(perturbSpec(spec, factor), data, from, to, events) }))
+    .concat([{ label: `비용 ${spec.costBps * 2}bps`, ...quickMetrics({ ...spec, costBps: spec.costBps * 2 }, data, from, to, events) }]);
   const baseSharpe = metrics.sharpe ?? 0;
   const stable = perturbations.filter((item) => item.cagrPct !== null && item.cagrPct > (metrics.benchmarkCagrPct ?? 0) && item.sharpe !== null && Math.abs(item.sharpe - baseSharpe) <= Math.max(0.3, Math.abs(baseSharpe) * 0.5)).length;
   const stabilityScore = perturbations.length ? round((stable / perturbations.length) * 100, 0) : null;
@@ -389,16 +484,35 @@ export function presetConditions(strategy: string, params: Record<string, number
   }
 }
 
-const INDICATOR_KINDS = new Set<IndicatorKind>(["close", "open", "high", "low", "volume", "sma", "ema", "rsi", "macd_hist", "macd_line", "return", "drawdown", "volume_ratio", "bb_pos", "atr_pct", "highest_close", "lowest_close", "volatility"]);
+const INDICATOR_KINDS = new Set<IndicatorKind>(["close", "open", "high", "low", "volume", "sma", "ema", "rsi", "macd_hist", "macd_line", "return", "drawdown", "volume_ratio", "bb_pos", "atr_pct", "highest_close", "lowest_close", "volatility", "sessions_to_event", "sessions_since_event", "event_surprise", "event_surprise_z"]);
 const OPS = new Set<ConditionOp>([">", "<", ">=", "<=", "cross_above", "cross_below"]);
 
+/**
+ * A calendar operand without an `event` root is rejected rather than defaulted.
+ * Silently dropping the root would leave a rule whose condition can never be
+ * true, and a rule that never fires backtests as a flat line that passes some
+ * checks by vacuity.
+ */
 function normalizeOperand(value: unknown): Operand | null {
   if (!value || typeof value !== "object") return null;
   const item = value as Record<string, unknown>;
   if (item.kind === "value") return Number.isFinite(Number(item.value)) ? { kind: "value", value: Number(item.value) } : null;
   if (!INDICATOR_KINDS.has(item.kind as IndicatorKind)) return null;
+  const kind = item.kind as IndicatorKind;
+  if (CALENDAR_KINDS.has(kind)) {
+    const event = typeof item.event === "string" ? item.event.trim().toLowerCase() : "";
+    return event ? { kind, event } : null;
+  }
   const period = item.period === undefined || item.period === null ? undefined : Number(item.period);
-  return { kind: item.kind as IndicatorKind, ...(period !== undefined && Number.isFinite(period) ? { period: Math.max(1, Math.round(period)) } : {}) };
+  return { kind, ...(period !== undefined && Number.isFinite(period) ? { period: Math.max(1, Math.round(period)) } : {}) };
+}
+
+/** Every event root a spec depends on, so callers know which events to load. */
+export function specEventRoots(spec: StrategySpec): string[] {
+  const roots = [...spec.entry, ...spec.exit]
+    .flatMap((condition) => [condition.left, condition.right])
+    .flatMap((operand) => operand.kind !== "value" && CALENDAR_KINDS.has(operand.kind) && operand.event ? [operand.event] : []);
+  return [...new Set(roots)];
 }
 
 function normalizeCondition(value: unknown): Condition | null {
@@ -454,7 +568,7 @@ export function normalizeSpec(input: unknown, today: string): { spec: StrategySp
 }
 
 export function warmupDays(spec: StrategySpec) {
-  const periods = [...spec.entry, ...spec.exit].flatMap((condition) => [condition.left, condition.right]).map((operand) => operand.kind === "value" ? 0 : operand.period ?? defaultPeriod(operand.kind));
+  const periods = [...spec.entry, ...spec.exit].flatMap((condition) => [condition.left, condition.right]).map((operand) => operand.kind === "value" || CALENDAR_KINDS.has(operand.kind) ? 0 : operand.period ?? defaultPeriod(operand.kind));
   return Math.max(60, Math.ceil(Math.max(0, ...periods) * 1.6) + 30);
 }
 

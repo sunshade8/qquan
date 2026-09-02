@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { describeFindingsForContext, rankFindingsForQuestion, validateFinding } from "../lib/findings.ts";
+import { describeFindingsForContext, parseEvidence, rankFindingsForQuestion, rerunnableEvidence, validateFinding } from "../lib/findings.ts";
 
 function finding(overrides = {}) {
   return {
     id: "11111111-2222-3333-4444-555555555555",
     title: "반도체 과매도 반등",
     claim: "SOXX 구성 종목에서 RSI(14)<30 이후 5거래일 평균 +1.4% (베이스라인 +0.3%, n=214)",
-    evidence: ["conditional_stats: 평균 +1.4% vs 기준 +0.3%"],
+    evidence: [{ kind: "tool_run", tool: "conditional_stats", input: { universe: "megacap" }, summary: "평균 +1.4% vs 기준 +0.3%" }],
     symbols: ["NVDA", "AMD"],
+    eventRoots: [],
     tags: ["mean-reversion"],
     confidence: "medium",
     status: "open",
@@ -28,25 +29,44 @@ test("validateFinding requires a claim and at least one piece of evidence", () =
   assert.match(missing.errors.join(" "), /evidence/);
 });
 
-test("validateFinding normalises symbols, defaults, and trims empty evidence", () => {
+test("validateFinding normalises symbols, event roots, defaults, and drops empty evidence", () => {
   const result = validateFinding({
     title: "테스트 결론",
     claim: "20일 모멘텀 상위 종목의 다음 5일 초과수익은 관측되지 않았다 (n=180)",
-    evidence: ["screen_universe 상위 15종목", "  ", "conditional_stats n=180"],
+    evidence: ["screen_universe 상위 15종목", "  ", { kind: "tool_run", tool: "conditional_stats", input: { horizon: 5 }, summary: "n=180" }],
     symbols: ["nvda", " amd "],
+    eventRoots: [" CPI ", "NFP"],
     confidence: "터무니없는값",
   });
   assert.equal(result.ok, true);
   assert.deepEqual(result.value.symbols, ["NVDA", "AMD"]);
-  assert.deepEqual(result.value.evidence, ["screen_universe 상위 15종목", "conditional_stats n=180"]);
+  assert.deepEqual(result.value.eventRoots, ["cpi", "nfp"]);
+  assert.equal(result.value.evidence.length, 2);
+  assert.deepEqual(result.value.evidence[0], { kind: "note", summary: "screen_universe 상위 15종목" });
+  assert.equal(result.value.evidence[1].kind, "tool_run");
   assert.equal(result.value.confidence, "medium");
   assert.equal(result.value.status, "open");
+});
+
+test("evidence written before typed refs still reads back instead of vanishing", () => {
+  const parsed = parseEvidence(JSON.stringify(["conditional_stats: 평균 +1.2%", ""]));
+  assert.deepEqual(parsed, [{ kind: "note", summary: "conditional_stats: 평균 +1.2%" }]);
+});
+
+test("only tool_run evidence is replayable, which is what makes a finding checkable later", () => {
+  const replayable = rerunnableEvidence(finding({
+    evidence: [
+      { kind: "note", summary: "직관" },
+      { kind: "tool_run", tool: "sweep_conditions", input: { metric: "rsi14" }, summary: "그리드" },
+    ],
+  }));
+  assert.deepEqual(replayable, [{ tool: "sweep_conditions", input: { metric: "rsi14" } }]);
 });
 
 test("rankFindingsForQuestion surfaces the notes whose text overlaps the question", () => {
   const notes = [
     finding({ id: "a", title: "반도체 과매도 반등", symbols: ["NVDA"] }),
-    finding({ id: "b", title: "에너지 계절성", claim: "XLE는 11월에 강했다", symbols: ["XLE"], tags: ["seasonality"] }),
+    finding({ id: "b", title: "에너지 계절성", claim: "XLE는 11월에 강했다", symbols: ["XLE"], tags: ["seasonality"], eventRoots: [] }),
   ];
   const ranked = rankFindingsForQuestion(notes, "NVDA 과매도 반등 다시 확인해줘", 1);
   assert.equal(ranked.length, 1);
@@ -59,8 +79,9 @@ test("rankFindingsForQuestion still returns notes when nothing overlaps", () => 
   assert.equal(ranked.length, 2);
 });
 
-test("describeFindingsForContext carries the claim and its falsification condition", () => {
-  const block = describeFindingsForContext([finding()]);
+test("describeFindingsForContext carries the claim, its event roots, and its falsification condition", () => {
+  const block = describeFindingsForContext([finding({ eventRoots: ["cpi"] })]);
+  assert.match(block, /이벤트: cpi/);
   assert.match(block, /반도체 과매도 반등/);
   assert.match(block, /베이스라인 \+0\.3%/);
   assert.match(block, /반증 조건:/);

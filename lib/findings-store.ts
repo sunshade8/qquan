@@ -16,7 +16,7 @@ import {
 function rowToFinding(row: typeof researchFindings.$inferSelect): Finding {
   return {
     id: row.id, title: row.title, claim: row.claim, evidence: parseEvidence(row.evidencePayload),
-    symbols: splitList(row.symbols), tags: splitList(row.tags),
+    symbols: splitList(row.symbols), eventRoots: splitList(row.eventRoots), tags: splitList(row.tags),
     confidence: confidenceOf(row.confidence), status: statusOf(row.status), falsification: row.falsification,
     sourceConversationId: row.sourceConversationId,
     createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString(),
@@ -33,7 +33,7 @@ export async function saveFinding(ownerId: string, conversationId: string | null
   const now = new Date();
   const payload = {
     title: value.title, claim: value.claim, evidencePayload: JSON.stringify(value.evidence),
-    symbols: value.symbols.join(","), tags: value.tags.join(","),
+    symbols: value.symbols.join(","), eventRoots: value.eventRoots.join(","), tags: value.tags.join(","),
     confidence: value.confidence, status: value.status, falsification: value.falsification,
     updatedAt: now,
   };

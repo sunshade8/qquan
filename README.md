@@ -128,6 +128,58 @@ Two things are reviewed there, because nothing else covered them:
   overclaims, numbers absent from the evidence, and caveats the evidence carried but the answer
   dropped. A non-`accurate` verdict is appended to the answer rather than hidden.
 
+### The event spine (`market_events`)
+
+`eventRoot` was already the de-facto domain key — the static calendar builds ids as `${root}-${date}`
+and the News planner re-derives it with `startsWith("cpi-")` — but it lived inside a string, so
+nothing could join on it. It is now a column, and News measurements, Lab findings
+(`research_findings.event_roots`) and strategy rules all refer to the same roots.
+
+**Actuals come from FRED/ALFRED, and only as first released.** `POST /api/events {"action":"seed"}`
+writes the static calendar (schedule only); `{"action":"backfill","root":"cpi"}` pulls values with
+`output_type=4` (initial release only) and stores `actual_initial` separately from `actual_revised`.
+This is not a nicety. Backfilling payrolls over 2026 shows a print of **-899K that was later revised
+to +160K** — a backtest reading the revised series would treat a release the market received as a
+catastrophe as good news, with the sign of the surprise inverted.
+
+**Series are transformed to the headline the market actually trades** before any surprise is
+computed (`applyTransform`). CPIAUCSL is an index *level*, so comparing a print to its own trailing
+mean measures the trend — the "surprise" then rises monotonically forever and carries no
+information. CPI/PPI/PCE use the month-over-month percent, payrolls the month-over-month change,
+and already-rate series (unemployment, fed funds) their level.
+
+**Consensus has no free source.** Toss's OpenAPI spec serves session hours only, Yahoo exposes no
+economic calendar endpoint, and TradingView is a widget; Trading Economics is paid. `consensus` is
+therefore nullable for manual entry, and the default surprise is a deviation from a naive forecast
+(trailing mean, else the previous print) computed from point-in-time history only. Every row records
+its `surprise_basis`, and the API says plainly that a naive basis is a weaker signal than a true
+economist surprise. Set `FRED_API_KEY` (free) to enable backfill at all.
+
+### Calendar operands — the joint that makes News findings backtestable
+
+Every other indicator is derived from price, so an event-driven rule could not be expressed at all.
+`sessions_to_event`, `sessions_since_event`, `event_surprise` and `event_surprise_z` take an `event`
+root and are evaluated in trading sessions, so a release on a holiday anchors to the next session
+that traded. A release before 16:00 ET is readable at that day's close and a later one only at the
+next — getting that wrong is exactly one bar of look-ahead, which is enough to manufacture an edge
+from nothing. A calendar operand without an `event` root is rejected rather than defaulted, because
+a rule that can never fire backtests as a flat line that passes some checks by vacuity.
+
+`event_reaction` answers the question the News side was built for — "what did SPY do around the last
+year of CPI prints, split by surprise" — in one call, on daily bars, with the unconditional return
+over the same window as a baseline. `intraday_event_study` still covers the minute-level window but
+only as far back as Yahoo's ~60-day supply.
+
+### Paper ledger — closing the loop
+
+`POST /api/strategies/signals {"id":"…","record":true}` writes each intent to `paper_fills`, moves
+`paper_positions`, and marks the book in `paper_daily_pnl` on every call so an equity curve
+accumulates even on days the rule did not trade. Fills are modelled pessimistically — a buy lifts
+the ask, a sell hits the bid, and a missing quote still charges half the strategy's cost assumption
+as spread — because the number worth having is where live execution *diverges* from the backtest.
+Open positions feed back as held symbols and a fill is not recorded twice for the same signal date,
+so polling the endpoint cannot inflate the record it exists to measure.
+
 ### Success criteria are floored, not author-supplied
 
 `successCriteria` arrives from the same model that wrote the rule, so the author used to set its

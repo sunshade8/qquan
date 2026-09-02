@@ -17,12 +17,14 @@ import {
 import { resolveSymbol, resolveSymbols, type ResolvedSymbol } from "@/lib/symbols";
 import { describeUniverses, resolveUniverse, UNIVERSE_IDS } from "@/lib/universe";
 import {
-  pooledConditionalStudy, screenUniverse, sweepConditions, SCREEN_METRIC_LABELS, SCREEN_METRICS,
+  eventReactionStudy, pooledConditionalStudy, screenUniverse, sweepConditions, SCREEN_METRIC_LABELS, SCREEN_METRICS,
   type PooledCondition, type ScreenCandidate, type ScreenFilter, type ScreenMetric, type ScreenRank,
 } from "@/lib/screener";
 import { auditResult, interpretSweep, AUDIT_RISK_LABELS, AUDIT_VERDICT_LABELS } from "@/lib/lab-specialists";
 import { challengeStrategy, describeChallengerPairing, RISK_LABELS, STRATEGY_VERDICT_LABELS, type StrategyChallenge } from "@/lib/challenger";
 import { FINDING_CONFIDENCE_LABELS, FINDING_STATUS_LABELS } from "@/lib/findings";
+import { EVENT_ROOTS, knownEventRoots, SURPRISE_BASIS_LABELS } from "@/lib/market-events";
+import { listMarketEvents } from "@/lib/market-events-store";
 import { listFindings, saveFinding } from "@/lib/findings-store";
 import { describeSpec, normalizeSpec, presetConditions, type BacktestResult, type StrategySpec } from "@/lib/strategy";
 import { backtestSpec, getStrategy, listStrategies, runAndRecord, saveStrategy, STRATEGY_STATUS_LABELS } from "@/lib/strategy-store";
@@ -239,7 +241,9 @@ export const LAB_TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "propose_strategy",
-    description: "탑다운 가설에서 출발한 백테스트 전략 사양을 만든다. 순서: thesis(거시·구조적 논제) → mechanism(초과수익이 생기는 이유) → prediction(규칙이 맞다면 관측될 것) → falsification(무엇이 나오면 기각) → 기계적 entry/exit 규칙. 사용자가 전략을 만들어 달라고 하거나 대화가 매매 규칙으로 수렴하면 호출한다. 결과는 Canvas 카드로 표시되고, 사용자가 원하면 save_strategy로 Backtest 화면에 저장한다. 조건의 left/right는 {kind, period} 또는 {kind:'value', value}. kind: close, open, high, low, volume, sma, ema, rsi, macd_hist, macd_line, return(N일 %), drawdown(%), volume_ratio, bb_pos(0~1), atr_pct, highest_close, lowest_close, volatility. op: >, <, >=, <=, cross_above, cross_below.",
+    description: `탑다운 가설에서 출발한 백테스트 전략 사양을 만든다. 순서: thesis(거시·구조적 논제) → mechanism(초과수익이 생기는 이유) → prediction(규칙이 맞다면 관측될 것) → falsification(무엇이 나오면 기각) → 기계적 entry/exit 규칙. 사용자가 전략을 만들어 달라고 하거나 대화가 매매 규칙으로 수렴하면 호출한다. 결과는 Canvas 카드로 표시되고, 사용자가 원하면 save_strategy로 Backtest 화면에 저장한다. 조건의 left/right는 {kind, period} 또는 {kind:'value', value}. kind: close, open, high, low, volume, sma, ema, rsi, macd_hist, macd_line, return(N일 %), drawdown(%), volume_ratio, bb_pos(0~1), atr_pct, highest_close, lowest_close, volatility. op: >, <, >=, <=, cross_above, cross_below.
+
+이벤트 드리븐 규칙: News에서 찾은 경제지표 패턴을 전략으로 만들 때는 캘린더 오퍼랜드를 쓴다. kind에 sessions_to_event(다음 발표까지 거래일 수), sessions_since_event(직전 발표 이후 거래일 수), event_surprise(직전 발표 서프라이즈), event_surprise_z(z 정규화)를 지정하고 event 필드에 이벤트 루트를 반드시 넣는다. 예: 'CPI 발표 2거래일 전 진입, 발표 다음날 청산' → entry [{left:{kind:'sessions_to_event',event:'cpi'}, op:'<=', right:{kind:'value',value:2}}], exit [{left:{kind:'sessions_since_event',event:'cpi'}, op:'>=', right:{kind:'value',value:1}}]. event 없이 캘린더 오퍼랜드를 쓰면 사양이 거부된다. 사용 가능 루트는 market_events 도구로 확인한다.`,
     input_schema: {
       type: "object",
       properties: {
@@ -256,6 +260,7 @@ export const LAB_TOOLS: Anthropic.Tool[] = [
         preset: { type: "string", enum: ["sma_cross", "momentum", "rsi_reversal", "breakout"], description: "entry/exit 대신 프리셋을 쓸 때" },
         presetParams: { type: "object", properties: { fast: { type: "integer" }, slow: { type: "integer" }, period: { type: "integer" }, entry: { type: "number" }, exit: { type: "number" }, lookback: { type: "integer" }, exitLookback: { type: "integer" } } },
         runNow: { type: "boolean", description: "true면 제안과 동시에 백테스트 실행" },
+        sourceFindingId: { type: "string", description: "이 전략이 기계화하는 연구 노트 id. 노트에서 출발했다면 반드시 넣는다 — 노트가 나중에 반증되면 이 전략도 함께 표시된다." },
       },
       required: ["name", "hypothesis", "universe"],
     },
@@ -340,7 +345,12 @@ symbols로 티커를 직접 줄 수도 있다(반드시 티커여야 하며, 한
         id: { type: "string", description: "기존 노트 갱신 시에만" },
         title: { type: "string", description: "짧은 제목" },
         claim: { type: "string", description: "숫자와 기간을 포함한 결론 문장" },
-        evidence: { type: "array", items: { type: "string" }, description: "근거. 예: 'conditional_stats: RSI<30 이후 5일 평균 +1.2%, 베이스라인 +0.3%, n=214'" },
+        evidence: {
+          type: "array",
+          description: "근거. 나중에 재검증할 수 있도록 도구와 입력을 함께 남긴다. 형식: {kind:'tool_run', tool:'conditional_stats', input:{...}, summary:'...'} 또는 {kind:'news_test', ref:'<testId>', summary:'...'} 또는 {kind:'note', summary:'...'}",
+          items: { type: "object" },
+        },
+        eventRoots: { type: "array", items: { type: "string", enum: [...knownEventRoots()] }, description: "이 결론이 어떤 경제 이벤트에 대한 것인지. News·전략과 조인되는 키다." },
         symbols: { type: "array", items: { type: "string" } },
         tags: { type: "array", items: { type: "string" } },
         confidence: { type: "string", enum: ["high", "medium", "low"] },
@@ -384,6 +394,36 @@ symbols로 티커를 직접 줄 수도 있다(반드시 티커여야 하며, 한
         question: { type: "string", description: "사용자의 원래 질문" },
       },
       required: ["claim", "evidence"],
+    },
+  },
+  {
+    name: "market_events",
+    description: `경제 이벤트 캘린더를 실제치·서프라이즈와 함께 조회한다. 발표 일정만 있는 market_calendar와 달리 여기에는 발표 당시 원본 실제치(actualInitial), 개정치(actualRevised), 서프라이즈가 들어 있다. 이벤트 드리븐 전략을 만들거나 "지난 1년 CPI 발표 때 어땠나" 류의 질문에 쓴다.
+사용 가능한 이벤트 루트: ${EVENT_ROOTS.map((item) => `${item.root}(${item.label})`).join(", ")}.
+전략 규칙에서 sessions_to_event/sessions_since_event/event_surprise 오퍼랜드를 쓸 때 이 루트 이름을 그대로 쓴다.`,
+    input_schema: {
+      type: "object",
+      properties: {
+        roots: { type: "array", items: { type: "string", enum: [...knownEventRoots()] }, description: "비우면 전체" },
+        from: { type: "string" },
+        to: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "event_reaction",
+    description: "저장된 경제 이벤트 날짜를 기준으로 자산의 발표 전/후 수익률을 집계하고, 서프라이즈 상회·하회로 나눠서 비교한다. \"지난 1년간 고용지표 발표 전후 추이\" 같은 질문의 정답 도구다. 일봉 기준이라 분봉 60일 제한을 받지 않고 캘린더가 덮는 전 기간을 볼 수 있다. 발표일이 휴장이면 다음 거래일에 앵커된다. 같은 기간의 무조건 N일 수익률(베이스라인)과 함께 반환한다.",
+    input_schema: {
+      type: "object",
+      properties: {
+        eventRoot: { type: "string", enum: [...knownEventRoots()], description: "이벤트 종류" },
+        symbols: { type: "array", items: { type: "string" }, description: "분석할 자산. 기본 SPY, QQQ" },
+        preSessions: { type: "integer", description: "발표 전 거래일 수. 기본 2" },
+        postSessions: { type: "integer", description: "발표 후 거래일 수. 기본 1" },
+        from: { type: "string" },
+        to: { type: "string" },
+      },
+      required: ["eventRoot"],
     },
   },
 ];
@@ -828,7 +868,10 @@ async function saveStrategyTool(input: Input, context: ToolContext): Promise<Too
   const { spec, errors } = specFromToolInput(input, context);
   if (!spec) return { result: { ok: false, errors }, artifacts: [], trace: { name: "save_strategy", label: "전략 저장", status: "failed", detail: errors.join(" ") } };
   try {
-    let stored = await saveStrategy(context.ownerId, spec, { sourceConversationId: context.conversationId ?? null });
+    let stored = await saveStrategy(context.ownerId, spec, {
+      sourceConversationId: context.conversationId ?? null,
+      sourceFindingId: typeof input.sourceFindingId === "string" && input.sourceFindingId.trim() ? input.sourceFindingId.trim() : null,
+    });
     const artifacts: LabArtifact[] = [];
     let run: ReturnType<typeof compactResult> | null = null;
     let ran: BacktestResult | null = null;
@@ -1038,7 +1081,8 @@ async function saveFindingTool(input: Input, context: ToolContext): Promise<Tool
       id: typeof input.id === "string" ? input.id : undefined,
       title: String(input.title ?? ""),
       claim: String(input.claim ?? ""),
-      evidence: Array.isArray(input.evidence) ? input.evidence.map(String) : [],
+      evidence: Array.isArray(input.evidence) ? input.evidence : [],
+      eventRoots: Array.isArray(input.eventRoots) ? input.eventRoots.map(String) : [],
       symbols: Array.isArray(input.symbols) ? input.symbols.map(String) : [],
       tags: Array.isArray(input.tags) ? input.tags.map(String) : [],
       confidence: typeof input.confidence === "string" ? input.confidence : undefined,
@@ -1053,7 +1097,8 @@ async function saveFindingTool(input: Input, context: ToolContext): Promise<Tool
       columns: ["항목", "내용"],
       rows: [
         ["결론", finding.claim],
-        ["근거", finding.evidence.join(" / ")],
+        ["근거", finding.evidence.map((item) => item.kind === "tool_run" ? `${item.tool}: ${item.summary}` : item.summary).join(" / ")],
+        ["이벤트", finding.eventRoots.join(", ") || "—"],
         ["종목", finding.symbols.join(", ") || "—"],
         ["반증 조건", finding.falsification || "—"],
         ["노트 id", finding.id.slice(0, 8)],
@@ -1181,6 +1226,89 @@ async function auditResultTool(input: Input, context: ToolContext): Promise<Tool
   };
 }
 
+async function marketEventsTool(input: Input, context: ToolContext): Promise<ToolOutcome> {
+  const roots = (Array.isArray(input.roots) ? input.roots : []).map(String).filter(Boolean);
+  const { from, to } = windowFor(input, context.today, 730);
+  try {
+    const events = await listMarketEvents(roots, from, to);
+    if (!events.length) {
+      const reason = `${from}~${to} 구간에 저장된 이벤트가 없습니다. POST /api/events {"action":"seed"} 로 캘린더를 적재한 뒤 {"action":"backfill","root":"cpi"} 로 실제치를 채우세요.`;
+      return { result: { available: false, reason }, artifacts: [limitation("이벤트 없음", reason, ["/api/events seed 실행", "루트 이름 확인"])], trace: { name: "market_events", label: "경제 이벤트", status: "failed", detail: "저장된 이벤트 없음" } };
+    }
+    const withValues = events.filter((event) => event.actualInitial !== null);
+    const artifact: LabArtifact = {
+      id: id(), type: "table", title: "경제 이벤트", subtitle: `${events.length}건 · 실제치 있음 ${withValues.length}건`,
+      columns: ["날짜", "루트", "ET", "실제치(원본)", "개정치", "컨센서스", "서프라이즈", "z", "기준"],
+      rows: events.slice(0, 60).map((event) => [event.eventDate, event.eventRoot, event.eventTimeEt, event.actualInitial, event.actualRevised, event.consensus, event.surprise, event.surpriseZ, SURPRISE_BASIS_LABELS[event.surpriseBasis as keyof typeof SURPRISE_BASIS_LABELS] ?? event.surpriseBasis]),
+      notes: [
+        `${from} → ${to}`,
+        "실제치(원본)는 발표 당시 값이고 개정치는 이후 수정된 값입니다. 백테스트는 원본만 사용합니다.",
+        withValues.length < events.length ? `${events.length - withValues.length}건은 아직 실제치가 없습니다 (미래 일정이거나 backfill 미실행).` : "",
+      ].filter(Boolean),
+    };
+    return {
+      result: { period: { from, to }, count: events.length, withValues: withValues.length, events: events.slice(0, 60), roots: roots.length ? roots : "all" },
+      artifacts: [artifact],
+      trace: { name: "market_events", label: "경제 이벤트", status: "complete", detail: `${events.length}건 · 실제치 ${withValues.length}건` },
+    };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "이벤트 조회 실패";
+    return { result: { available: false, reason }, artifacts: [], trace: { name: "market_events", label: "경제 이벤트", status: "failed", detail: reason } };
+  }
+}
+
+async function eventReactionTool(input: Input, context: ToolContext): Promise<ToolOutcome> {
+  const root = String(input.eventRoot ?? "").trim();
+  if (!root) return { result: { available: false, reason: "eventRoot가 필요합니다." }, artifacts: [], trace: { name: "event_reaction", label: "이벤트 반응", status: "failed", detail: "eventRoot 없음" } };
+  const symbols = (Array.isArray(input.symbols) && input.symbols.length ? input.symbols.map(String) : ["SPY", "QQQ"]).slice(0, 6);
+  const pre = Math.max(0, Number(input.preSessions) || 2);
+  const post = Math.max(1, Number(input.postSessions) || 1);
+  const { from, to } = windowFor(input, context.today, 1095);
+
+  const events = await listMarketEvents([root], from, to).catch(() => []);
+  if (!events.length) {
+    const reason = `${root} 이벤트가 ${from}~${to} 구간에 없습니다. /api/events 로 seed·backfill을 먼저 실행하세요.`;
+    return { result: { available: false, reason }, artifacts: [limitation("이벤트 없음", reason, ["/api/events seed", "/api/events backfill"])], trace: { name: "event_reaction", label: "이벤트 반응", status: "failed", detail: "이벤트 없음" } };
+  }
+  const dates = events.map((event) => ({ date: event.eventDate, surprise: event.surprise, surpriseZ: event.surpriseZ }));
+  const withSurprise = dates.filter((item) => item.surprise !== null).length;
+
+  const studies = [];
+  const failed: string[] = [];
+  for (const query of symbols) {
+    const loaded = await loadAsset(query, shiftDate(from, -30), to);
+    if ("error" in loaded) { failed.push(`${query}: ${loaded.error}`); continue; }
+    studies.push(eventReactionStudy(loaded.rows, loaded.asset.symbol!, dates, pre, post));
+  }
+  if (!studies.length) {
+    const reason = failed.join(" / ") || "자산 일봉을 불러오지 못했습니다.";
+    return { result: { available: false, reason }, artifacts: [limitation("가격 데이터 없음", reason, ["티커 확인"])], trace: { name: "event_reaction", label: "이벤트 반응", status: "failed", detail: reason } };
+  }
+
+  const rows = studies.flatMap((study) => study.buckets.map((bucket) => [
+    study.symbol, bucket.label, bucket.samples, bucket.preReturnPct, bucket.postReturnPct, bucket.postMedianPct, bucket.postPositiveRatePct,
+    study.baseline.averagePct, bucket.postReturnPct !== null && study.baseline.averagePct !== null ? Number((bucket.postReturnPct - study.baseline.averagePct).toFixed(3)) : null,
+  ]));
+  const artifact: LabArtifact = {
+    id: id(), type: "table", title: `이벤트 반응 · ${root}`,
+    subtitle: `${events.length}회 발표 · 발표 전 ${pre}일 / 후 ${post}일`,
+    columns: ["자산", "구분", "표본", `전 ${pre}일 (%)`, `후 ${post}일 (%)`, "후 중앙값 (%)", "후 상승률 (%)", "베이스라인 (%)", "초과 (%p)"],
+    rows,
+    notes: [
+      `${from} → ${to} · ${events.length}회 발표 중 서프라이즈 보유 ${withSurprise}회`,
+      "발표일이 휴장이면 다음 거래일에 앵커됩니다. 후 수익률은 앵커 종가 기준입니다.",
+      withSurprise < events.length ? `${events.length - withSurprise}회는 서프라이즈가 없어 상회/하회 분류에서 빠집니다 (backfill 미실행 또는 미래 일정).` : "",
+      `표본이 ${events.length}회뿐입니다. 월간 지표 1년은 12회이므로 이 결과만으로 결론을 내리지 마세요.`,
+      failed.length ? `실패: ${failed.join(" / ")}` : "",
+    ].filter(Boolean),
+  };
+  return {
+    result: { eventRoot: root, period: { from, to }, releases: events.length, withSurprise, preSessions: pre, postSessions: post, studies, failed },
+    artifacts: [artifact],
+    trace: { name: "event_reaction", label: `이벤트 반응 · ${root}`, status: "complete", detail: `${events.length}회 · ${studies.map((study) => study.symbol).join(", ")}` },
+  };
+}
+
 export async function executeLabTool(name: string, input: unknown, context: ToolContext): Promise<ToolOutcome> {
   const args = (input && typeof input === "object" ? input : {}) as Input;
   switch (name) {
@@ -1212,6 +1340,8 @@ export async function executeLabTool(name: string, input: unknown, context: Tool
     case "list_findings": return listFindingsTool(args, context);
     case "sweep_conditions": return sweepConditionsTool(args, context);
     case "audit_result": return auditResultTool(args, context);
+    case "market_events": return marketEventsTool(args, context);
+    case "event_reaction": return eventReactionTool(args, context);
     default: return { result: { error: `알 수 없는 도구 ${name}` }, artifacts: [], trace: { name, label: name, status: "failed", detail: "알 수 없는 도구" } };
   }
 }
@@ -1219,5 +1349,5 @@ export async function executeLabTool(name: string, input: unknown, context: Tool
 export const TOOL_LABELS: Record<string, string> = {
   resolve_symbols: "심볼 해석", get_price_history: "가격 이력", compare_assets: "자산 비교", technical_indicators: "기술 지표", event_study: "이벤트 스터디", intraday_event_study: "분봉 이벤트 스터디", backtest_strategy: "백테스트", risk_profile: "리스크 프로파일", seasonality: "계절성", largest_moves_with_news: "급등락·뉴스", search_news: "뉴스 검색", get_quote: "현재가", market_calendar: "경제 일정", news_sentiment_tests: "뉴스 감성 Test", show_chart: "TradingView 차트", propose_strategy: "전략 제안", save_strategy: "전략 저장", run_strategy_backtest: "전략 백테스트", list_strategies: "저장된 전략", web_search: "웹 검색",
   screen_universe: "종목 스크리닝", conditional_stats: "조건부 통계", save_finding: "연구 노트 저장", list_findings: "연구 노트",
-  sweep_conditions: "그리드 스윕", audit_result: "결론 감사",
+  sweep_conditions: "그리드 스윕", audit_result: "결론 감사", market_events: "경제 이벤트", event_reaction: "이벤트 반응",
 };

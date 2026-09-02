@@ -11,7 +11,7 @@ export type PriceRow = {
 
 export class MarketProviderError extends Error {
   constructor(
-    public readonly provider: "toss" | "yahoo",
+    public readonly provider: "toss" | "yahoo" | "fred",
     public readonly code: "not_configured" | "ip_allowlist" | "auth" | "rate_limit" | "not_found" | "upstream",
     message: string,
     public readonly status = 502,

@@ -455,3 +455,105 @@ export function sweepConditions(
     symbolsWithSamples: symbolsWith.size,
   };
 }
+
+export type EventDate = { date: string; surprise: number | null; surpriseZ: number | null };
+
+export type ReactionBucket = {
+  label: string;
+  samples: number;
+  preReturnPct: number | null;
+  postReturnPct: number | null;
+  postPositiveRatePct: number | null;
+  postMedianPct: number | null;
+  bestPct: number | null;
+  worstPct: number | null;
+};
+
+export type EventReactionStudy = {
+  symbol: string;
+  preSessions: number;
+  postSessions: number;
+  buckets: ReactionBucket[];
+  observations: Array<{ date: string; surprise: number | null; preReturnPct: number | null; postReturnPct: number | null }>;
+  baseline: { samples: number; averagePct: number | null; positiveRatePct: number | null };
+  unmatched: string[];
+};
+
+function bucketOf(values: Array<{ pre: number | null; post: number | null }>, label: string): ReactionBucket {
+  const pre = values.flatMap((item) => item.pre === null ? [] : [item.pre]);
+  const post = values.flatMap((item) => item.post === null ? [] : [item.post]);
+  const sorted = [...post].sort((left, right) => left - right);
+  return {
+    label,
+    samples: values.length,
+    preReturnPct: round(mean(pre)),
+    postReturnPct: round(mean(post)),
+    postPositiveRatePct: post.length ? round((post.filter((value) => value > 0).length / post.length) * 100, 1) : null,
+    postMedianPct: sorted.length ? round(sorted.length % 2 ? sorted[(sorted.length - 1) / 2] : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2) : null,
+    bestPct: post.length ? round(Math.max(...post)) : null,
+    worstPct: post.length ? round(Math.min(...post)) : null,
+  };
+}
+
+/**
+ * Returns around a list of scheduled event dates, split by surprise sign.
+ *
+ * This is the shape of the question the News side was built to ask — "what did
+ * SPY do around the last year of payroll prints" — and nothing else answers it:
+ * `event_study` conditions on a *price* feature, and `intraday_event_study` only
+ * reaches back as far as the minute-bar supply does.
+ *
+ * The event date is mapped to the first session on or after it, so a release on a
+ * holiday anchors to the next session that actually traded. The post window
+ * starts at the anchor close, which is the first close that could have priced the
+ * release; the pre window ends there.
+ */
+export function eventReactionStudy(
+  rows: Bar[],
+  symbol: string,
+  events: EventDate[],
+  preSessions = 2,
+  postSessions = 1,
+): EventReactionStudy {
+  const dates = rows.map((row) => row.date);
+  const pre = Math.max(0, Math.round(preSessions));
+  const post = Math.max(1, Math.round(postSessions));
+  const observations: EventReactionStudy["observations"] = [];
+  const unmatched: string[] = [];
+
+  for (const event of events) {
+    const anchor = dates.findIndex((date) => date >= event.date);
+    if (anchor === -1) { unmatched.push(event.date); continue; }
+    const preIndex = anchor - pre;
+    const postIndex = anchor + post;
+    if (postIndex >= rows.length) { unmatched.push(event.date); continue; }
+    observations.push({
+      date: event.date,
+      surprise: event.surprise,
+      preReturnPct: preIndex >= 0 ? round((rows[anchor].close / rows[preIndex].close - 1) * 100) : null,
+      postReturnPct: round((rows[postIndex].close / rows[anchor].close - 1) * 100),
+    });
+  }
+
+  const paired = observations.map((item) => ({ pre: item.preReturnPct, post: item.postReturnPct, surprise: item.surprise }));
+  const buckets = [bucketOf(paired, "전체")];
+  const positive = paired.filter((item) => item.surprise !== null && item.surprise > 0);
+  const negative = paired.filter((item) => item.surprise !== null && item.surprise < 0);
+  if (positive.length) buckets.push(bucketOf(positive, "서프라이즈 상회"));
+  if (negative.length) buckets.push(bucketOf(negative, "서프라이즈 하회"));
+
+  // Unconditional N-session return over the same bars, so an event reaction is
+  // read against what an ordinary stretch of the same length did.
+  const base: number[] = [];
+  for (let index = 0; index + post < rows.length; index += 1) base.push((rows[index + post].close / rows[index].close - 1) * 100);
+  return {
+    symbol, preSessions: pre, postSessions: post, buckets,
+    observations: observations.slice(-40),
+    baseline: {
+      samples: base.length,
+      averagePct: round(mean(base)),
+      positiveRatePct: base.length ? round((base.filter((value) => value > 0).length / base.length) * 100, 1) : null,
+    },
+    unmatched,
+  };
+}

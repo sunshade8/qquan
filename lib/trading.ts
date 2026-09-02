@@ -9,7 +9,7 @@
  */
 
 import type { Bar } from "@/lib/quant";
-import { signalSeries, type StrategySpec } from "@/lib/strategy";
+import { signalSeries, type EventContext, type StrategySpec } from "@/lib/strategy";
 import { fetchTossSnapshot, type BrokerSnapshot } from "@/lib/market-data";
 
 export type OrderSide = "buy" | "sell";
@@ -38,8 +38,8 @@ export type LiveSignal = {
   broker: BrokerSnapshot;
 };
 
-export function evaluateLiveSignal(symbol: string, rows: Bar[], spec: StrategySpec, broker: BrokerSnapshot): LiveSignal {
-  const { signals, reasons } = signalSeries(rows, spec);
+export function evaluateLiveSignal(symbol: string, rows: Bar[], spec: StrategySpec, broker: BrokerSnapshot, events: EventContext = {}): LiveSignal {
+  const { signals, reasons } = signalSeries(rows, spec, events);
   const latest = Boolean(signals.at(-1));
   const previous = Boolean(signals.at(-2));
   const transition: LiveSignal["transition"] = latest && !previous ? "enter" : !latest && previous ? "exit" : latest ? "hold" : "stay_flat";
