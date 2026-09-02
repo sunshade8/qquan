@@ -23,6 +23,8 @@ test("server-renders the QQuant product shell", async () => {
   assert.match(html, /CSV fallback/);
   assert.match(html, /Chart commands/);
   assert.match(html, /Backtest/);
+  assert.match(html, /MARKET INTELLIGENCE HQ/);
+  assert.match(html, />Lab</);
   assert.match(html, /aria-label="Primary navigation"/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
 });

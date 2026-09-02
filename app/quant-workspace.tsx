@@ -20,8 +20,10 @@ import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
 import { TradingViewChart } from "./tradingview-chart";
 import { MarketCalendar } from "./market-calendar";
 import { MarketNews } from "./market-news";
+import { LabWorkspace } from "./lab-workspace";
+import type { AgentActivity } from "@/lib/lab-types";
 
-type View = "market" | "backtest" | "calendar" | "news" | "settings";
+type View = "market" | "backtest" | "calendar" | "news" | "lab" | "settings";
 type DataTab = "rows" | "study" | "hypothesis";
 type Feature = "return1d" | "gap" | "range" | "volume20";
 type Operator = "gt" | "lt";
@@ -341,6 +343,8 @@ export function QuantWorkspace() {
   const [studies, setStudies] = useState<string[]>([]);
   const [llmUsage, setLlmUsage] = useState<LlmUsageReport | null>(null);
   const [llmUsageError, setLlmUsageError] = useState("");
+  const [newsActivity, setNewsActivity] = useState<AgentActivity | null>(null);
+  const [labActivity, setLabActivity] = useState<AgentActivity | null>(null);
 
   useEffect(() => {
     let savedMessages: ChatMessage[] = [];
@@ -552,6 +556,7 @@ export function QuantWorkspace() {
     { id: "backtest" as View, label: "Backtest", icon: FlaskConical },
     { id: "calendar" as View, label: "Calendar", icon: CalendarDays },
     { id: "news" as View, label: "News", icon: Newspaper },
+    { id: "lab" as View, label: "Lab", icon: FlaskConical },
     { id: "settings" as View, label: "Settings", icon: Settings },
   ];
 
@@ -564,6 +569,8 @@ export function QuantWorkspace() {
             <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)} aria-label={item.label} title={item.label}>
               <item.icon size={19} strokeWidth={1.8} />
               <span>{item.label}</span>
+              {item.id === "news" && newsActivity && <em className="rail-task-dot" title={newsActivity.detail}>{newsActivity.progress ?? "ON"}</em>}
+              {item.id === "lab" && labActivity && <em className="rail-task-dot" title={labActivity.detail}>{labActivity.progress ?? "ON"}</em>}
             </button>
           ))}
         </nav>
@@ -579,6 +586,10 @@ export function QuantWorkspace() {
             {symbols.map((item) => <button key={item.value} className={symbol === item.value ? "active" : ""} onClick={() => selectSymbol(item.value)}>{item.label}</button>)}
           </div>
           <div className="command-tools">
+            {(newsActivity || labActivity) && <div className="background-activities" aria-label="백그라운드 에이전트 작업">
+              {newsActivity && <button onClick={() => setView("news")}><i /><span><strong>{newsActivity.label}</strong><small>{newsActivity.detail}</small></span><b>{newsActivity.progress}</b></button>}
+              {labActivity && <button onClick={() => setView("lab")}><i /><span><strong>{labActivity.label}</strong><small>{labActivity.detail}</small></span><b>{labActivity.progress}</b></button>}
+            </div>}
             <button className="history-toggle" onClick={() => setHistoryOpen(true)} aria-label={`Agent history ${history.length} items`}><HistoryIcon size={13} /><span>History</span>{history.length > 0 && <b>{history.length}</b>}</button>
             <div className={`market-session ${marketSession.code}`} title={`America/New_York · ${marketSession.schedule} · DST 자동 반영`}>
               <i /><div><strong>{marketSession.label}</strong><small>{marketSession.time} {marketSession.zone}</small></div>
@@ -698,7 +709,13 @@ export function QuantWorkspace() {
 
         {view === "calendar" && <MarketCalendar />}
 
-        {view === "news" && <MarketNews onHistory={(event) => recordHistory("news", event.title, event.detail, "Google News")} />}
+        <div className={`persistent-view ${view === "news" ? "active" : "inactive"}`} aria-hidden={view !== "news"}>
+          <MarketNews onHistory={(event) => recordHistory("news", event.title, event.detail, "Google News")} onActivityChange={setNewsActivity} />
+        </div>
+
+        <div className={`persistent-view ${view === "lab" ? "active" : "inactive"}`} aria-hidden={view !== "lab"}>
+          <LabWorkspace onActivityChange={setLabActivity} />
+        </div>
 
         {view === "settings" && (
           <section className="simple-view">
@@ -724,7 +741,7 @@ export function QuantWorkspace() {
               <article><div><strong>Toss Securities</strong><p>브로커 현재가·호가·최근 체결·장 시간 · 읽기 전용</p></div><span className={brokerSnapshot?.available ? "connected" : "missing"}><i />{brokerSnapshot?.available ? "Connected" : brokerSnapshot?.code === "ip_allowlist" ? "IP allowlist" : "Fallback"}</span></article>
               <article><div><strong>Yahoo Finance</strong><p>조정 일봉 10년 · 토스 교차검증 및 자동 폴백</p></div><span className={providers?.yahoo.status === "connected" ? "connected" : "missing"}><i />{providers?.yahoo.status === "connected" ? "Connected" : "Unavailable"}</span></article>
               <article><div><strong>Analysis dataset</strong><p>우선순위 Toss → Yahoo · 자동 갱신 캐시 24시간</p></div><span className={rows.length ? "connected" : "missing"}><i />{rows.length ? dataSource : "Loading"}</span></article>
-              <article><div><strong>Claude Opus 4.7</strong><p>News JARVIS와 Market Agent · 호출별 실제 토큰 기록</p></div><span className="connected"><i />Connected</span></article>
+              <article><div><strong>Claude Opus 4.7</strong><p>News JARVIS, Lab Tool Agent와 Market Agent · 호출별 실제 토큰 기록</p></div><span className="connected"><i />Connected</span></article>
             </div>
           </section>
         )}

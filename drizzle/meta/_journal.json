@@ -29,6 +29,13 @@
       "when": 1788289484917,
       "tag": "0003_volatile_demogoblin",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1788350682872,
+      "tag": "0004_short_kulan_gath",
+      "breakpoints": true
     }
   ]
 }

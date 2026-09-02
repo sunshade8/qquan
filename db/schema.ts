@@ -126,3 +126,15 @@ export const llmUsage = sqliteTable("llm_usage", {
   index("idx_llm_usage_owner_created").on(table.ownerId, table.createdAt),
   index("idx_llm_usage_owner_model").on(table.ownerId, table.model),
 ]);
+
+export const labMessages = sqliteTable("lab_messages", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull(),
+  role: text("role").notNull(),
+  content: text("content").notNull(),
+  toolsPayload: text("tools_payload").notNull().default("[]"),
+  artifactsPayload: text("artifacts_payload").notNull().default("[]"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => [
+  index("idx_lab_messages_owner_created").on(table.ownerId, table.createdAt),
+]);

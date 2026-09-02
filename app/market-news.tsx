@@ -12,6 +12,7 @@ import Sparkles from "lucide-react/dist/esm/icons/sparkles";
 import X from "lucide-react/dist/esm/icons/x";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { NEWS_EVENT_DEFINITIONS, type ResearchStep, type ValidatedResearchPlan } from "@/lib/news-agent-plan";
+import type { AgentActivity } from "@/lib/lab-types";
 import { NewsSimilarity } from "./news-similarity";
 import type { MarketEvent } from "./market-calendar-data";
 
@@ -314,7 +315,7 @@ function DailyIndexChart({ index, events, variant }: { index: TestDetailIndex; e
   );
 }
 
-export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent) => void }) {
+export function MarketNews({ onHistory, onActivityChange }: { onHistory?: (event: NewsHistoryEvent) => void; onActivityChange?: (activity: AgentActivity | null) => void }) {
   const today = koreaDate();
   const [startDate, setStartDate] = useState(() => shiftDate(today, -2));
   const [endDate, setEndDate] = useState(today);
@@ -344,6 +345,14 @@ export function MarketNews({ onHistory }: { onHistory?: (event: NewsHistoryEvent
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
   const [comparison, setComparison] = useState<{ tests: NewsTest[]; excludedDuplicates: number } | null>(null);
+
+  useEffect(() => {
+    if (batchStatus) {
+      onActivityChange?.({ label: "News JARVIS", detail: `${batchStatus.phase} · ${batchStatus.label}`, progress: `${batchStatus.completed}/${batchStatus.total}` });
+      return;
+    }
+    onActivityChange?.(agentThinking ? { label: "News JARVIS", detail: "질문을 해석하고 실행 계획을 만드는 중", progress: "RUNNING" } : null);
+  }, [agentThinking, batchStatus, onActivityChange]);
 
   useEffect(() => {
     const controller = new AbortController();
