@@ -36,17 +36,20 @@ export function deterministicTestSummary(tests: ResearchTest[]) {
   });
   const nasdaq = usable.flatMap((test) => test.nasdaq === null ? [] : [test.nasdaq]);
   const nyse = usable.flatMap((test) => test.nyse === null ? [] : [test.nyse]);
-  const aligned = usable.filter((test) => test.nasdaq !== null && Math.sign(test.overallScore) === Math.sign(test.nasdaq) && Math.sign(test.overallScore) !== 0).length;
+  const sentimentComparable = usable.filter((test) => test.nasdaq !== null && Math.sign(test.overallScore) !== 0);
+  const aligned = sentimentComparable.filter((test) => Math.sign(test.overallScore) === Math.sign(test.nasdaq!)).length;
   return {
+    analysisAsOfDate: new Date().toISOString().slice(0, 10),
     totalTests: tests.length,
     usableTests: usable.length,
-    averageSentiment: average(tests.map((test) => test.overallScore)),
-    medianSentiment: median(tests.map((test) => test.overallScore)),
+    averageSentiment: average(usable.map((test) => test.overallScore)),
+    medianSentiment: median(usable.map((test) => test.overallScore)),
     averageNasdaqReturnPct: average(nasdaq),
     medianNasdaqReturnPct: median(nasdaq),
     averageNyseReturnPct: average(nyse),
-    signAlignmentRatePct: usable.length ? (aligned / usable.length) * 100 : null,
-    averageTechMinusValue: average(tests.map((test) => test.techScore - test.valueScore)),
+    signAlignmentRatePct: sentimentComparable.length ? (aligned / sentimentComparable.length) * 100 : null,
+    signAlignmentSampleSize: sentimentComparable.length,
+    averageTechMinusValue: average(usable.map((test) => test.techScore - test.valueScore)),
     rows: usable.map((test) => ({
       id: test.id, range: `${test.periodStart}→${test.periodEnd}`,
       event: test.forecastEvents?.[0]?.indicator ?? null,

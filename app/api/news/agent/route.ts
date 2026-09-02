@@ -65,6 +65,7 @@ function requestedHoldingSessions(question: string) {
 const hardRules = `Hard rules:
 - Use only supplied headlines, saved Test rows, and deterministic market calculations. Never invent article contents, prices, forecasts, or actual releases.
 - Keep the timeline strict: publication cutoff → ex-ante sentiment → scheduled release → ex-post return.
+- Treat the deterministic summary's analysisAsOfDate as today's date. An event is future only when its eventDate is later than analysisAsOfDate.
 - Association is not causation. Surface sample size, event overlap, timing, headline-only evidence, and look-ahead risks.
 - Do not present this as personalized financial advice or guarantee a return.`;
 
