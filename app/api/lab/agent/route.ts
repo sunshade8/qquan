@@ -24,6 +24,7 @@ const SYSTEM_PROMPT = `당신은 QQuant Lab의 JARVIS다. 사용자의 개인 �
 
 작동 원칙
 - 가격, 수익률, 상관, 지표, 백테스트, 뉴스, 일정처럼 데이터가 필요한 질문은 반드시 도구를 호출하고, 도구가 돌려준 숫자·날짜만 근거로 말한다.
+- 도구가 필요한 질문은 설명을 먼저 쓰지 말고 도구를 우선 호출한 다음, 모든 결과가 모인 뒤 최종 답변을 작성한다.
 - 여러 도구가 서로 독립적이면 한 번에 병렬로 호출한다.
 - 사용자가 차트를 원하면 Canvas에 차트가 그려지는 도구(get_price_history, compare_assets, technical_indicators, show_chart 등)를 사용하고 답변에서 짧게 참조한다. 숫자를 장황하게 나열하지 말고 핵심만 뽑는다.
 - 데이터가 없거나 도구가 실패하면 그 사실과 대안을 말한다. 추측으로 메우지 않는다.
@@ -51,6 +52,11 @@ function today() {
 function encodeEvent(event: LabStreamEvent) {
   return `data: ${JSON.stringify(event)}\n\n`;
 }
+
+// Some HTTP intermediaries buffer very small response chunks. A standards-safe
+// SSE comment makes the first flush large enough for live phase events to reach
+// the client before the model finishes.
+const SSE_PREAMBLE = `: ${" ".repeat(2048)}\n\n`;
 
 async function loadHistory(ownerId: string, conversationId: string): Promise<LabMessage[]> {
   try {
@@ -149,7 +155,7 @@ export async function POST(request: Request) {
   if (!question) return Response.json({ error: "질문이 필요합니다." }, { status: 400 });
   const ownerId = researchOwnerFrom(request);
   const conversationId = validConversationId(payload.conversationId) ? payload.conversationId : crypto.randomUUID();
-  const headers = { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store", connection: "keep-alive", "set-cookie": researchOwnerCookie(ownerId) };
+  const headers = { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-store, no-transform", "x-accel-buffering": "no", connection: "keep-alive", "set-cookie": researchOwnerCookie(ownerId) };
   if (!claudeConfigured()) {
     return new Response(encodeEvent({ type: "error", message: "Claude 서버 키가 연결되지 않았습니다.", status: 503 }), { status: 503, headers });
   }
@@ -158,15 +164,18 @@ export async function POST(request: Request) {
   const client = claudeClient();
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
-    async start(controller) {
+    start(controller) {
+      controller.enqueue(encoder.encode(SSE_PREAMBLE));
+      void (async () => {
       const emit = (event: LabStreamEvent) => controller.enqueue(encoder.encode(encodeEvent(event)));
       const userMessage: LabMessage = { id: crypto.randomUUID(), role: "user", content: question, tools: [], artifacts: [], createdAt: new Date().toISOString() };
-      emit({ type: "status", label: "종목 사실 확인", detail: "라이브 시장 데이터로 검증 중" });
+      emit({ type: "status", phase: "connecting", label: "요청 접수 완료", detail: "JARVIS 실행 세션을 열고 질문을 전달했습니다." });
+      emit({ type: "status", phase: "grounding", label: "종목 사실 확인", detail: "라이브 시장 데이터로 검증 중" });
       const [stored, grounded] = await Promise.all([loadHistory(ownerId, conversationId), groundEntities(question, ownerId)]);
       const priorHistory = stored.length ? stored : (payload.history ?? []).slice(-MAX_HISTORY).map((item, index): LabMessage => ({ id: `client-${index}`, role: item.role === "agent" ? "agent" : "user", content: String(item.content ?? ""), tools: [], artifacts: [], createdAt: new Date().toISOString() }));
       await persist(ownerId, conversationId, userMessage);
       const grounding = describeGrounding(grounded);
-      if (grounded.length) emit({ type: "status", label: "종목 확인 완료", detail: grounded.map((item) => item.symbol ? `${item.input}→${item.symbol}` : `${item.input}: 미확인`).join(", ") });
+      if (grounded.length) emit({ type: "status", phase: "grounding", label: "종목 확인 완료", detail: grounded.map((item) => item.symbol ? `${item.input}→${item.symbol}` : `${item.input}: 미확인`).join(", ") });
 
       const messages = historyToMessages(priorHistory);
       messages.push({ role: "user", content: grounding ? `${question}\n\n[시스템 사전 검증]\n${grounding}` : question });
@@ -177,8 +186,9 @@ export async function POST(request: Request) {
       const context = { ownerId, today: today(), conversationId };
 
       try {
-        emit({ type: "status", label: "질문 해석", detail: model });
+        emit({ type: "status", phase: "planning", label: "질문 해석·실행 계획", detail: "필요한 데이터와 분석 도구를 선택하고 있습니다." });
         for (let step = 0; step < MAX_STEPS; step += 1) {
+          if (step > 0) emit({ type: "status", phase: "verifying", label: "도구 결과 검증·해석", detail: `${traces.length}개 실행 결과를 질문과 대조하고 있습니다.` });
           const turn = client.messages.stream({
             model,
             max_tokens: 6000,
@@ -191,6 +201,17 @@ export async function POST(request: Request) {
             ...reasoningParams(model, "medium"),
           });
           let stepText = "";
+          let writingStarted = false;
+          turn.on("streamEvent", (event) => {
+            if (event.type !== "content_block_start") return;
+            if (event.content_block.type === "tool_use" || event.content_block.type === "server_tool_use") {
+              const name = "name" in event.content_block ? event.content_block.name : "도구";
+              emit({ type: "status", phase: "tools", label: `${TOOL_LABELS[name] ?? name} 준비`, detail: "분석에 필요한 입력값을 구성하고 있습니다." });
+            } else if (event.content_block.type === "text" && !writingStarted) {
+              writingStarted = true;
+              emit({ type: "status", phase: "writing", label: "답변 작성 중", detail: "검증된 숫자와 근거를 읽기 쉬운 답변으로 정리하고 있습니다." });
+            }
+          });
           turn.on("text", (delta) => { stepText += delta; emit({ type: "text", delta }); });
           const message = await turn.finalMessage();
           usages.push(usageOf(message));
@@ -200,12 +221,15 @@ export async function POST(request: Request) {
           if (message.stop_reason === "pause_turn") {
             // Server-side web search hit its iteration limit; resume with the same history.
             messages.push({ role: "assistant", content: message.content });
-            emit({ type: "status", label: "웹 검색 계속", detail: "서버 도구 재개" });
+            emit({ type: "status", phase: "tools", label: "웹 검색 계속", detail: "추가 검색 결과를 수집하고 있습니다." });
             continue;
           }
           const toolUses = message.content.filter((block): block is Anthropic.ToolUseBlock => block.type === "tool_use");
           if (message.stop_reason === "refusal") { answer = answer || "이 요청에는 답변할 수 없습니다."; break; }
-          if (!toolUses.length || message.stop_reason === "end_turn") break;
+          if (!toolUses.length || message.stop_reason === "end_turn") {
+            if (!writingStarted) emit({ type: "status", phase: "writing", label: "답변 마무리 중", detail: "최종 응답과 생성된 결과를 저장하고 있습니다." });
+            break;
+          }
 
           messages.push({ role: "assistant", content: message.content });
           if (stepText) emit({ type: "text", delta: "\n\n" });
@@ -231,7 +255,7 @@ export async function POST(request: Request) {
             }
           }));
           messages.push({ role: "user", content: results });
-          emit({ type: "status", label: "결과 해석", detail: `${traces.length}개 도구 완료` });
+          emit({ type: "status", phase: "verifying", label: "결과 종합", detail: `${traces.length}개 도구 결과를 교차 확인하고 있습니다.` });
         }
 
         const totalUsage = sumUsage(usages);
@@ -252,6 +276,10 @@ export async function POST(request: Request) {
       } finally {
         controller.close();
       }
+      })().catch((error) => {
+        console.error("[lab/agent] stream failed before completion", error instanceof Error ? error.message : error);
+        try { controller.error(error); } catch { /* stream is already closed */ }
+      });
     },
   });
   return new Response(stream, { headers });

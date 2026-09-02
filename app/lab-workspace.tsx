@@ -11,12 +11,11 @@ import Trash2 from "lucide-react/dist/esm/icons/trash-2";
 import X from "lucide-react/dist/esm/icons/x";
 import MessageSquarePlus from "lucide-react/dist/esm/icons/message-square-plus";
 import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
-import type { AgentActivity, LabArtifact, LabMessage, LabStreamEvent, LabToolTrace } from "@/lib/lab-types";
+import type { AgentActivity, LabAgentPhase, LabArtifact, LabMessage, LabStreamEvent, LabToolTrace } from "@/lib/lab-types";
 import { ArtifactView, artifactKindLabel, type StrategyAction } from "./lab-charts";
 import { Markdown } from "./markdown";
 
-type LivePhase = "connecting" | "grounding" | "planning" | "tools" | "verifying" | "writing";
-type LiveTurn = { text: string; tools: LabToolTrace[]; status: string; detail: string; phase: LivePhase };
+type LiveTurn = { text: string; tools: LabToolTrace[]; status: string; detail: string; phase: LabAgentPhase };
 
 const RUN_PHASES = [
   { id: "connecting", label: "요청 접수" },
@@ -26,7 +25,7 @@ const RUN_PHASES = [
   { id: "writing", label: "답변 작성" },
 ] as const;
 
-const PHASE_INDEX: Record<LivePhase, number> = { connecting: 0, grounding: 1, planning: 1, tools: 2, verifying: 3, writing: 4 };
+const PHASE_INDEX: Record<LabAgentPhase, number> = { connecting: 0, grounding: 1, planning: 1, tools: 2, verifying: 3, writing: 4 };
 
 const QUICK_PROMPTS = [
   "NVDA 최근 1년 차트와 핵심 지표 보여줘",
@@ -133,11 +132,8 @@ export function LabWorkspace({ conversationId, onConversationChange, onActivityC
   }, [messages, live?.text, live?.tools.length]);
 
   function applyEvent(event: LabStreamEvent) {
-    if (event.type === "status") setLive((current) => {
-      const phase: LivePhase = /종목|사실/.test(event.label) ? "grounding" : /결과|해석|종합/.test(event.label) ? "verifying" : /검색|도구/.test(event.label) ? "tools" : "planning";
-      return { text: current?.text ?? "", tools: current?.tools ?? [], status: event.label, detail: event.detail ?? "", phase };
-    });
-    else if (event.type === "text") setLive((current) => ({ text: `${current?.text ?? ""}${event.delta}`, tools: current?.tools ?? [], status: "답변 작성 중", detail: "검증된 숫자와 근거를 읽기 쉬운 답변으로 정리하고 있습니다.", phase: "writing" }));
+    if (event.type === "status") setLive((current) => ({ text: current?.text ?? "", tools: current?.tools ?? [], status: event.label, detail: event.detail ?? "", phase: event.phase }));
+    else if (event.type === "text") setLive((current) => ({ text: `${current?.text ?? ""}${event.delta}`, tools: current?.tools ?? [], status: current?.status ?? "답변 작성 중", detail: current?.detail ?? "검증된 숫자와 근거를 읽기 쉬운 답변으로 정리하고 있습니다.", phase: current?.phase ?? "writing" }));
     else if (event.type === "tool_start") setLive((current) => ({ text: current?.text ?? "", status: `${event.label} 실행 중`, detail: event.detail || "필요한 데이터를 불러오고 계산하고 있습니다.", phase: "tools", tools: [...(current?.tools ?? []), { id: event.id, name: event.name, label: event.label, status: "running", detail: event.detail }] }));
     else if (event.type === "tool_end") setLive((current) => {
       const tools = (current?.tools ?? []).map((tool) => tool.id === event.id ? { ...tool, status: event.status, detail: event.detail, durationMs: event.durationMs } : tool);

@@ -1,5 +1,6 @@
 export type LabToolTrace = { id?: string; name: string; label: string; status: "running" | "complete" | "failed"; detail: string; startedAt?: string; durationMs?: number };
 export type AgentActivity = { label: string; detail: string; progress?: string };
+export type LabAgentPhase = "connecting" | "grounding" | "planning" | "tools" | "verifying" | "writing";
 
 export type ChartPoint = { date: string; value: number };
 export type ChartSeries = { name: string; points: ChartPoint[]; color?: string; dashed?: boolean };
@@ -94,7 +95,7 @@ export type LabMessage = {
 
 /** Server-sent events emitted by /api/lab/agent while a turn runs. */
 export type LabStreamEvent =
-  | { type: "status"; label: string; detail?: string }
+  | { type: "status"; phase: LabAgentPhase; label: string; detail?: string }
   | { type: "text"; delta: string }
   | { type: "tool_start"; id: string; name: string; label: string; detail: string }
   | { type: "tool_end"; id: string; name: string; label: string; status: "complete" | "failed"; detail: string; durationMs: number }
