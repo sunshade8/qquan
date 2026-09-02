@@ -3,7 +3,7 @@ import { callClaude, ClaudeApiError } from "@/lib/anthropic";
 import { researchOwnerCookie, researchOwnerFrom } from "@/lib/research-owner";
 import { type PriceRow } from "../../../../lib/market-data";
 import { loadDailyRows } from "../../../../lib/price-cache";
-import { MARKET_CALENDAR_2026 } from "../../../market-calendar-data";
+import { MARKET_EVENT_CALENDAR } from "../../../market-calendar-data";
 
 type NewsArticle = { id: string; title: string; source: string; publishedAt: string; topic?: string; eventId?: string; eventTitle?: string; eventDate?: string; eventTimeET?: string; stage?: string };
 type Payload = { date?: string; start?: string; articles?: NewsArticle[] };
@@ -61,7 +61,7 @@ function upcomingEvents(date: string) {
   const end = new Date(`${date}T00:00:00Z`);
   end.setUTCDate(end.getUTCDate() + 3);
   const endDate = end.toISOString().slice(0, 10);
-  return MARKET_CALENDAR_2026.filter((event) => event.date >= date && event.date <= endDate && event.category !== "market")
+  return MARKET_EVENT_CALENDAR.filter((event) => event.date >= date && event.date <= endDate && event.category !== "market")
     .map((event) => ({ date: event.date, timeET: event.time, title: event.title, importance: event.importance }));
 }
 

@@ -1,6 +1,6 @@
 import { type PriceRow } from "../../../../lib/market-data";
 import { loadDailyRows } from "../../../../lib/price-cache";
-import { MARKET_CALENDAR_2026, MARKET_EVENT_CATEGORY_LABELS, type MarketEvent } from "../../../market-calendar-data";
+import { MARKET_EVENT_CALENDAR, MARKET_EVENT_CATEGORY_LABELS, type MarketEvent } from "../../../market-calendar-data";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -97,7 +97,7 @@ export async function GET(request: Request) {
     loadDailyRows("^IXIC", chartStart, chartEnd),
     loadDailyRows("^NYA", chartStart, chartEnd),
   ]);
-  const events = MARKET_CALENDAR_2026
+  const events = MARKET_EVENT_CALENDAR
     .filter((event) => event.date >= chartStart && event.date <= chartEnd && event.category !== "market")
     .map((event) => ({
       id: event.id,

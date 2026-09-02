@@ -1,11 +1,13 @@
 import { env } from "cloudflare:workers";
 import { callClaude, ClaudeApiError } from "@/lib/anthropic";
+import type { ValidatedResearchPlan } from "@/lib/news-agent-plan";
 import { deterministicTestSummary, runDeterministicEventBacktest, type ResearchTest } from "@/lib/news-research-agents";
 import { researchOwnerCookie, researchOwnerFrom } from "@/lib/research-owner";
 import { fetchYahooEventWindow, type EventWindow } from "../../../../lib/market-data";
 
 type AgentPayload = {
   question?: string;
+  plan?: ValidatedResearchPlan;
   context?: { retrieved?: unknown; headlines?: unknown[]; analysis?: unknown; tests?: unknown[] };
 };
 
@@ -47,6 +49,13 @@ function intentOf(question: string) {
   return "answer" as const;
 }
 
+function intentOfPlan(plan: ValidatedResearchPlan | undefined, question: string) {
+  if (plan?.requestedSteps.includes("run_backtest")) return "backtest" as const;
+  if (plan?.requestedSteps.includes("build_strategy")) return "strategy" as const;
+  if (plan?.requestedSteps.some((step) => step === "find_patterns" || step === "compare_tests")) return "patterns" as const;
+  return intentOf(question);
+}
+
 function scopedTestsForQuestion(question: string, tests: ResearchTest[]) {
   const dates = [...question.matchAll(/20\d{2}[-/.]\d{1,2}[-/.]\d{1,2}/g)].map((match) => match[0].replaceAll(/[/.]/g, "-").split("-").map((part, index) => index ? part.padStart(2, "0") : part).join("-"));
   if (dates.length < 2) return tests;
@@ -82,14 +91,15 @@ export async function POST(request: Request) {
   const context = payload.context ?? {};
   const tests = validTests(context.tests);
   const scopedTests = scopedTestsForQuestion(question, tests);
-  const intent = intentOf(question);
+  const intent = intentOfPlan(payload.plan, question);
   const specialists: Array<{ id: string; label: string; status: "complete" | "skipped" }> = [{ id: "router", label: "Request Router", status: "complete" }];
+  console.log("[news/agent] routed", { intent, plannedMode: payload.plan?.mode ?? null, testCount: tests.length, scopedTestCount: scopedTests.length });
 
   try {
     if (intent !== "answer") {
       if (scopedTests.length < 2) {
         return Response.json({
-          answer: `공통점을 검증하려면 선택 기간 안 서로 다른 발표일의 Test가 최소 2개 필요합니다. 현재 조건에 맞는 Test는 ${scopedTests.length}개입니다. 먼저 “최근 6개월 CPI 발표를 수집→분석→비교해줘”를 실행해 유효한 Test를 쌓아주세요.`,
+          answer: `요청한 분석에는 서로 다른 발표일의 유효 Test가 최소 2개 필요하지만 현재 조건에 맞는 Test는 ${scopedTests.length}개입니다. 기간을 임의로 바꾸거나 준비된 배치 명령을 실행하지 않았습니다. 같은 이벤트의 다른 발표일 Test를 더 만든 뒤 다시 요청해주세요.`,
           model, intent, specialists,
         }, { headers: { "set-cookie": researchOwnerCookie(ownerId) } });
       }
@@ -150,6 +160,7 @@ export async function POST(request: Request) {
     specialists.push({ id: "synthesis", label: "Research Synthesizer", status: "complete" });
     return Response.json({ answer: answer.text, model, intent, specialists }, { headers: { "set-cookie": researchOwnerCookie(ownerId) } });
   } catch (error) {
+    console.error("[news/agent] failed", { intent, error: error instanceof Error ? error.message : String(error) });
     const status = error instanceof ClaudeApiError ? error.status : 500;
     return Response.json({ error: error instanceof Error ? error.message : "News JARVIS 호출에 실패했습니다." }, { status, headers: { "set-cookie": researchOwnerCookie(ownerId) } });
   }

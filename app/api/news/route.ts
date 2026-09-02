@@ -1,4 +1,4 @@
-import { MARKET_CALENDAR_2026 } from "../../market-calendar-data";
+import { MARKET_EVENT_CALENDAR } from "../../market-calendar-data";
 
 type NewsTopic = "macro" | "forecast" | "fed" | "inflation" | "labor" | "markets";
 
@@ -183,7 +183,7 @@ function forecastMetadata(title: string, publishedAt: string) {
     day: "2-digit",
   }).format(new Date(publishedAt));
   const latest = shiftDate(publishedDate, 14);
-  const event = MARKET_CALENDAR_2026.find((item) => item.id.startsWith(`${root}-`) && item.date >= publishedDate && item.date <= latest);
+  const event = MARKET_EVENT_CALENDAR.find((item) => item.id.startsWith(`${root}-`) && item.date >= publishedDate && item.date <= latest);
   return event ? { eventId: root, eventTitle: event.title, eventDate: event.date, eventTimeET: event.time, stage: "pre_release_forecast" as const } : { eventId: root, stage: "pre_release_forecast" as const };
 }
 

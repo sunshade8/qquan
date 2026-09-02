@@ -441,7 +441,7 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .news-research-lab { width: 100%; max-width: 1340px; height: calc(100vh - 78px); min-height: 620px; margin: 12px auto 0; display: grid; grid-template-columns: minmax(520px,1fr) minmax(340px,390px); gap: 9px; }
 .news-test-panel, .news-agent-panel { min-width: 0; min-height: 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); overflow: hidden; }
 .news-test-panel { display: grid; grid-template-rows: 58px auto minmax(0,1fr) 30px; }
-.news-agent-panel { display: grid; grid-template-rows: 58px 34px auto auto minmax(0,1fr) 112px; }
+.news-agent-panel { display: grid; grid-template-rows: 58px 34px auto auto auto minmax(0,1fr) 112px; }
 .research-panel-head { padding: 0 12px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
 .research-panel-head > div { display: flex; align-items: center; gap: 8px; }
 .research-panel-head > div > div { display: grid; gap: 1px; }
@@ -485,6 +485,13 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .research-empty p { max-width: 300px; margin: 0; color: var(--secondary); font-size: 9px; line-height: 1.5; }
 .news-agent-context { padding: 0 12px; display: flex; align-items: center; gap: 5px; border-bottom: 1px solid var(--line); overflow-x: auto; }
 .news-agent-context span { flex: 0 0 auto; padding: 4px 6px; border-radius: 6px; color: var(--secondary); background: var(--panel-alt); font-size: 7px; }
+.agent-plan { padding: 9px 11px; display: grid; gap: 5px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.agent-plan header { display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 6.5px; letter-spacing: .08em; }
+.agent-plan header b { color: var(--accent); font-size: 7px; }
+.agent-plan > strong { color: var(--text); font-size: 9px; }
+.agent-plan > p { margin: 0; color: var(--secondary); font-size: 7px; }
+.agent-plan > div { display: flex; flex-wrap: wrap; gap: 4px; }
+.agent-plan > div span { padding: 3px 5px; border: 1px solid var(--line); border-radius: 5px; color: var(--secondary); background: var(--panel); font-size: 6.5px; }
 .agent-specialists { padding: 7px 10px; display: flex; align-items: center; gap: 5px; overflow-x: auto; border-bottom: 1px solid var(--line); }
 .agent-specialists span { flex: 0 0 auto; padding: 4px 6px; display: flex; align-items: center; gap: 4px; border-radius: 6px; color: var(--secondary); background: var(--panel-alt); font-size: 6.5px; }
 .agent-specialists i { width: 4px; height: 4px; border-radius: 50%; background: var(--green); }

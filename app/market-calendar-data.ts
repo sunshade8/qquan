@@ -21,11 +21,21 @@ const series = (dates: string[], event: SeriesOptions): MarketEvent[] => dates.m
 }));
 
 const bls = "https://www.bls.gov/schedule/2026/";
+const bls2025 = "https://www.bls.gov/schedule/2025/";
 const bea = "https://www.bea.gov/news/schedule/full";
 const fed = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm";
 const ism = "https://www.ismworld.org/supply-management-news-and-reports/reports/rob-report-calendar/";
 const nyse = "https://www.nyse.com/markets/hours-calendars";
 const adp = "https://adpemploymentreport.com/";
+
+const MARKET_CALENDAR_2025_RESEARCH: MarketEvent[] = [
+  ...series([
+    "2025-01-15", "2025-02-12", "2025-03-12", "2025-04-10", "2025-05-13", "2025-06-11",
+    "2025-07-15", "2025-08-12", "2025-09-11", "2025-10-24", "2025-12-18",
+  ], {
+    id: "cpi", time: "08:30", title: "미국 소비자물가지수 (CPI)", note: "소비자 물가 · 연준 금리 경로", category: "inflation", source: "BLS", sourceUrl: bls2025, importance: "high",
+  }),
+];
 
 export const MARKET_CALENDAR_2026: MarketEvent[] = [
   ...series([
@@ -97,6 +107,10 @@ export const MARKET_CALENDAR_2026: MarketEvent[] = [
     id: "nyse-early-close", time: "13:00", title: "NYSE 조기 종료", note: "미국 주식시장 오후 1시 종료", category: "market", source: "NYSE", sourceUrl: nyse, importance: "medium",
   }),
 ].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time) || a.title.localeCompare(b.title));
+
+// Research spans years, while the visual calendar remains the curated 2026 view.
+export const MARKET_EVENT_CALENDAR: MarketEvent[] = [...MARKET_CALENDAR_2025_RESEARCH, ...MARKET_CALENDAR_2026]
+  .sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time) || a.title.localeCompare(b.title));
 
 export const MARKET_EVENT_CATEGORY_LABELS: Record<MarketEventCategory, string> = {
   fed: "연준",
