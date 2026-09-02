@@ -96,8 +96,49 @@ is only used where it matters:
 | Tier | Env override | Default | Roles |
 | --- | --- | --- | --- |
 | frontier | `ANTHROPIC_MODEL` (or OpenAI, below) | `claude-opus-4-7` | Lab JARVIS orchestrator, News synthesizer, strategy builder |
-| balanced | `ANTHROPIC_MODEL_BALANCED` | `claude-sonnet-5` | headline sentiment analyst, pattern analyst, similarity auditor, request planner |
+| counter | — (derived) | opposite provider's frontier | challenger — reviews frontier output |
+| balanced | `ANTHROPIC_MODEL_BALANCED` | `claude-sonnet-5` | headline sentiment analyst, request planner, and the auditor roles — pattern analyst, similarity auditor, Lab sweep judge, Lab result auditor |
 | fast | `ANTHROPIC_MODEL_FAST` | `claude-haiku-4-5` | routing, summarisation |
+
+Tiers follow the cost of being wrong rather than call volume, with one deliberate exception. The
+`auditor` role decides whether an effect is real and tries to break the orchestrator's
+conclusions — the most consequential judgement in the app — yet it stays on `balanced`. That is
+not a cost decision. The frontier tier can be served by the same provider as the orchestrator, and
+an auditor running the same model as the author it reviews shares that author's blind spots.
+Pinning it to `balanced` guarantees a different model and a fresh context; promoting it to
+`frontier` while `LLM_FRONTIER_PROVIDER=openai` would make the reviewer and the reviewed the same
+model and quietly defeat the review.
+
+The `counter` tier exists for the same reason one level up. `orchestrator`, `synthesizer` and
+`strategist` all sit on `frontier`, which resolves to a single model id — so any review one of
+them performs on another's work is self-review under a different prompt. `counter` is defined as
+*whichever vendor does not serve frontier*: with `LLM_FRONTIER_PROVIDER=openai` the frontier roles
+run GPT-5.5 and the `challenger` runs `claude-opus-4-7`; flip the provider and the pairing flips
+with it. When Anthropic holds frontier and no OpenAI key exists, `counter` falls back to the
+balanced model — still a different model id, which is the property the tier guarantees.
+`challengerIsIndependent()` asserts that invariant at call time rather than assuming it, and every
+review artifact prints which model reviewed which.
+
+Two things are reviewed there, because nothing else covered them:
+
+- **A strategy spec**, via `challengeStrategy` — whether `entry`/`exit` actually implement the
+  stated `mechanism`, whether `successCriteria` were set to be easy, and whether `falsification`
+  is a real observable or a vacuous sentence.
+- **A final synthesised answer**, via `challengeSynthesis` in the News research pipeline —
+  overclaims, numbers absent from the evidence, and caveats the evidence carried but the answer
+  dropped. A non-`accurate` verdict is appended to the answer rather than hidden.
+
+### Success criteria are floored, not author-supplied
+
+`successCriteria` arrives from the same model that wrote the rule, so the author used to set its
+own passing grade. Worse, the verdict counts failures against the number of checks that ran, and
+`maxDrawdownPct` / `minWinRatePct` were only checked when supplied — so *omitting* a criterion
+both removed a check and made the remaining failures less likely to reach `fail`. `applyCriteriaFloors`
+(`lib/strategy.ts`) now clamps `minSharpe`, `minExcessCagrPct`, `minTrades` and `maxDrawdownPct` to
+a system minimum that an author may tighten but never loosen, records every clamp in the spec
+notes so the adjustment is visible, and keeps the check count stable regardless of what was
+proposed. `minWinRatePct` stays optional on purpose: trend-following rules are expected to win
+less than half their trades.
 
 Set `LLM_FRONTIER_PROVIDER=openai` (plus `OPENAI_API_KEY`, `OPENAI_MODEL=gpt-5.5`,
 `OPENAI_REASONING_EFFORT=xhigh`) to run the frontier tier on OpenAI GPT-5.5 Thinking through the
@@ -140,7 +181,7 @@ needs a symbol the user already named:
   per-symbol pattern testable — 3 occurrences on one ticker prove nothing, 700 across 30 do. The
   reported t-statistic uses overlapping windows, so it is a screening signal, not a p-value.
 - **`sweep_conditions`** runs the same condition across a threshold x horizon grid and hands the
-  grid to a balanced-tier analyst that judges whether the effect survives its neighbours or is one
+  grid to the balanced-tier auditor that judges whether the effect survives its neighbours or is one
   lucky cell. `conditional_stats` gives a point; this gives the surface.
 - **`audit_result`** sends a claim plus its evidence to a balanced-tier auditor in a *separate*
   context, whose only job is to break it — effective sample size under overlapping windows,
@@ -154,7 +195,7 @@ needs a symbol the user already named:
   research accumulates across conversations instead of dying with the thread.
 
 The orchestrator delegates rather than doing everything itself. `sweep_conditions` and
-`audit_result` run on the balanced tier (`analyst` / `auditor`), and oversized tool payloads are
+`audit_result` both run on the balanced tier under the `auditor` role, and oversized tool payloads are
 compressed by the fast tier (`summarizer`) instead of being cut mid-JSON — hard truncation used to
 hand the orchestrator malformed JSON with a silently missing tail. Because all three are ordinary
 Lab tools, the Anthropic and OpenAI orchestrator loops pick them up identically.

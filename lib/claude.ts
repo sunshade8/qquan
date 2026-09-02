@@ -9,6 +9,7 @@ import {
   frontierProvider,
   generateStructuredOpenAI,
   generateTextOpenAI,
+  openaiConfigured,
   openaiFrontierModel,
 } from "@/lib/openai";
 
@@ -21,27 +22,39 @@ import {
  * (headline scoring, auditing, routing, summarising) runs on cheaper tiers.
  */
 
-export type ModelTier = "frontier" | "balanced" | "fast";
+export type ModelTier = "frontier" | "counter" | "balanced" | "fast";
 export type ModelRole =
   | "orchestrator" // Lab JARVIS: multi-step tool loop
   | "synthesizer" // final user-facing research answer
   | "strategist" // turns evidence into a falsifiable trading rule
-  | "analyst" // headline sentiment scoring (structured)
-  | "auditor" // adversarial checks on the analyst's output
+  | "challenger" // frontier-strength review of frontier output, on a guaranteed different model
+  | "analyst" // high-volume mechanical scoring (headline sentiment)
+  | "auditor" // judging evidence: overfitting, counter-examples, breaking a claim
   | "planner" // request → execution plan (structured)
   | "router" // cheap intent classification
   | "summarizer"; // compress tool output / conversation memory
 
 const TIER_DEFAULTS: Record<ModelTier, string> = {
   frontier: "claude-opus-4-7",
+  counter: "claude-opus-4-7",
   balanced: "claude-sonnet-5",
   fast: "claude-haiku-4-5",
 };
 
+/**
+ * Tiers are chosen by the cost of being wrong, not by volume — with one
+ * deliberate exception. `auditor` judges whether an effect is real and tries to
+ * break the orchestrator's conclusions, which is the most consequential work in
+ * the app, yet it stays on `balanced`. That is not a cost decision: the frontier
+ * tier can be served by the same provider as the orchestrator, and an auditor
+ * running the same model as the author it reviews shares its blind spots.
+ * Keeping it on balanced guarantees a different model and a fresh context.
+ */
 export const ROLE_TIERS: Record<ModelRole, ModelTier> = {
   orchestrator: "frontier",
   synthesizer: "frontier",
   strategist: "frontier",
+  challenger: "counter",
   analyst: "balanced",
   auditor: "balanced",
   planner: "balanced",
@@ -53,8 +66,9 @@ export const ROLE_DESCRIPTIONS: Record<ModelRole, string> = {
   orchestrator: "Lab JARVIS · 도구 선택과 다단계 리서치 실행",
   synthesizer: "News JARVIS · 최종 결론 합성",
   strategist: "전략 설계 · 반증 가능한 규칙 작성",
-  analyst: "헤드라인 감성 채점 (구조화 출력)",
-  auditor: "패턴 감사 · 반례 탐색",
+  challenger: "프론티어 산출물 교차 검증 · 작성자와 다른 모델 보장",
+  analyst: "헤드라인 감성 채점 · 대량 기계 분류 (구조화 출력)",
+  auditor: "증거 판정 · 과최적화·반례 탐색·결론 반증",
   planner: "요청 해석 · 실행 계획 (구조화 출력)",
   router: "의도 분류",
   summarizer: "도구 결과·대화 압축",
@@ -71,15 +85,44 @@ function envValue(key: string) {
   return runtimeEnv()[key] ?? process.env[key];
 }
 
+/**
+ * Which vendor serves a tier. This is the single source of truth for routing —
+ * `generateText` and `generateStructured` both branch on it, so a tier can never
+ * be sent to a client that does not serve it.
+ *
+ * `counter` is defined as "not whoever serves frontier". When frontier is
+ * OpenAI, counter is Anthropic; when frontier is Anthropic, counter is OpenAI
+ * if a key exists, and otherwise falls back to Anthropic's *balanced* model —
+ * still a different model id than the Anthropic frontier, which is the property
+ * the tier exists to guarantee.
+ */
+export function providerForTier(tier: ModelTier): "OpenAI" | "Anthropic" {
+  if (tier === "frontier") return frontierProvider() === "openai" ? "OpenAI" : "Anthropic";
+  if (tier === "counter") return frontierProvider() === "openai" ? "Anthropic" : openaiConfigured() ? "OpenAI" : "Anthropic";
+  return "Anthropic";
+}
+
 export function modelForTier(tier: ModelTier) {
-  // The frontier tier can be served by OpenAI (GPT-5.5 Thinking); balanced/fast stay on Anthropic.
-  if (tier === "frontier" && frontierProvider() === "openai") return openaiFrontierModel();
+  if (providerForTier(tier) === "OpenAI") return openaiFrontierModel();
+  if (tier === "counter") {
+    // Anthropic serves counter either as its frontier (when GPT holds frontier)
+    // or as balanced (when Anthropic already holds frontier and OpenAI has no key).
+    return frontierProvider() === "openai"
+      ? envValue("ANTHROPIC_MODEL")?.trim() || TIER_DEFAULTS.frontier
+      : envValue("ANTHROPIC_MODEL_BALANCED")?.trim() || TIER_DEFAULTS.balanced;
+  }
   const override = tier === "frontier" ? envValue("ANTHROPIC_MODEL") : tier === "balanced" ? envValue("ANTHROPIC_MODEL_BALANCED") : envValue("ANTHROPIC_MODEL_FAST");
   return override?.trim() || TIER_DEFAULTS[tier];
 }
 
-export function providerForTier(tier: ModelTier): "OpenAI" | "Anthropic" {
-  return tier === "frontier" && frontierProvider() === "openai" ? "OpenAI" : "Anthropic";
+/**
+ * The invariant the `counter` tier exists to hold: a challenger must never be
+ * the same model as the author it reviews. Callers assert this rather than
+ * assume it, because a future env change (pointing ANTHROPIC_MODEL_BALANCED at
+ * the frontier model, say) could silently collapse the two.
+ */
+export function challengerIsIndependent() {
+  return modelForTier("counter") !== modelForTier("frontier");
 }
 
 export function modelForRole(role: ModelRole) {
@@ -170,7 +213,7 @@ export type TextCall = {
 
 /** One-shot text generation. Uses streaming under the hood so long outputs never hit HTTP timeouts. */
 export async function generateText(call: TextCall) {
-  if (ROLE_TIERS[call.role] === "frontier" && frontierProvider() === "openai") return generateTextOpenAI(call);
+  if (providerForTier(ROLE_TIERS[call.role]) === "OpenAI") return generateTextOpenAI(call);
   const model = modelForRole(call.role);
   const client = claudeClient();
   const messages = call.messages ?? [{ role: "user", content: call.prompt ?? "" }];
@@ -197,7 +240,7 @@ export type StructuredCall<T extends z.ZodType> = Omit<TextCall, "maxTokens"> & 
 
 /** Structured generation validated against a Zod schema via output_config.format. */
 export async function generateStructured<T extends z.ZodType>(call: StructuredCall<T>): Promise<{ data: z.infer<T>; model: string; usage: AnthropicUsage; costUsd: number | null }> {
-  if (ROLE_TIERS[call.role] === "frontier" && frontierProvider() === "openai") return generateStructuredOpenAI(call);
+  if (providerForTier(ROLE_TIERS[call.role]) === "OpenAI") return generateStructuredOpenAI(call);
   const model = modelForRole(call.role);
   const client = claudeClient();
   const messages = call.messages ?? [{ role: "user", content: call.prompt ?? "" }];

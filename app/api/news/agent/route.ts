@@ -1,4 +1,5 @@
 import { claudeConfigured, describeClaudeError, generateText, modelForRole, type ModelRole } from "@/lib/claude";
+import { challengeSynthesis, describeChallengerPairing, SYNTHESIS_VERDICT_LABELS } from "@/lib/challenger";
 import type { ValidatedResearchPlan } from "@/lib/news-agent-plan";
 import { deterministicTestSummary, runDeterministicEventBacktest, type ResearchTest } from "@/lib/news-research-agents";
 import { researchOwnerCookie, researchOwnerFrom } from "@/lib/research-owner";
@@ -88,6 +89,7 @@ const SPECIALIST_LABELS: Record<string, { label: string; role: ModelRole }> = {
   pattern: { label: "Pattern Analyst", role: "auditor" },
   similarity: { label: "Similarity Auditor", role: "auditor" },
   backtest: { label: "Backtest Engine", role: "router" },
+  challenge: { label: "Independent Challenger", role: "challenger" },
   strategy: { label: "Strategy Builder", role: "strategist" },
   synthesis: { label: "Research Synthesizer", role: "synthesizer" },
 };
@@ -178,7 +180,20 @@ export async function POST(request: Request) {
             messages: [...historyMessages(payload.history), { role: "user", content: `User request: ${question}\nDeterministic summary: ${JSON.stringify(summary)}\nPattern evidence: ${evidence}\nIndependent audit: ${audit}\nStrategy draft: ${strategyDraft || "not requested"}\nBacktest result: ${JSON.stringify(backtest)}` }],
           });
           mark("synthesis", "complete");
-          done(synthesis.text, { artifacts: { summary, backtest } });
+          // The synthesizer shares the frontier model with the strategist that
+          // fed it, so the only genuinely independent check on the final answer
+          // runs on the counter tier.
+          mark("challenge", "running");
+          const challenge = await challengeSynthesis({
+            answer: synthesis.text, question,
+            evidence: { deterministicSummary: summary, patternEvidence: evidence, independentAudit: audit, strategyDraft: strategyDraft || null, backtest },
+            ownerId, feature: "news.synthesis_challenger",
+          });
+          mark("challenge", challenge.ok ? "complete" : "failed");
+          const answerWithChallenge = challenge.ok && challenge.data.verdict !== "accurate"
+            ? `${synthesis.text}\n\n---\n\n**독립 심사 (${SYNTHESIS_VERDICT_LABELS[challenge.data.verdict]}) · ${describeChallengerPairing(challenge.independent)}**\n\n${challenge.data.headline}\n${challenge.data.overclaims.map((item) => `- 과장: ${item}`).join("\n")}\n${challenge.data.unsupportedNumbers.map((item) => `- 근거 없는 수치: ${item}`).join("\n")}\n${challenge.data.missingCaveats.map((item) => `- 누락된 한계: ${item}`).join("\n")}\n\n심사관 권고 신뢰도: **${challenge.data.suggestedConfidence}**`
+            : synthesis.text;
+          done(answerWithChallenge, { artifacts: { summary, backtest, challenge: challenge.ok ? challenge.data : null } });
           return;
         }
 

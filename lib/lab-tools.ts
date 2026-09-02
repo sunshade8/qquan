@@ -21,9 +21,10 @@ import {
   type PooledCondition, type ScreenCandidate, type ScreenFilter, type ScreenMetric, type ScreenRank,
 } from "@/lib/screener";
 import { auditResult, interpretSweep, AUDIT_RISK_LABELS, AUDIT_VERDICT_LABELS } from "@/lib/lab-specialists";
+import { challengeStrategy, describeChallengerPairing, RISK_LABELS, STRATEGY_VERDICT_LABELS, type StrategyChallenge } from "@/lib/challenger";
 import { FINDING_CONFIDENCE_LABELS, FINDING_STATUS_LABELS } from "@/lib/findings";
 import { listFindings, saveFinding } from "@/lib/findings-store";
-import { describeSpec, normalizeSpec, presetConditions, type BacktestResult } from "@/lib/strategy";
+import { describeSpec, normalizeSpec, presetConditions, type BacktestResult, type StrategySpec } from "@/lib/strategy";
 import { backtestSpec, getStrategy, listStrategies, runAndRecord, saveStrategy, STRATEGY_STATUS_LABELS } from "@/lib/strategy-store";
 
 export type ToolContext = { ownerId: string; today: string; conversationId?: string | null };
@@ -769,16 +770,58 @@ function compactResult(result: BacktestResult) {
   return { period: result.period, metrics: result.metrics, verdict: result.verdict, robustness: { inSample: result.robustness.inSample, outOfSample: result.robustness.outOfSample, perturbations: result.robustness.perturbations, stabilityScore: result.robustness.stabilityScore }, perSymbol: result.perSymbol.map((item) => { const { equity, ...rest } = item; void equity; return rest; }), recentTrades: result.trades.slice(-10), missingSymbols: result.missingSymbols };
 }
 
+/**
+ * Independent review of a strategy spec, rendered as an artifact.
+ *
+ * The strategist and the orchestrator are the same frontier model, so this runs
+ * on the `counter` tier to guarantee a different reviewer than the author.
+ */
+async function strategyChallengeArtifact(spec: StrategySpec, backtest: BacktestResult | null, ownerId: string): Promise<{ artifact: LabArtifact; challenge: StrategyChallenge } | { skipped: string }> {
+  const review = await challengeStrategy({ spec, backtest, ownerId });
+  if (!review.ok) return { skipped: review.reason };
+  const challenge = review.data;
+  return {
+    challenge,
+    artifact: {
+      id: id(), type: "table", title: `전략 심사 · ${STRATEGY_VERDICT_LABELS[challenge.verdict]}`,
+      subtitle: describeChallengerPairing(review.independent),
+      columns: ["항목", "심사 결과"],
+      rows: [
+        ["판정", `${STRATEGY_VERDICT_LABELS[challenge.verdict]} — ${challenge.headline}`],
+        ["메커니즘 정합성", challenge.mechanismMatch],
+        ["통과 기준 공정성", challenge.criteriaFairness],
+        ["반증 가능성", challenge.falsifiabilityCheck],
+        ["과최적화 위험", RISK_LABELS[challenge.overfittingRisk]],
+        ["누락된 리스크", challenge.missingRisks.join(" / ") || "—"],
+        ["결정적 검증", challenge.decisiveTest],
+      ],
+      notes: ["전략을 작성한 모델과 다른 모델이 독립 컨텍스트에서 검토했습니다."],
+    },
+  };
+}
+
 async function proposeStrategy(input: Input, context: ToolContext): Promise<ToolOutcome> {
   const { spec, errors } = specFromToolInput(input, context);
   if (!spec) return { result: { ok: false, errors }, artifacts: [], trace: { name: "propose_strategy", label: "전략 제안", status: "failed", detail: errors.join(" ") } };
   const artifacts: LabArtifact[] = [{ id: id(), type: "strategy-proposal", title: `전략 제안 · ${spec.name}`, spec: spec as unknown as Record<string, unknown>, summary: describeSpec(spec), strategyId: null, status: null, notes: ["Backtest 화면에 저장하려면 카드의 버튼을 누르거나 JARVIS에게 저장을 요청", "가설 → 규칙 → 백테스트 → 반증 순서로 검증"] }];
   let run: ReturnType<typeof compactResult> | null = null;
+  let result: BacktestResult | null = null;
   if (input.runNow) {
     const outcome = await backtestSpec(spec);
-    if (outcome.result) { artifacts.push(backtestArtifact(outcome.result, null)); run = compactResult(outcome.result); }
+    if (outcome.result) { result = outcome.result; artifacts.push(backtestArtifact(outcome.result, null)); run = compactResult(outcome.result); }
   }
-  return { result: { ok: true, spec, summary: describeSpec(spec), backtest: run, nextStep: "사용자에게 Backtest 화면에 저장할지 물어보고, 동의하면 save_strategy를 호출" }, artifacts, trace: { name: "propose_strategy", label: `전략 제안 · ${spec.name}`, status: "complete", detail: `${spec.universe.join(", ")} · ${describeSpec(spec).entry}` } };
+  const review = await strategyChallengeArtifact(spec, result, context.ownerId);
+  if ("artifact" in review) artifacts.push(review.artifact);
+  return {
+    result: {
+      ok: true, spec, summary: describeSpec(spec), backtest: run,
+      challenge: "challenge" in review ? review.challenge : null,
+      challengeSkipped: "skipped" in review ? review.skipped : null,
+      nextStep: "심사 결과를 사용자에게 전달하고, 결함이 지적됐으면 사양을 고친 뒤 저장 여부를 묻는다. 동의하면 save_strategy를 호출",
+    },
+    artifacts,
+    trace: { name: "propose_strategy", label: `전략 제안 · ${spec.name}`, status: "complete", detail: `${spec.universe.join(", ")} · ${describeSpec(spec).entry}` },
+  };
 }
 
 async function saveStrategyTool(input: Input, context: ToolContext): Promise<ToolOutcome> {
@@ -788,12 +831,24 @@ async function saveStrategyTool(input: Input, context: ToolContext): Promise<Too
     let stored = await saveStrategy(context.ownerId, spec, { sourceConversationId: context.conversationId ?? null });
     const artifacts: LabArtifact[] = [];
     let run: ReturnType<typeof compactResult> | null = null;
+    let ran: BacktestResult | null = null;
     if (input.runNow) {
       const outcome = await runAndRecord(context.ownerId, stored);
-      if (outcome.result) { stored = outcome.strategy ?? stored; artifacts.push(backtestArtifact(outcome.result, stored.id)); run = compactResult(outcome.result); }
+      if (outcome.result) { ran = outcome.result; stored = outcome.strategy ?? stored; artifacts.push(backtestArtifact(outcome.result, stored.id)); run = compactResult(outcome.result); }
     }
     artifacts.unshift({ id: id(), type: "strategy-proposal", title: `저장됨 · ${spec.name}`, spec: spec as unknown as Record<string, unknown>, summary: describeSpec(spec), strategyId: stored.id, status: stored.status, notes: ["Backtest 화면에서 기간·비용을 바꿔 다시 실행하고 실거래 시그널을 확인할 수 있음"] });
-    return { result: { ok: true, strategyId: stored.id, status: stored.status, statusLabel: STRATEGY_STATUS_LABELS[stored.status], backtest: run }, artifacts, trace: { name: "save_strategy", label: `전략 저장 · ${spec.name}`, status: "complete", detail: `Backtest에 저장 (${STRATEGY_STATUS_LABELS[stored.status]})` } };
+    const review = await strategyChallengeArtifact(spec, ran, context.ownerId);
+    if ("artifact" in review) artifacts.push(review.artifact);
+    return {
+      result: {
+        ok: true, strategyId: stored.id, status: stored.status, statusLabel: STRATEGY_STATUS_LABELS[stored.status], backtest: run,
+        challenge: "challenge" in review ? review.challenge : null,
+        challengeSkipped: "skipped" in review ? review.skipped : null,
+        instruction: "심사 판정이 flawed 또는 unfalsifiable이면 저장됐다는 사실과 함께 지적된 결함을 사용자에게 반드시 전달한다.",
+      },
+      artifacts,
+      trace: { name: "save_strategy", label: `전략 저장 · ${spec.name}`, status: "complete", detail: `Backtest에 저장 (${STRATEGY_STATUS_LABELS[stored.status]})` },
+    };
   } catch (error) {
     const reason = error instanceof Error ? error.message : "전략 저장 실패";
     return { result: { ok: false, reason }, artifacts: [], trace: { name: "save_strategy", label: "전략 저장", status: "failed", detail: reason } };

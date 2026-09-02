@@ -26,6 +26,45 @@ export type StrategyHypothesis = {
 
 export type SuccessCriteria = { minSharpe?: number; minExcessCagrPct?: number; maxDrawdownPct?: number; minTrades?: number; minWinRatePct?: number };
 
+/**
+ * Minimum bar a strategy must clear, regardless of what its author proposed.
+ *
+ * `successCriteria` arrives from the same model that wrote the rule, so without
+ * a floor the author sets its own passing grade — and because the verdict counts
+ * failures against the number of checks that ran, *omitting* a criterion both
+ * removed a check and made the remaining failures less likely to reach "fail".
+ * These floors can only be tightened by the author, never loosened, and every
+ * clamp is recorded in the spec notes so the adjustment is visible rather than
+ * silent.
+ *
+ * `minWinRatePct` is deliberately absent: trend-following rules are expected to
+ * win less than half their trades, so a universal win-rate floor would reject
+ * sound strategies. It stays optional and is checked only when proposed.
+ */
+export const CRITERIA_FLOORS = { minSharpe: 0.5, minExcessCagrPct: 0, maxDrawdownPct: 40, minTrades: 10 } as const;
+
+export function applyCriteriaFloors(proposed: SuccessCriteria): { criteria: SuccessCriteria; adjustments: string[] } {
+  const criteria: SuccessCriteria = { ...proposed };
+  const adjustments: string[] = [];
+  const tighten = (key: "minSharpe" | "minExcessCagrPct" | "minTrades", label: string) => {
+    const floor = CRITERIA_FLOORS[key];
+    const value = criteria[key];
+    if (value === undefined) { criteria[key] = floor; return; }
+    if (value < floor) { criteria[key] = floor; adjustments.push(`통과 기준 조정: ${label} ${value} → ${floor} (시스템 최소 기준)`); }
+  };
+  tighten("minSharpe", "최소 샤프");
+  tighten("minExcessCagrPct", "최소 초과 CAGR(%p)");
+  tighten("minTrades", "최소 거래 수");
+  // Drawdown is a cap, so "tighter" means a smaller allowed loss.
+  const drawdown = criteria.maxDrawdownPct === undefined ? undefined : Math.abs(criteria.maxDrawdownPct);
+  if (drawdown === undefined) criteria.maxDrawdownPct = CRITERIA_FLOORS.maxDrawdownPct;
+  else if (drawdown > CRITERIA_FLOORS.maxDrawdownPct) {
+    criteria.maxDrawdownPct = CRITERIA_FLOORS.maxDrawdownPct;
+    adjustments.push(`통과 기준 조정: 최대 허용 낙폭 ${drawdown}% → ${CRITERIA_FLOORS.maxDrawdownPct}% (시스템 최소 기준)`);
+  } else criteria.maxDrawdownPct = drawdown;
+  return { criteria, adjustments };
+}
+
 export type StrategySpec = {
   version: 1;
   name: string;
@@ -401,14 +440,15 @@ export function normalizeSpec(input: unknown, today: string): { spec: StrategySp
   defaultFrom.setUTCFullYear(defaultFrom.getUTCFullYear() - 5);
   const from = isDate(periodRaw.from) && periodRaw.from < to ? periodRaw.from : defaultFrom.toISOString().slice(0, 10);
   const criteriaRaw = (raw.successCriteria && typeof raw.successCriteria === "object" ? raw.successCriteria : {}) as Record<string, unknown>;
-  const criteria: SuccessCriteria = {};
-  for (const key of ["minSharpe", "minExcessCagrPct", "maxDrawdownPct", "minTrades", "minWinRatePct"] as const) { const value = optionalNumber(criteriaRaw[key]); if (value !== null) criteria[key] = value; }
+  const proposed: SuccessCriteria = {};
+  for (const key of ["minSharpe", "minExcessCagrPct", "maxDrawdownPct", "minTrades", "minWinRatePct"] as const) { const value = optionalNumber(criteriaRaw[key]); if (value !== null) proposed[key] = value; }
+  const { criteria, adjustments } = applyCriteriaFloors(proposed);
   const spec: StrategySpec = {
     version: 1, name: text(raw.name, "이름 없는 전략").slice(0, 80), hypothesis, universe, benchmark: text(raw.benchmark, "SPY").toUpperCase(),
     entry, exit, holding: { maxSessions: optionalNumber(holdingRaw.maxSessions), stopLossPct: optionalNumber(holdingRaw.stopLossPct), takeProfitPct: optionalNumber(holdingRaw.takeProfitPct) },
     sizing: { mode: "equal_weight", positionPct: optionalNumber((raw.sizing as Record<string, unknown> | undefined)?.positionPct) },
     costBps: Math.max(0, optionalNumber(raw.costBps) ?? 5), period: { from, to }, successCriteria: criteria,
-    notes: Array.isArray(raw.notes) ? raw.notes.map(String).slice(0, 8) : [],
+    notes: [...(Array.isArray(raw.notes) ? raw.notes.map(String).slice(0, 8) : []), ...adjustments],
   };
   return { spec: errors.length ? null : spec, errors };
 }

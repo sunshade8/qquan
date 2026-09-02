@@ -110,10 +110,12 @@ export async function interpretSweep(input: { sweep: SweepResult; conditionLabel
   const grid = sweep.cells.map((cell) => `임계값 ${cell.threshold} · ${cell.horizon}일: n=${cell.samples}, 조건부 ${cell.conditionalAvgPct ?? "—"}%, 기준 ${cell.baselineAvgPct ?? "—"}%, 초과 ${cell.edgePct ?? "—"}%p, 승률차 ${cell.positiveRateDiffPct ?? "—"}%p`).join("\n");
   try {
     const result = await generateText({
-      role: "analyst",
+      // Judging a grid for overfitting is an adversarial check, not the
+      // high-volume scoring the `analyst` role is tiered for.
+      role: "auditor",
       system: SWEEP_SYSTEM,
       ownerId: input.ownerId,
-      feature: "lab.sweep_analyst",
+      feature: "lab.sweep_auditor",
       maxTokens: 3000,
       effort: "medium",
       prompt: [
