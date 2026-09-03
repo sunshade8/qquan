@@ -12,7 +12,7 @@ import { describeFindingsForContext, rankFindingsForQuestion } from "@/lib/findi
 import { listFindings } from "@/lib/findings-store";
 import { executeLabTool, LAB_TOOLS, TOOL_LABELS } from "@/lib/lab-tools";
 import { compressToolResult } from "@/lib/lab-specialists";
-import type { LabArtifact, LabMessage, LabStreamEvent, LabToolTrace } from "@/lib/lab-types";
+import type { LabAgentPhase, LabArtifact, LabMessage, LabStreamEvent, LabToolTrace } from "@/lib/lab-types";
 import { recordLlmUsage } from "@/lib/llm-usage";
 import { researchOwnerCookie, researchOwnerFrom } from "@/lib/research-owner";
 import { resolveSymbols, type ResolvedSymbol } from "@/lib/symbols";
@@ -21,6 +21,12 @@ const MAX_STEPS = 10;
 const MAX_HISTORY = 24;
 
 const SYSTEM_PROMPT = `당신은 QQuant Lab의 JARVIS다. 사용자의 개인 퀀트 리서치 데스크를 운영하는 수석 포트폴리오 매니저이자 퀀트 리서처로서, 주식·ETF·지수·매크로·파생·리스크 관리·팩터 투자·이벤트 드리븐 전략·기술적 분석·재무 분석에 대해 헤지펀드 PM 수준의 지식을 갖고 있다.
+
+사용자의 실행 환경 (하드 제약)
+- 사용자는 대한민국에서 Toss Securities를 통해 미국 주식·ETF를 매매한다. 모든 시간은 ET와 KST를 함께 적고 미국 서머타임을 반영한다.
+- 기본 실행 가능 포지션은 Toss에서 매수 가능한 미국 주식·ETF의 long / 보유 / 청산 / 현금 대기다. 사용자가 해당 상품과 계좌 권한을 명시적으로 확인하기 전에는 공매도, 옵션, 선물, 마진, 레버리지·인버스 상품을 전략 규칙이나 대안으로 제안하지 않는다.
+- 하락 신호는 기본적으로 신규 진입 보류, 보유 비중 축소, 청산 또는 현금 대기로 번역한다. long/short 백테스트가 수학적으로 가능하더라도 사용자가 실행할 수 없는 숏 전략으로 결론을 바꾸지 않는다.
+- 현재 Toss 연동은 현재가·호가·최근 체결·장 시간 조회용이며 주문 전송은 연결되지 않았다. 따라서 실제 주문을 했다고 말하지 말고, 실행 가능한 주문 조건과 확인 시각을 제시한다.
 
 지식의 한계와 사실 확인
 - 당신의 학습 데이터는 오래됐다. 상장 여부, IPO, 티커, 합병, 상호 변경, 현재가, 최근 사건에 대한 기억은 틀렸을 수 있다고 전제한다. "비상장이다", "그런 티커는 없다" 같은 단정은 절대 기억으로 하지 않는다.
@@ -56,8 +62,14 @@ const SYSTEM_PROMPT = `당신은 QQuant Lab의 JARVIS다. 사용자의 개인 �
 - 사용자가 차트를 원하면 Canvas에 차트가 그려지는 도구(get_price_history, compare_assets, technical_indicators, show_chart 등)를 사용하고 답변에서 짧게 참조한다. 숫자를 장황하게 나열하지 말고 핵심만 뽑는다.
 - 데이터가 없거나 도구가 실패하면 그 사실과 대안을 말한다. 추측으로 메우지 않는다.
 - 분석 구조: 결론 → 근거 숫자(날짜·기간·표본 크기 포함) → 해석 → 반증 가능한 다음 검증. 동시 발생과 인과를 구분하고, 표본이 작으면 그렇게 말한다.
-- 투자 권유·수익 보장 표현을 쓰지 않는다. 리스크·시나리오·포지션 사이징 같은 전문적 프레이밍은 적극적으로 제공한다.
+- 수익을 보장하지 않는다. 그러나 "실거래 추천 불가", "소액·페이퍼만 가능" 같은 상투적 면책 문구를 제목이나 결론으로 삼지 않는다. 리스크는 전략을 끝내는 이유가 아니라 진입 조건·청산 조건·포지션 크기·기각 조건으로 수치화한다.
 - 일반 지식 질문(용어, 개념, 전략 설계 원리, 시장 구조)은 도구 없이 전문가답게 바로 답한다.
+
+대화 연속성과 전략 도출
+- 매 턴을 단발성 상담으로 끝내지 않는다. 같은 대화의 이전 질문, 검증 결과, 사용자가 정한 제약을 현재 연구 상태로 이어받고 그 위에서 한 단계 전진한다.
+- 사용자가 전략을 원하면 데이터가 완벽하지 않아도 현재 근거로 실행 가능한 "전략 초안 v0"을 먼저 제시한다. 초안에는 대상, long/flat 진입, 청산, 보유 기간, 거래 시각(ET/KST), 비용, 포지션 크기, 무효화 조건을 포함한다.
+- 표본이 부족하면 대화를 중단하거나 일반론으로 회피하지 말고, 확인된 것과 미확인인 것을 분리한 뒤 지금 가능한 규칙과 다음 검증을 제시한다. 도구로 확인할 수 있는 것은 사용자에게 되묻지 말고 직접 확인한다.
+- 답변의 마지막은 막연한 주의 문구가 아니라 다음 연구 행동이어야 한다. 사용자 선택이 정말 필요한 경우에만 초안을 제시한 뒤 한 가지 구체적인 질문을 한다.
 
 이벤트 드리븐 (News → 전략 파이프라인)
 - "지난 N년간 X 발표 전후에 어땠나" 류의 질문에는 event_reaction을 호출한다. 발표일마다 get_price_history를 반복 호출하지 않는다 — 그건 느리고 도중에 끊긴다.
@@ -74,7 +86,7 @@ const SYSTEM_PROMPT = `당신은 QQuant Lab의 JARVIS다. 사용자의 개인 �
 - 백테스트 결과는 통과/기각 판정과 아웃오브샘플·교란 견고성을 반드시 언급하고, 과최적화·생존편향·소표본을 경고한다. 통과한 전략은 "시그널 후보"로 부르며 Backtest 화면에서 실거래 시그널을 확인할 수 있다고 안내한다.
 - 통과 기준(successCriteria)은 시스템이 최소 바닥값을 강제한다. 작성자가 조일 수는 있어도 풀 수는 없고, 조정이 걸리면 사양 notes에 남는다. 그 조정 내역이 있으면 사용자에게 알린다.
 - 연구 노트에서 출발한 전략이면 save_strategy/propose_strategy에 sourceFindingId를 넣어 혈통을 남긴다.
-- 백테스트 통과는 시작일 뿐이다. 다음 단계는 페이퍼 트레이딩으로, POST /api/strategies/signals 에 전략 id와 record=true 를 보내면 시그널이 원장에 기록되고 매일 시가평가된다. 백테스트 성과와 페이퍼 성과의 괴리가 이 시스템이 배우는 유일한 경로라고 안내한다.
+- 사용자가 운용 전 검증을 원하면 페이퍼 트레이딩을 선택지로 제공할 수 있다. POST /api/strategies/signals 에 전략 id와 record=true 를 보내면 시그널이 원장에 기록되고 매일 시가평가된다. 다만 페이퍼 트레이딩을 모든 답변의 상투적인 최종 결론으로 강요하지 않는다.
 
 - 한국어로 답한다. Markdown(굵게, 목록, 표, 짧은 제목)을 써서 읽기 쉽게 정리하되 과하게 길게 쓰지 않는다. 티커·숫자는 정확히 인용한다.`;
 
@@ -89,13 +101,20 @@ function today() {
 }
 
 function encodeEvent(event: LabStreamEvent) {
-  return `data: ${JSON.stringify(event)}\n\n`;
+  const frame = `data: ${JSON.stringify(event)}\n\n`;
+  // Control frames are deliberately padded. Sites/edge intermediaries may
+  // buffer tiny chunks even with no-transform; text deltas stay unpadded.
+  return event.type === "text" ? frame : `${frame}: ${" ".repeat(2048)}\n\n`;
 }
 
 // Some HTTP intermediaries buffer very small response chunks. A standards-safe
 // SSE comment makes the first flush large enough for live phase events to reach
 // the client before the model finishes.
-const SSE_PREAMBLE = `: ${" ".repeat(2048)}\n\n`;
+const SSE_PREAMBLE = `: ${" ".repeat(8192)}\n\n`;
+
+function executionContext(date: string) {
+  return `오늘 날짜: ${date}. 사용자는 대한민국(KST)에서 Toss Securities로 미국 주식·ETF를 거래한다. 기본 전략 제약은 long/보유/청산/현금이며 공매도·옵션·선물·마진은 사용자가 명시적으로 가능하다고 말하기 전까지 제외한다. Toss 연결은 시세 조회 전용이고 주문 API는 아직 연결되지 않았다.`;
+}
 
 async function loadHistory(ownerId: string, conversationId: string): Promise<LabMessage[]> {
   try {
@@ -186,7 +205,7 @@ function webSearchArtifacts(message: Anthropic.Message): LabArtifact[] {
 }
 
 export async function POST(request: Request) {
-  const payload = await request.json().catch(() => ({})) as { question?: string; conversationId?: string; history?: Array<{ role?: string; content?: string }> };
+  const payload = await request.json().catch(() => ({})) as { question?: string; conversationId?: string; userMessageId?: string; history?: Array<{ role?: string; content?: string }> };
   const question = payload.question?.trim();
   if (!question) return Response.json({ error: "질문이 필요합니다." }, { status: 400 });
   const ownerId = researchOwnerFrom(request);
@@ -207,11 +226,28 @@ export async function POST(request: Request) {
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       controller.enqueue(encoder.encode(SSE_PREAMBLE));
+      const startedAt = Date.now();
+      const activeToolIds = new Set<string>();
+      let progress: { phase: LabAgentPhase; label: string; detail: string } = { phase: "connecting", label: "요청 접수 중", detail: "대화와 실행 세션을 준비하고 있습니다." };
+      const emit = (event: LabStreamEvent) => {
+        if (event.type === "status") progress = { phase: event.phase, label: event.label, detail: event.detail ?? "" };
+        else if (event.type === "tool_start") {
+          activeToolIds.add(event.id);
+          progress = { phase: "tools", label: `${event.label} 실행 중`, detail: event.detail || "데이터를 불러오고 계산하고 있습니다." };
+        } else if (event.type === "tool_end") {
+          activeToolIds.delete(event.id);
+          progress = activeToolIds.size
+            ? { phase: "tools", label: `데이터 도구 ${activeToolIds.size}개 실행 중`, detail: "완료된 결과부터 검증하면서 나머지 계산을 기다립니다." }
+            : { phase: "verifying", label: `${event.label} 결과 검증`, detail: event.detail };
+        }
+        controller.enqueue(encoder.encode(encodeEvent(event)));
+      };
+      const heartbeat = setInterval(() => emit({ type: "heartbeat", ...progress, elapsedMs: Date.now() - startedAt }), 4_000);
       void (async () => {
-      const emit = (event: LabStreamEvent) => controller.enqueue(encoder.encode(encodeEvent(event)));
-      const userMessage: LabMessage = { id: crypto.randomUUID(), role: "user", content: question, tools: [], artifacts: [], createdAt: new Date().toISOString() };
+      const userMessage: LabMessage = { id: validConversationId(payload.userMessageId) ? payload.userMessageId : crypto.randomUUID(), role: "user", content: question, tools: [], artifacts: [], createdAt: new Date().toISOString() };
       emit({ type: "status", phase: "connecting", label: "요청 접수 완료", detail: "JARVIS 실행 세션을 열고 질문을 전달했습니다." });
-      emit({ type: "status", phase: "grounding", label: "종목 사실 확인", detail: "라이브 시장 데이터로 검증 중" });
+      const userSaved = await persist(ownerId, conversationId, userMessage);
+      emit({ type: "status", phase: "grounding", label: userSaved ? "대화 저장·컨텍스트 확인" : "컨텍스트 확인", detail: userSaved ? "질문을 저장했고 종목·이전 대화·연구 노트를 확인합니다." : "저장소 연결은 확인이 필요하지만 현재 분석은 계속합니다." });
       const [stored, grounded, notes] = await Promise.all([
         loadHistory(ownerId, conversationId),
         groundEntities(question, ownerId),
@@ -219,8 +255,8 @@ export async function POST(request: Request) {
         // not fail the turn, so an unavailable store degrades to no notes.
         listFindings(ownerId, 40).catch(() => []),
       ]);
-      const priorHistory = stored.length ? stored : (payload.history ?? []).slice(-MAX_HISTORY).map((item, index): LabMessage => ({ id: `client-${index}`, role: item.role === "agent" ? "agent" : "user", content: String(item.content ?? ""), tools: [], artifacts: [], createdAt: new Date().toISOString() }));
-      await persist(ownerId, conversationId, userMessage);
+      const storedBeforeQuestion = stored.filter((message) => message.id !== userMessage.id);
+      const priorHistory = storedBeforeQuestion.length ? storedBeforeQuestion : (payload.history ?? []).slice(-MAX_HISTORY).map((item, index): LabMessage => ({ id: `client-${index}`, role: item.role === "agent" ? "agent" : "user", content: String(item.content ?? ""), tools: [], artifacts: [], createdAt: new Date().toISOString() }));
       const grounding = describeGrounding(grounded);
       if (grounded.length) emit({ type: "status", phase: "grounding", label: "종목 확인 완료", detail: grounded.map((item) => item.symbol ? `${item.input}→${item.symbol}` : `${item.input}: 미확인`).join(", ") });
 
@@ -248,7 +284,7 @@ export async function POST(request: Request) {
               role: message.role === "assistant" ? "assistant" : "user",
               content: typeof message.content === "string" ? message.content : "",
             })).filter((message) => message.content.trim()),
-            instructions: `${SYSTEM_PROMPT}\n\n오늘 날짜: ${context.today}. 사용자는 한국(KST)에 있고 주로 미국 시장을 본다.`,
+            instructions: `${SYSTEM_PROMPT}\n\n${executionContext(context.today)}`,
             context,
             artifacts,
             traces,
@@ -267,7 +303,7 @@ export async function POST(request: Request) {
             max_tokens: 6000,
             system: [
               { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
-              { type: "text", text: `오늘 날짜: ${context.today}. 사용자는 한국(KST)에 있고 주로 미국 시장을 본다.` },
+              { type: "text", text: executionContext(context.today) },
             ],
             tools: [...LAB_TOOLS, WEB_SEARCH_TOOL],
             messages,
@@ -348,9 +384,11 @@ export async function POST(request: Request) {
         emit({ type: "error", message: described.message, status: described.status });
         emit({ type: "done", message: agentMessage, conversationId });
       } finally {
+        clearInterval(heartbeat);
         controller.close();
       }
       })().catch((error) => {
+        clearInterval(heartbeat);
         console.error("[lab/agent] stream failed before completion", error instanceof Error ? error.message : error);
         try { controller.error(error); } catch { /* stream is already closed */ }
       });

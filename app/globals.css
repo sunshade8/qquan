@@ -470,11 +470,11 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .lab-quick-prompts { padding: 8px 9px; display: grid; gap: 5px; border-bottom: 1px solid var(--line); background: var(--panel-alt); }
 .lab-quick-prompts button { padding: 7px 8px; border: 1px solid var(--line); border-radius: 7px; color: var(--secondary); background: var(--panel); font-size: 8px; text-align: left; }
 .lab-quick-prompts button:hover { color: #684bd1; border-color: rgba(104,75,209,.24); }
-.lab-conversation { min-height: 0; padding: 13px 11px; display: grid; align-content: start; gap: 14px; overflow-y: auto; }
-.lab-conversation article { display: grid; gap: 5px; }
+.lab-conversation { min-height: 0; padding: 13px 11px; display: grid; align-content: start; gap: 14px; overflow-x: hidden; overflow-y: auto; }
+.lab-conversation article { min-width: 0; max-width: 100%; display: grid; gap: 5px; }
 .lab-conversation article.user { padding: 9px 10px; border-radius: 9px; background: rgba(104,75,209,.07); }
 .lab-conversation article > span { color: var(--tertiary); font-size: 7px; font-weight: 750; text-transform: uppercase; }
-.lab-conversation article > p { margin: 0; font-size: 10px; line-height: 1.58; white-space: pre-wrap; }
+.lab-conversation article > p { margin: 0; font-size: 10px; line-height: 1.58; overflow-wrap: anywhere; white-space: pre-wrap; }
 .lab-empty, .lab-running { min-height: 220px; display: grid; place-content: center; justify-items: center; gap: 7px; color: var(--tertiary); text-align: center; }
 .lab-empty strong, .lab-running strong { color: var(--text); font-size: 10px; }
 .lab-empty p, .lab-running p { max-width: 280px; margin: 0; color: var(--secondary); font-size: 8.5px; line-height: 1.55; }
@@ -914,23 +914,23 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; scroll-behavior: auto !important; } }
 
 /* ---------- Markdown rendered agent replies ---------- */
-.markdown { font-size: 10px; line-height: 1.6; display: grid; gap: 6px; }
-.markdown p { margin: 0; white-space: pre-wrap; }
+.markdown { min-width: 0; max-width: 100%; font-size: 10px; line-height: 1.6; display: grid; gap: 6px; overflow-wrap: anywhere; word-break: break-word; }
+.markdown p { min-width: 0; margin: 0; white-space: pre-wrap; }
 .markdown h2, .markdown h3, .markdown h4 { margin: 4px 0 0; letter-spacing: -.02em; }
 .markdown h2 { font-size: 12px; }
 .markdown h3 { font-size: 11px; }
 .markdown h4 { font-size: 10px; color: var(--secondary); }
 .markdown ul, .markdown ol { margin: 0; padding-left: 16px; display: grid; gap: 3px; }
 .markdown li { padding-left: 2px; }
-.markdown code { padding: 1px 4px; border-radius: 4px; background: rgba(60,60,67,.08); font-family: var(--font-geist-mono), monospace; font-size: 9px; }
-.markdown pre { margin: 0; padding: 8px 10px; border-radius: 8px; background: rgba(60,60,67,.06); overflow-x: auto; font-size: 9px; }
+.markdown code { max-width: 100%; padding: 1px 4px; border-radius: 4px; background: rgba(60,60,67,.08); font-family: var(--font-geist-mono), monospace; font-size: 9px; overflow-wrap: anywhere; }
+.markdown pre { min-width: 0; max-width: 100%; margin: 0; padding: 8px 10px; border-radius: 8px; background: rgba(60,60,67,.06); overflow-x: hidden; font-size: 9px; overflow-wrap: anywhere; white-space: pre-wrap; }
 .markdown pre code { padding: 0; background: transparent; }
 .markdown blockquote { margin: 0; padding: 4px 10px; border-left: 2px solid rgba(104,75,209,.5); color: var(--secondary); }
 .markdown a { color: var(--blue); text-decoration: none; }
 .markdown a:hover { text-decoration: underline; }
-.md-table-wrap { overflow-x: auto; }
-.markdown table { border-collapse: collapse; width: 100%; font-size: 9px; }
-.markdown th, .markdown td { padding: 4px 7px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.md-table-wrap { min-width: 0; width: 100%; max-width: 100%; overflow-x: hidden; }
+.markdown table { width: 100%; max-width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 9px; }
+.markdown th, .markdown td { min-width: 0; padding: 4px 7px; border-bottom: 1px solid var(--line); text-align: left; overflow-wrap: anywhere; white-space: normal; vertical-align: top; font-variant-numeric: tabular-nums; }
 .markdown th { color: var(--tertiary); font-size: 7.5px; font-weight: 750; letter-spacing: .04em; text-transform: uppercase; }
 
 /* ---------- Lab JARVIS ---------- */
@@ -1126,14 +1126,14 @@ em.verdict.inconclusive { color: #b56b00; background: rgba(216,135,0,.12); }
 .lab-conversation { gap: 16px; padding: 14px 12px; }
 .lab-conversation article.user { width: fit-content; max-width: 92%; margin-left: auto; padding: 9px 11px; }
 .lab-conversation article.live { opacity: 1; gap: 7px; }
-.lab-run-panel { border: 1px solid rgba(104,75,209,.2); border-radius: 10px; overflow: hidden; background: rgba(104,75,209,.035); }
+.lab-run-panel { position: sticky; top: 0; z-index: 2; border: 1px solid rgba(104,75,209,.2); border-radius: 10px; overflow: hidden; background: color-mix(in srgb, var(--panel) 94%, #684bd1 6%); box-shadow: 0 4px 14px rgba(24,24,28,.06); }
 .lab-run-panel > header { min-height: 50px; padding: 9px 10px; display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 8px; border-bottom: 1px solid rgba(104,75,209,.12); }
 .lab-run-orbit { width: 27px; height: 27px; border-radius: 8px; display: grid; place-items: center; color: #684bd1; background: rgba(104,75,209,.1); }
 .lab-run-panel > header > div { min-width: 0; display: grid; gap: 2px; }
 .lab-run-panel > header strong { overflow: hidden; font-size: 8.5px; text-overflow: ellipsis; white-space: nowrap; }
 .lab-run-panel > header small { overflow: hidden; color: var(--tertiary); font-size: 7px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .lab-run-panel time { display: inline-flex; align-items: center; gap: 3px; color: var(--tertiary); font-family: var(--font-geist-mono),monospace; font-size: 7px; }
-.lab-run-phases { margin: 0; padding: 10px 8px 9px; display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); list-style: none; }
+.lab-run-phases { margin: 0; padding: 10px 8px 9px; display: grid; grid-template-columns: repeat(6,minmax(0,1fr)); list-style: none; }
 .lab-run-phases li { position: relative; min-width: 0; display: grid; justify-items: center; gap: 4px; color: var(--tertiary); }
 .lab-run-phases li::before { content: ""; position: absolute; top: 8px; right: 50%; width: 100%; height: 1px; background: var(--line); z-index: 0; }
 .lab-run-phases li:first-child::before { display: none; }

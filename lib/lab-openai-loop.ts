@@ -128,11 +128,11 @@ export async function runLabOpenAiLoop(params: LabOpenAiLoopParams): Promise<{ a
       const delta: string = event?.delta ?? "";
       if (!delta) return;
       stepText += delta;
-      emit({ type: "text", delta });
       if (!writingStarted) {
         writingStarted = true;
         emit({ type: "status", phase: "writing", label: "답변 작성 중", detail: "검증된 숫자와 근거를 읽기 쉬운 답변으로 정리하고 있습니다." });
       }
+      emit({ type: "text", delta });
     });
     turn.on("response.output_item.added", (event: any) => {
       const item = event?.item;

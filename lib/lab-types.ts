@@ -96,6 +96,7 @@ export type LabMessage = {
 /** Server-sent events emitted by /api/lab/agent while a turn runs. */
 export type LabStreamEvent =
   | { type: "status"; phase: LabAgentPhase; label: string; detail?: string }
+  | { type: "heartbeat"; phase: LabAgentPhase; label: string; detail?: string; elapsedMs: number }
   | { type: "text"; delta: string }
   | { type: "tool_start"; id: string; name: string; label: string; detail: string }
   | { type: "tool_end"; id: string; name: string; label: string; status: "complete" | "failed"; detail: string; durationMs: number }

@@ -19,13 +19,14 @@ type LiveTurn = { text: string; tools: LabToolTrace[]; status: string; detail: s
 
 const RUN_PHASES = [
   { id: "connecting", label: "요청 접수" },
-  { id: "grounding", label: "사실 확인" },
+  { id: "grounding", label: "컨텍스트" },
+  { id: "planning", label: "계획 수립" },
   { id: "tools", label: "도구 실행" },
-  { id: "verifying", label: "결과 종합" },
+  { id: "verifying", label: "검증·종합" },
   { id: "writing", label: "답변 작성" },
 ] as const;
 
-const PHASE_INDEX: Record<LabAgentPhase, number> = { connecting: 0, grounding: 1, planning: 1, tools: 2, verifying: 3, writing: 4 };
+const PHASE_INDEX: Record<LabAgentPhase, number> = { connecting: 0, grounding: 1, planning: 2, tools: 3, verifying: 4, writing: 5 };
 
 const QUICK_PROMPTS = [
   "NVDA 최근 1년 차트와 핵심 지표 보여줘",
@@ -88,27 +89,47 @@ export function LabWorkspace({ conversationId, onConversationChange, onActivityC
   const [question, setQuestion] = useState("");
   const [running, setRunning] = useState(false);
   const [live, setLive] = useState<LiveTurn | null>(null);
-  const [ready, setReady] = useState(false);
+  const [loadedConversationId, setLoadedConversationId] = useState<string | null>(null);
   const [activeArtifactId, setActiveArtifactId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [confirmClear, setConfirmClear] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const logRef = useRef<HTMLDivElement>(null);
+  const latestUserRef = useRef<HTMLElement | null>(null);
+  const stickToBottomRef = useRef(true);
+  const loadGenerationRef = useRef(0);
   const artifacts = useMemo(() => messages.flatMap((message) => message.artifacts), [messages]);
   const liveArtifacts = useRef<LabArtifact[]>([]);
   const [pendingArtifacts, setPendingArtifacts] = useState<LabArtifact[]>([]);
   const allArtifacts = useMemo(() => [...artifacts, ...pendingArtifacts], [artifacts, pendingArtifacts]);
   const activeArtifact = allArtifacts.find((artifact) => artifact.id === activeArtifactId) ?? allArtifacts.at(-1) ?? null;
+  const latestUserMessageId = messages.findLast((message) => message.role === "user")?.id ?? null;
+  const ready = loadedConversationId === conversationId;
 
   // A new conversation id means a fresh chat; an id chosen from History reloads that thread.
   useEffect(() => {
+    const generation = loadGenerationRef.current + 1;
+    loadGenerationRef.current = generation;
     const controller = new AbortController();
-    queueMicrotask(() => { if (!controller.signal.aborted) { setReady(false); setActiveArtifactId(null); setError(""); } });
+    queueMicrotask(() => {
+      if (!controller.signal.aborted && loadGenerationRef.current === generation) {
+        setLoadedConversationId(null);
+        setMessages([]);
+        setActiveArtifactId(null);
+        setError("");
+      }
+    });
     fetch(`/api/lab/state?conversation=${encodeURIComponent(conversationId)}`, { cache: "no-store", signal: controller.signal })
       .then((response) => response.json() as Promise<{ messages?: LabMessage[] }>)
-      .then((data) => { if (!controller.signal.aborted) setMessages(Array.isArray(data.messages) ? data.messages : []); })
-      .catch(() => { if (!controller.signal.aborted) setMessages([]); })
-      .finally(() => { if (!controller.signal.aborted) setReady(true); });
+      .then((data) => {
+        if (!controller.signal.aborted && loadGenerationRef.current === generation) setMessages(Array.isArray(data.messages) ? data.messages : []);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted && loadGenerationRef.current === generation) setMessages([]);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted && loadGenerationRef.current === generation) setLoadedConversationId(conversationId);
+      });
     return () => controller.abort();
   }, [conversationId]);
 
@@ -127,12 +148,20 @@ export function LabWorkspace({ conversationId, onConversationChange, onActivityC
   }, [running]);
 
   useEffect(() => {
-    const log = logRef.current;
-    if (log) log.scrollTop = log.scrollHeight;
-  }, [messages, live?.text, live?.tools.length]);
+    if (!running || !stickToBottomRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      const log = logRef.current;
+      if (log) log.scrollTop = log.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [running, live?.text, live?.tools.length, live?.phase]);
 
   function applyEvent(event: LabStreamEvent) {
     if (event.type === "status") setLive((current) => ({ text: current?.text ?? "", tools: current?.tools ?? [], status: event.label, detail: event.detail ?? "", phase: event.phase }));
+    else if (event.type === "heartbeat") setLive((current) => ({
+      text: current?.text ?? "", tools: current?.tools ?? [], status: event.label,
+      detail: event.detail ? `${event.detail} · 서버 응답 정상` : "서버에서 작업을 계속하고 있습니다.", phase: event.phase,
+    }));
     else if (event.type === "text") setLive((current) => ({ text: `${current?.text ?? ""}${event.delta}`, tools: current?.tools ?? [], status: current?.status ?? "답변 작성 중", detail: current?.detail ?? "검증된 숫자와 근거를 읽기 쉬운 답변으로 정리하고 있습니다.", phase: current?.phase ?? "writing" }));
     else if (event.type === "tool_start") setLive((current) => ({ text: current?.text ?? "", status: `${event.label} 실행 중`, detail: event.detail || "필요한 데이터를 불러오고 계산하고 있습니다.", phase: "tools", tools: [...(current?.tools ?? []), { id: event.id, name: event.name, label: event.label, status: "running", detail: event.detail }] }));
     else if (event.type === "tool_end") setLive((current) => {
@@ -144,14 +173,17 @@ export function LabWorkspace({ conversationId, onConversationChange, onActivityC
     else if (event.type === "error") setError(event.message);
     else if (event.type === "done") {
       setMessages((current) => [...current, event.message].slice(-200));
+      stickToBottomRef.current = false;
+      window.setTimeout(() => latestUserRef.current?.scrollIntoView({ block: "start" }), 0);
       if (event.message.artifacts.length) setActiveArtifactId(event.message.artifacts.at(-1)!.id);
       if (event.conversationId && event.conversationId !== conversationId) onConversationChange?.(event.conversationId);
     }
   }
 
   async function askAgent(prompt: string) {
-    if (!prompt || running) return;
+    if (!prompt || running || !ready) return;
     const userMessage: LabMessage = { id: messageId("user"), role: "user", content: prompt, tools: [], artifacts: [], createdAt: new Date().toISOString() };
+    stickToBottomRef.current = true;
     setMessages((current) => [...current, userMessage].slice(-200));
     setQuestion("");
     setError("");
@@ -163,7 +195,7 @@ export function LabWorkspace({ conversationId, onConversationChange, onActivityC
     try {
       const response = await fetch("/api/lab/agent", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ question: prompt, conversationId, history: messages.slice(-12).map(({ role, content }) => ({ role, content })) }),
+        body: JSON.stringify({ question: prompt, conversationId, userMessageId: userMessage.id, history: messages.slice(-12).map(({ role, content }) => ({ role, content })) }),
       });
       if (!response.body) throw new Error("서버가 스트림을 반환하지 않았습니다.");
       if (!response.headers.get("content-type")?.includes("text/event-stream")) {
@@ -258,10 +290,13 @@ export function LabWorkspace({ conversationId, onConversationChange, onActivityC
             <button disabled={!messages.length || running} className={confirmClear ? "danger" : ""} onClick={clearHistory} title={confirmClear ? "한 번 더 누르면 삭제" : "현재 대화 삭제"}>{confirmClear ? <X size={13} /> : <Trash2 size={13} />}<span>{confirmClear ? "삭제 확인" : "대화 삭제"}</span></button>
           </nav>
         </header>
-        {!messages.length && <div className="lab-quick-prompts">{QUICK_PROMPTS.map((prompt) => <button key={prompt} disabled={running} onClick={() => void askAgent(prompt)}>{prompt}</button>)}</div>}
-        <div className="lab-conversation" aria-live="polite" ref={logRef}>
+        {!messages.length && <div className="lab-quick-prompts">{QUICK_PROMPTS.map((prompt) => <button key={prompt} disabled={running || !ready} onClick={() => void askAgent(prompt)}>{prompt}</button>)}</div>}
+        <div className="lab-conversation" aria-live="polite" ref={logRef} onScroll={(event) => {
+          const element = event.currentTarget;
+          stickToBottomRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48;
+        }}>
           {ready && !messages.length && <div className="lab-empty"><Sparkles size={20} /><strong>무엇이든 물어보세요.</strong><p>가격·차트·지표·상관·이벤트 스터디·백테스트·리스크·계절성·뉴스·경제 일정을 실제 데이터로 계산하고, 시장 지식 질문은 바로 답합니다.</p></div>}
-          {messages.map((message) => <article className={message.role} key={message.id}>
+          {messages.map((message) => <article className={message.role} key={message.id} ref={message.id === latestUserMessageId ? latestUserRef : undefined}>
             <span>{message.role === "user" ? "You" : "JARVIS"}{message.role === "agent" && message.model ? <small> · {message.model}{typeof message.costUsd === "number" ? ` · $${message.costUsd.toFixed(4)}` : ""}</small> : null}</span>
             {message.role === "user" ? <p>{message.content}</p> : <Markdown text={message.content} />}
             <ToolTraces tools={message.tools} />
@@ -274,8 +309,8 @@ export function LabWorkspace({ conversationId, onConversationChange, onActivityC
           </article>}
         </div>
         <form className="lab-composer" onSubmit={submit}>
-          <textarea value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={onKeyDown} disabled={running} rows={3} aria-label="Lab JARVIS에게 질문" placeholder="예: 반도체 3대장(NVDA, AVGO, TSM) 6개월 상대 성과와 리스크 비교해줘" />
-          <footer><span className={error ? "error" : ""}>{error || (running ? "현재 작업이 끝나면 다음 질문을 보낼 수 있습니다." : "⌘/Ctrl + Enter · 대화와 결과 자동 저장")}</span><button type="submit" disabled={!question.trim() || running} aria-label="Lab JARVIS에 메시지 보내기"><span>{running ? "작업 중" : "보내기"}</span>{running ? <Loader size={13} className="spin" /> : <Send size={13} />}</button></footer>
+          <textarea value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={onKeyDown} disabled={running || !ready} rows={3} aria-label="Lab JARVIS에게 질문" placeholder="예: 반도체 3대장(NVDA, AVGO, TSM) 6개월 상대 성과와 리스크 비교해줘" />
+          <footer><span className={error ? "error" : ""}>{error || (!ready ? "대화를 불러오는 중" : running ? "현재 작업이 끝나면 다음 질문을 보낼 수 있습니다." : "⌘/Ctrl + Enter · 대화와 결과 자동 저장")}</span><button type="submit" disabled={!question.trim() || running || !ready} aria-label="Lab JARVIS에 메시지 보내기"><span>{running ? "작업 중" : "보내기"}</span>{running ? <Loader size={13} className="spin" /> : <Send size={13} />}</button></footer>
         </form>
       </aside>
       <section className="lab-canvas">

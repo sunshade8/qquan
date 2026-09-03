@@ -85,6 +85,12 @@ type LlmUsageReport = {
 
 const CHAT_STORAGE_KEY = "qquant.chat.v1";
 const HISTORY_STORAGE_KEY = "qquant.history.v1";
+const LAB_CONVERSATION_STORAGE_KEY = "qquant.lab.conversation.v1";
+const NEWS_CONVERSATION_STORAGE_KEY = "qquant.news.conversation.v1";
+
+function validStoredConversationId(value: string | null) {
+  return value && /^[A-Za-z0-9_-]{8,64}$/.test(value) ? value : null;
+}
 
 const symbols = [
   { label: "NVDA", value: "NASDAQ:NVDA" },
@@ -348,12 +354,39 @@ export function QuantWorkspace() {
   const [llmUsageError, setLlmUsageError] = useState("");
   const [newsActivity, setNewsActivity] = useState<AgentActivity | null>(null);
   const [labActivity, setLabActivity] = useState<AgentActivity | null>(null);
-  // Each page load starts fresh conversations; earlier threads live in History.
+  // Keep the active threads stable across navigation and full page reloads.
   const [labConversation, setLabConversation] = useState(() => newConversationId());
   const [newsConversation, setNewsConversation] = useState(() => newConversationId());
+  const [conversationStorageReady, setConversationStorageReady] = useState(false);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [focusStrategyId, setFocusStrategyId] = useState<string | null>(null);
   const [labPrompt, setLabPrompt] = useState<string | null>(null);
+
+  useEffect(() => {
+    let savedLab: string | null = null;
+    let savedNews: string | null = null;
+    try {
+      savedLab = validStoredConversationId(localStorage.getItem(LAB_CONVERSATION_STORAGE_KEY));
+      savedNews = validStoredConversationId(localStorage.getItem(NEWS_CONVERSATION_STORAGE_KEY));
+    } catch {
+      // D1 History remains available when private browsing disables localStorage.
+    }
+    queueMicrotask(() => {
+      if (savedLab) setLabConversation(savedLab);
+      if (savedNews) setNewsConversation(savedNews);
+      setConversationStorageReady(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!conversationStorageReady) return;
+    try {
+      localStorage.setItem(LAB_CONVERSATION_STORAGE_KEY, labConversation);
+      localStorage.setItem(NEWS_CONVERSATION_STORAGE_KEY, newsConversation);
+    } catch {
+      // Private browsing can disable localStorage; D1 History remains available.
+    }
+  }, [conversationStorageReady, labConversation, newsConversation]);
 
   useEffect(() => {
     if (!historyOpen) return;
