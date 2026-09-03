@@ -104,13 +104,17 @@ function encodeEvent(event: LabStreamEvent) {
   const frame = `data: ${JSON.stringify(event)}\n\n`;
   // Control frames are deliberately padded. Sites/edge intermediaries may
   // buffer tiny chunks even with no-transform; text deltas stay unpadded.
-  return event.type === "text" ? frame : `${frame}: ${" ".repeat(2048)}\n\n`;
+  return event.type === "text" ? frame : `${frame}${ssePadding(1024)}`;
 }
 
-// Some HTTP intermediaries buffer very small response chunks. A standards-safe
-// SSE comment makes the first flush large enough for live phase events to reach
-// the client before the model finishes.
-const SSE_PREAMBLE = `: ${" ".repeat(8192)}\n\n`;
+// Repeated spaces compress to almost nothing and did not cross the production
+// edge's flush threshold. UUID comments are valid SSE, hard to compress, and
+// make the first phase observable before the model has finished reasoning.
+function ssePadding(bytes: number) {
+  let value = ": ";
+  while (value.length < bytes) value += crypto.randomUUID();
+  return `${value.slice(0, bytes)}\n\n`;
+}
 
 function executionContext(date: string) {
   return `오늘 날짜: ${date}. 사용자는 대한민국(KST)에서 Toss Securities로 미국 주식·ETF를 거래한다. 기본 전략 제약은 long/보유/청산/현금이며 공매도·옵션·선물·마진은 사용자가 명시적으로 가능하다고 말하기 전까지 제외한다. Toss 연결은 시세 조회 전용이고 주문 API는 아직 연결되지 않았다.`;
@@ -210,7 +214,7 @@ export async function POST(request: Request) {
   if (!question) return Response.json({ error: "질문이 필요합니다." }, { status: 400 });
   const ownerId = researchOwnerFrom(request);
   const conversationId = validConversationId(payload.conversationId) ? payload.conversationId : crypto.randomUUID();
-  const headers = { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-store, no-transform", "x-accel-buffering": "no", connection: "keep-alive", "set-cookie": researchOwnerCookie(ownerId) };
+  const headers = { "content-type": "text/event-stream; charset=utf-8", "content-encoding": "identity", "cache-control": "no-cache, no-store, no-transform", "x-accel-buffering": "no", connection: "keep-alive", "set-cookie": researchOwnerCookie(ownerId) };
   const useOpenAiFrontier = frontierProvider() === "openai";
   if (useOpenAiFrontier && !openaiConfigured()) {
     return new Response(encodeEvent({ type: "error", message: "OpenAI 서버 키가 연결되지 않았습니다.", status: 503 }), { status: 503, headers });
@@ -225,7 +229,7 @@ export async function POST(request: Request) {
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
-      controller.enqueue(encoder.encode(SSE_PREAMBLE));
+      controller.enqueue(encoder.encode(ssePadding(32_768)));
       const startedAt = Date.now();
       const activeToolIds = new Set<string>();
       let progress: { phase: LabAgentPhase; label: string; detail: string } = { phase: "connecting", label: "요청 접수 중", detail: "대화와 실행 세션을 준비하고 있습니다." };
