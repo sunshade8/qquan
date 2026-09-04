@@ -37,6 +37,26 @@ type PriceRow = {
   volume: number;
 };
 
+type ConnectionCapability = {
+  id: string; label: string; description: string; fills: string;
+  status: "connected" | "plan_locked" | "unavailable" | "not_configured";
+  detail: string;
+};
+
+type ConnectionReport = {
+  alpaca: {
+    configured: boolean;
+    status: "connected" | "not_configured" | "auth_error" | "plan_locked" | "unavailable";
+    detail: string;
+    feed: "sip" | "iex";
+    availableSince: string;
+    historicalDelayMinutes: number;
+  };
+  finnhub: { configured: boolean; capabilities: ConnectionCapability[] };
+  fred: { configured: boolean };
+  checkedAt: string;
+};
+
 type ProviderReport = {
   primary: "toss" | "yahoo";
   toss: { status: "connected" | "unavailable" | "not_configured"; bars?: number; start?: string; end?: string; reason?: string };
@@ -331,6 +351,8 @@ export function QuantWorkspace() {
   const [datasetName, setDatasetName] = useState("");
   const [dataSource, setDataSource] = useState("");
   const [providers, setProviders] = useState<ProviderReport | null>(null);
+  const [connections, setConnections] = useState<ConnectionReport | null>(null);
+  const [connectionsError, setConnectionsError] = useState("");
   const [brokerSnapshot, setBrokerSnapshot] = useState<BrokerSnapshot | null>(null);
   const [loadingData, setLoadingData] = useState(true);
   const [importError, setImportError] = useState("");
@@ -454,6 +476,25 @@ export function QuantWorkspace() {
     const timer = window.setInterval(() => setMarketSession(resolveMarketSession()), 30_000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (view !== "settings") return;
+    const controller = new AbortController();
+    // The probe makes one live call per capability, so it runs only when the
+    // settings view is actually open.
+    fetch("/api/providers", { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        const data = await response.json() as ConnectionReport & { error?: string };
+        if (!response.ok) throw new Error(data.error || "연결 상태를 불러오지 못했습니다.");
+        setConnections(data);
+        setConnectionsError("");
+      })
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setConnectionsError(error instanceof Error ? error.message : "연결 상태를 불러오지 못했습니다.");
+      });
+    return () => controller.abort();
+  }, [view]);
 
   useEffect(() => {
     if (view !== "settings") return;
@@ -819,7 +860,45 @@ export function QuantWorkspace() {
               <article><div><strong>TradingView Advanced Chart</strong><p>차트, 드로잉, 보조지표</p></div><span className="connected"><i />Connected</span></article>
               <article><div><strong>Toss Securities</strong><p>브로커 현재가·호가·최근 체결·장 시간 · 읽기 전용</p></div><span className={brokerSnapshot?.available ? "connected" : "missing"}><i />{brokerSnapshot?.available ? "Connected" : brokerSnapshot?.code === "ip_allowlist" ? "IP allowlist" : "Fallback"}</span></article>
               <article><div><strong>Yahoo Finance</strong><p>조정 일봉 10년 · 토스 교차검증 및 자동 폴백</p></div><span className={providers?.yahoo.status === "connected" ? "connected" : "missing"}><i />{providers?.yahoo.status === "connected" ? "Connected" : "Unavailable"}</span></article>
+              <article>
+                <div>
+                  <strong>Alpaca Historical</strong>
+                  <p>{connections?.alpaca.status === "connected" ? `${connections.alpaca.availableSince}년 이후 1·5·15분봉 · ${connections.alpaca.feed.toUpperCase()}${connections.alpaca.historicalDelayMinutes ? ` · 최근 ${connections.alpaca.historicalDelayMinutes}분 제외` : ""}` : connections?.alpaca.detail ?? "장기 분봉 연결 확인 중"}</p>
+                </div>
+                <span className={connections?.alpaca.status === "connected" ? "connected" : "missing"}><i />{connections?.alpaca.status === "connected" ? "Connected" : connections?.alpaca.status === "not_configured" ? "API key 필요" : connections ? "Unavailable" : "Checking"}</span>
+              </article>
               <article><div><strong>Analysis dataset</strong><p>우선순위 Toss → Yahoo · 자동 갱신 캐시 24시간</p></div><span className={rows.length ? "connected" : "missing"}><i />{rows.length ? dataSource : "Loading"}</span></article>
+              <article><div><strong>SEC EDGAR</strong><p>8-K 항목 2.02 실적 발표일과 발표 시각 · 키 불필요</p></div><span className="connected"><i />Connected</span></article>
+              <article><div><strong>FRED</strong><p>매크로 지표 원본 실제치와 개정 이력</p></div><span className={connections?.fred.configured ? "connected" : "missing"}><i />{connections?.fred.configured ? "Connected" : "FRED_API_KEY 미설정"}</span></article>
+
+              <article className="llm-cost-card">
+                <div className="llm-cost-head">
+                  <div>
+                    <span>FINNHUB</span>
+                    <strong>{connections ? `${connections.finnhub.capabilities.filter((item) => item.status === "connected").length} / ${connections.finnhub.capabilities.length} 사용 가능` : "확인 중"}</strong>
+                    <p>요금제가 실제로 무엇을 돌려주는지 매번 실호출로 확인합니다. 캔들(OHLCV)은 무료 티어에서 막혀 있으므로 가격 이력은 계속 Yahoo를 씁니다.</p>
+                  </div>
+                  <a href="https://finnhub.io/docs/api" target="_blank" rel="noreferrer">API 문서</a>
+                </div>
+                {connections ? (
+                  <div className="connection-list">
+                    {connections.finnhub.capabilities.map((item) => (
+                      <div key={item.id} className={`connection-row ${item.status}`}>
+                        <span>
+                          <strong>{item.label}</strong>
+                          <small>{item.description}</small>
+                          {item.fills ? <em>+ {item.fills}</em> : null}
+                        </span>
+                        <b className={item.status}>
+                          {item.status === "connected" ? "연결됨" : item.status === "plan_locked" ? "요금제 제한" : item.status === "not_configured" ? "키 없음" : "오류"}
+                        </b>
+                        <code>{item.detail}</code>
+                      </div>
+                    ))}
+                  </div>
+                ) : <p className="llm-cost-note">{connectionsError || "연결 상태를 확인하는 중"}</p>}
+                {connections?.checkedAt ? <p className="llm-cost-note">확인 시각 {new Date(connections.checkedAt).toLocaleString("ko-KR")} · 무료 티어 분당 60회 제한</p> : null}
+              </article>
               <article className="llm-cost-card">
                 <div className="llm-cost-head"><div><span>MODEL ALLOCATION</span><strong>역할별 LLM 배분과 실제 호출</strong><p>각 역할이 <em>쓰도록 설정된</em> 모델과, 그 역할로 <em>실제 기록된</em> 호출 수를 함께 보여줍니다. 호출 0회는 그 역할에 도달하는 코드 경로가 없다는 뜻입니다. frontier는 LLM_FRONTIER_PROVIDER=openai로 GPT-5.5 Thinking에 연결하며, balanced/fast는 항상 Anthropic(ANTHROPIC_MODEL_BALANCED / ANTHROPIC_MODEL_FAST)입니다.</p></div></div>
                 {llmUsage?.allocation ? <><div className="model-allocation">{llmUsage.allocation.map((item) => <div key={item.role}><span><strong>{item.role}</strong><small>{item.purpose}</small></span><code>{item.provider ? `${item.provider} · ` : ""}{item.model}{item.price ? ` · $${item.price.input}/$${item.price.output}` : ""}</code><b className={item.calls ? "used" : "unused"}>{item.calls ? `${item.calls}회 · $${(item.costUsd ?? 0).toFixed(4)}` : "호출 없음"}</b><em className={item.tier}>{item.tier}</em></div>)}</div>

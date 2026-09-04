@@ -49,7 +49,7 @@ type ComparisonResponse = {
   sources: Record<"nasdaq" | "nyse", { origin: string; reason: string | null }>;
 };
 type MarketKey = "nasdaq" | "nyse";
-type ChartInterval = "1d" | "5m" | "15m" | "60m";
+type ChartInterval = "1d" | "1m" | "5m" | "15m" | "60m";
 type IntradayReaction = {
   baseTime: string;
   pre60Pct: number | null;
@@ -61,7 +61,8 @@ type IntradayResponse = {
   market: MarketKey;
   symbol: "QQQ" | "SPY";
   interval: Exclude<ChartInterval, "1d">;
-  results: Array<{ id: string; anchorDate: string; anchorTime: string; reaction: IntradayReaction | null; unavailable: string | null }>;
+  providers: string[];
+  results: Array<{ id: string; anchorDate: string; anchorTime: string; provider?: string; reaction: IntradayReaction | null; unavailable: string | null }>;
   methodology: string;
 };
 
@@ -405,7 +406,7 @@ export function NewsSimilarity({ tests, excludedDuplicates, onClose, onAskAgent 
             <div className="similarity-toolbar">
               <div className="similarity-switches">
                 <div role="tablist" aria-label="비교 지수"><button role="tab" aria-selected={market === "nasdaq"} className={market === "nasdaq" ? "active" : ""} onClick={() => selectMarket("nasdaq")}>{interval === "1d" ? "NASDAQ" : "QQQ"}</button><button role="tab" aria-selected={market === "nyse"} className={market === "nyse" ? "active" : ""} onClick={() => selectMarket("nyse")}>{interval === "1d" ? "NYSE" : "SPY"}</button></div>
-                <div role="tablist" aria-label="차트 봉 주기">{(["5m", "15m", "60m", "1d"] as ChartInterval[]).map((item) => <button role="tab" aria-selected={interval === item} className={interval === item ? "active" : ""} key={item} onClick={() => selectInterval(item)}>{item === "60m" ? "1H" : item === "1d" ? "1D" : item}</button>)}</div>
+                <div role="tablist" aria-label="차트 봉 주기">{(["1m", "5m", "15m", "60m", "1d"] as ChartInterval[]).map((item) => <button role="tab" aria-selected={interval === item} className={interval === item ? "active" : ""} key={item} onClick={() => selectInterval(item)}>{item === "60m" ? "1H" : item === "1d" ? "1D" : item}</button>)}</div>
               </div>
               <p>그림은 패턴 확인용이며, 아래 숫자가 대화·판정 기준입니다.</p>
             </div>

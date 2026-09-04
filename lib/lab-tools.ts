@@ -6,9 +6,21 @@ import { newsTests } from "@/db/schema";
 import { MARKET_EVENT_CALENDAR, MARKET_EVENT_CATEGORY_LABELS } from "@/app/market-calendar-data";
 import { findCompanyNews, searchNews } from "@/lib/company-news";
 import type { LabArtifact, LabToolTrace } from "@/lib/lab-types";
-import { fetchTossSnapshot, fetchYahooIntradayWindow, type IntradayInterval, type PriceRow } from "@/lib/market-data";
+import { fetchIntradayWindow, fetchTossSnapshot, type IntradayInterval, type PriceRow } from "@/lib/market-data";
+import { alpacaConfigured } from "@/lib/alpaca";
 import { calculateIntradayReaction, summarizeIntradayStudy } from "@/lib/intraday-study";
 import { runFvgBacktest, type FvgOptions } from "@/lib/intraday-fvg";
+import { combineTactics, computeTargetMath, feeFloor, FEASIBILITY_LABELS, type Tactic } from "@/lib/daily-target";
+import { buildEventDayProfile, type EventDayGroup } from "@/lib/event-day-profile";
+import { fetchEarningsHistory, RELEASE_TIMING_LABELS } from "@/lib/earnings-dates";
+import { buildDirectionStudy, priorRelativeVolume, type DirectionInput } from "@/lib/direction-study";
+import { assumedSlippagePct, costBps as tossCostBps, describeCosts, feePerSidePct } from "@/lib/broker-costs";
+import { buildSessionContexts, regularSession } from "@/lib/intraday-fvg";
+import {
+  fetchEarningsCalendar, fetchEarningsSurprises, fetchInsiderSentiment, fetchInsiderTransactions,
+  fetchMarketStatus, fetchMetrics, fetchPeers, fetchProfile, fetchRecommendations, finnhubConfigured,
+  FinnhubError, FINNHUB_FAILURE_LABELS,
+} from "@/lib/finnhub";
 import { deterministicTestSummary, type ResearchTest } from "@/lib/news-research-agents";
 import { loadDailyRows } from "@/lib/price-cache";
 import {
@@ -143,7 +155,7 @@ export const LAB_TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "intraday_event_study",
-    description: "경제지표·실적·뉴스 이벤트의 정확한 날짜와 미국 동부시각(ET)을 기준으로 여러 자산의 발표 전/후 분봉 수익률을 계산한다. 기본 자산은 기술주 QQQ와 가치주 IWD, 기본 구간은 발표 전 30분·후 30분이다. 5분/15분 종가 경계로 계산하며 현재 Yahoo 공급 범위상 최근 약 60일만 보장한다. 이벤트 날짜·시각을 market_calendar 또는 web_search로 먼저 확인한 뒤 호출한다.",
+    description: "경제지표·실적·뉴스 이벤트의 정확한 날짜와 미국 동부시각(ET)을 기준으로 여러 자산의 발표 전/후 분봉 수익률을 계산한다. 기본 자산은 기술주 QQQ와 가치주 IWD, 기본 구간은 발표 전 30분·후 30분이다. 1분/5분/15분 종가 경계로 계산한다. Alpaca가 연결되면 2016년 이후 장기 분봉을 쓰고, 없으면 Yahoo의 최근 구간으로 자동 폴백한다. 이벤트 날짜·시각을 market_calendar 또는 web_search로 먼저 확인한 뒤 호출한다.",
     input_schema: {
       type: "object",
       properties: {
@@ -163,7 +175,7 @@ export const LAB_TOOLS: Anthropic.Tool[] = [
           },
         },
         symbols: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 4, description: "비교 자산. 기본 QQQ,IWD" },
-        interval: { type: "string", enum: ["5m", "15m"], description: "분봉 주기. 기본 5m" },
+        interval: { type: "string", enum: ["1m", "5m", "15m"], description: "분봉 주기. 기본 5m" },
         preMinutes: { type: "integer", minimum: 15, maximum: 120, description: "발표 전 계산 구간. 기본 30분" },
         postMinutes: { type: "integer", minimum: 15, maximum: 240, description: "발표 후 계산 구간. 기본 30분" },
       },
@@ -172,18 +184,21 @@ export const LAB_TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "intraday_fvg_backtest",
-    description: "분봉 OHLC로 '시가 레인지 돌파 + FVG(공정가치 갭) 되돌림' 인트라데이 규칙을 실제로 백테스트한다. 09:30 ET부터 anchorMinutes 동안의 고가·저가를 기준선으로 잡고, windowMinutes 안에서 상승 캔들의 몸통이 기준선을 상향 돌파하며 FVG가 형성되면, 그 FVG로 되돌림이 올 때 매수해 직전 캔들 저점을 손절, 손익비 rewardRisk를 익절로 삼는다(하루 1회, 롱 전용). FVG는 다음 봉이 마감돼야 확정되므로 진입은 그 이후 봉부터만 허용하고, 한 봉이 손절과 익절을 모두 덮으면 손절로 처리한다. 같은 실행에서 'FVG 조건 없이 돌파 확인봉 종가에 진입'하는 대조군도 함께 계산하므로, FVG가 실제 알파인지 장식인지 두 결과를 비교해 판정한다. 공급 한계상 최근 약 59일(거래일 약 40개)만 가능하므로 표본이 작다는 점을 반드시 함께 보고한다.",
+    description: "분봉 OHLC로 '시가 레인지 돌파 + FVG(공정가치 갭) 되돌림' 인트라데이 규칙을 실제로 백테스트한다. 09:30 ET부터 anchorMinutes 동안의 고가·저가를 기준선으로 잡고, windowMinutes 안에서 상승 캔들의 몸통이 기준선을 상향 돌파하며 FVG가 형성되면, 그 FVG로 되돌림이 올 때 매수해 직전 캔들 저점을 손절, 손익비 rewardRisk를 익절로 삼는다(하루 1회, 롱 전용). FVG는 다음 봉이 마감돼야 확정되므로 진입은 그 이후 봉부터만 허용하고, 한 봉이 손절과 익절을 모두 덮으면 손절로 처리한다. 같은 실행에서 'FVG 조건 없이 돌파 확인봉 종가에 진입'하는 대조군도 함께 계산하므로, FVG가 실제 알파인지 장식인지 두 결과를 비교해 판정한다. minAbsGapPct·minRelativeVolume으로 '갭이 크고 시초 거래량이 실린 날'만 골라 매매하는 세션 필터를 걸 수 있다. 두 값 모두 진입 전에 알 수 있는 정보이고 상대거래량 기준선은 직전 세션들의 중앙값만 쓰므로 룩어헤드가 없다. 필터를 걸면 같은 규칙의 무필터 성적(unfilteredSummaries)도 함께 반환하므로, 필터가 실제로 무언가를 하는지 두 결과를 비교해 판정한다. dayTargetPct를 주면 각 거래가 진입가 대비 그 %까지 갔는지 기록해 일일 목표 수익률 달성 가능성을 함께 본다. Alpaca가 연결되면 2016년 이후 1·5·15분봉을 쓰고, 없으면 Yahoo 최근 구간만 쓴다.",
     input_schema: {
       type: "object",
       properties: {
         symbols: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 3, description: "티커 1~3개" },
-        interval: { type: "string", enum: ["5m", "15m"], description: "매매 분봉. 기본 5m" },
+        interval: { type: "string", enum: ["1m", "5m", "15m"], description: "매매 분봉. 기본 5m" },
         anchorMinutes: { type: "integer", description: "09:30 ET부터 기준선을 만드는 시간(분). 기본 15" },
         windowMinutes: { type: "integer", description: "진입을 허용하는 오픈 이후 구간(분). 기본 90" },
         rewardRisk: { type: "number", description: "손익비. 기본 2 (1:2)" },
         holdUntil: { type: "string", enum: ["window", "session_close"], description: "익절·손절 미도달 시 청산 시점. 기본 session_close" },
-        costBps: { type: "number", description: "편도 비용(bps). 왕복으로 반영. 기본 5" },
-        lookbackDays: { type: "integer", description: "조회 기간(달력일). 기본 55, 최대 59" },
+        costBps: { type: "number", description: `편도 비용(bps). 왕복으로 반영. 기본값은 실제 Toss 비용에서 계산된다 — ${describeCosts()}` },
+        lookbackDays: { type: "integer", description: "조회 기간(달력일). Alpaca 연결 시 기본 365(1분봉 120), 5·15분봉 최대 약 7년. Yahoo 폴백은 1분봉 7일, 나머지 59일" },
+        minAbsGapPct: { type: "number", description: "세션 필터: 시가 갭이 이 % 이상인 날만 매매(방향 무관). 예: 1" },
+        minRelativeVolume: { type: "number", description: "세션 필터: 기준 캔들 거래량이 자기 중앙값의 이 배 이상인 날만 매매. 예: 1.5" },
+        dayTargetPct: { type: "number", description: "진입가 대비 이 %까지 갔는지 거래별로 기록. 일일 목표 수익률 검증용. 예: 2" },
       },
       required: ["symbols"],
     },
@@ -450,6 +465,147 @@ symbols로 티커를 직접 줄 수도 있다(반드시 티커여야 하며, 한
       required: ["eventRoot"],
     },
   },
+  {
+    name: "daily_target_math",
+    description: `"하루 N% 수익" 같은 일일 수익률 목표가 산술적으로 가능한지 먼저 판정한다. 목표는 전략이 아니라 네 숫자(거래당 리스크, 손익비, 하루 거래 횟수, 승률)에 대한 제약이며, 셋을 고정하면 넷째가 결정된다. 데이터 없이 즉시 계산되므로 일일 목표 수익률 이야기가 나오면 다른 도구보다 먼저 호출한다.
+반환: 요구 승률, 손익분기 승률, 실현 가능성 등급, (승률을 주면) 기대 일수익·목표 달성일 비율·손실일 비율·켈리 대비 베팅 크기·복리 시뮬레이션(중앙 최대낙폭, 원금 반토막 확률), 손익비×거래횟수 민감도 표.
+마찰(costPerTradeR)은 bps가 아니라 R 단위로 넣는다. 손절 기반 매매의 슬리피지는 손절 폭에 비례하기 때문이다.
+주의: 기대 일수익이 목표를 넘어도 실제로 목표를 넘는 날의 비율(hitTargetRatePct)은 훨씬 낮은 것이 정상이다. 두 숫자를 반드시 함께 보고한다.`,
+    input_schema: {
+      type: "object",
+      properties: {
+        targetDailyPct: { type: "number", description: "목표 일일 수익률 %. 기본 2" },
+        riskPerTradePct: { type: "number", description: "거래당 감수 리스크(자본 대비 %). 기본 0.5" },
+        rewardRisk: { type: "number", description: "손익비. 기본 2" },
+        tradesPerDay: { type: "integer", minimum: 1, maximum: 20, description: "하루 거래 횟수. 기본 4" },
+        winRatePct: { type: "number", description: "가정 승률 %. 넣으면 평가, 비우면 '요구 승률'을 역산" },
+        costPerTradeR: { type: "number", description: "거래당 왕복 마찰(슬리피지+수수료)을 R로 환산. 기본 0.05" },
+        simulationDays: { type: "integer", description: "복리 시뮬레이션 거래일 수. 기본 252" },
+      },
+    },
+  },
+  {
+    name: "company_fundamentals",
+    description: `Finnhub에서 종목의 펀더멘털과 포지셔닝을 한 번에 가져온다. 기업 프로필(업종·시총·상장일), 재무 지표(베타·PER·PSR·마진·성장률·52주 고저·90일 변동성), 애널리스트 컨센서스 추이, 유사 기업 목록을 반환한다.
+QQuant의 다른 도구는 전부 가격 기반이라 "왜 이 종목인가"에 답하지 못한다. 이 도구가 그 공백을 메운다. 전략의 유니버스를 정하거나 종목 선택 근거를 댈 때 쓴다.
+peers는 페어 트레이딩이나 리드랙 분석의 후보군을 만들 때 유용하다. 직접 종목을 나열해 추측하지 말고 이걸 쓴다.
+가격 캔들은 이 요금제에서 제공되지 않으므로 가격 이력은 get_price_history를 쓴다.`,
+    input_schema: {
+      type: "object",
+      properties: {
+        symbol: { type: "string", description: "티커" },
+        include: { type: "array", items: { type: "string", enum: ["profile", "metrics", "recommendations", "peers"] }, description: "가져올 항목. 비우면 전부" },
+      },
+      required: ["symbol"],
+    },
+  },
+  {
+    name: "earnings_schedule",
+    description: `향후·과거 실적 발표 일정을 장전(bmo)/장후(amc)/장중(dmh) 구분과 컨센서스 EPS·매출 추정치와 함께 가져온다. 과거 서프라이즈 이력도 함께 반환한다.
+event_day_profile의 includeEarnings는 SEC EDGAR 공시 기반이라 이미 제출된 과거만 안다. 앞으로의 발표일과 컨센서스는 이 도구만 안다. 실적 앞두고 포지션을 잡거나 특정 날짜를 피해야 할 때 쓴다.
+발표 시각 구분이 핵심이다. 장후 발표면 반응 세션은 다음 거래일이다. 이 구분을 무시하면 뉴스가 나오기 전날을 반응일로 재게 된다.`,
+    input_schema: {
+      type: "object",
+      properties: {
+        symbol: { type: "string", description: "특정 종목만. 비우면 기간 전체 캘린더" },
+        from: { type: "string", description: "YYYY-MM-DD. 기본 오늘" },
+        to: { type: "string", description: "YYYY-MM-DD. 기본 30일 후" },
+        includeSurprises: { type: "boolean", description: "symbol이 있을 때 과거 서프라이즈 이력도 함께. 기본 true" },
+      },
+    },
+  },
+  {
+    name: "insider_activity",
+    description: `내부자(임원·이사) 거래 내역과 월별 내부자 심리 지수(MSPR, -100~100)를 가져온다. QQuant에 없던 신호 계열이다.
+주의: 내부자 매도는 대부분 사전 계획된 분산 매도(10b5-1)라 정보가 거의 없다. 매수가 신호에 가깝다. 이 비대칭을 반드시 함께 보고한다.
+Form 4 제출은 거래 후 2영업일 이내이므로 실시간 신호가 아니라 사후 확인 자료다. 백테스트에 쓸 때는 filingDate 기준으로 앵커해야 하며 transactionDate를 쓰면 룩어헤드다.`,
+    input_schema: {
+      type: "object",
+      properties: {
+        symbol: { type: "string" },
+        from: { type: "string", description: "YYYY-MM-DD" },
+        to: { type: "string", description: "YYYY-MM-DD" },
+      },
+      required: ["symbol"],
+    },
+  },
+  {
+    name: "market_status",
+    description: "미국 거래소가 지금 열려 있는지, 어떤 세션인지(pre-market/regular/post-market), 휴장일인지 조회한다. 반휴장일(13:00 조기 마감) 판단에도 쓴다. 사용자에게 지금 매매 가능한지 답하거나, 인트라데이 규칙이 정상 세션을 가정해도 되는지 확인할 때 호출한다.",
+    input_schema: { type: "object", properties: { exchange: { type: "string", description: "거래소 코드. 기본 US" } } },
+  },
+  {
+    name: "direction_study",
+    description: `장 시작 전에 알 수 있는 정보(갭 방향, 상대 거래량)가 그날의 방향을 예측하는지 검정한다. 고베타 종목은 목표 폭 자체는 이미 대부분의 날에 나오므로, 병목이 "어떤 날인가"가 아니라 "어느 방향인가"일 때 쓴다.
+판정 기준이 핵심이다. "방향이 결정된 날"은 한쪽만 목표에 도달한 날이며, 이런 날은 봉의 선후와 무관하게 결과가 정해지므로 일봉으로도 정직하게 셀 수 있다. 양방향 모두 도달한 휩쏘는 방향 판정에서 제외한다. 그날의 승패는 고가와 저가 중 무엇이 먼저 찍혔는지에 달렸고 일봉은 그것을 말해주지 않기 때문이다.
+상방 비중 50%는 우위가 없다는 뜻이다. 갭 상승일과 갭 하락일의 상방 비중 차이가 검정 대상이다.
+source=daily면 가격 이력 전 구간을 쓰고 상대거래량은 전일 거래량 대비 직전 20일 중앙값이다(장 시작 전에 알 수 있는 값). source=intraday면 Alpaca 연결 시 장기 5분봉, 미연결 시 Yahoo 최근 약 59일 분봉으로 실제 시초 거래량(09:30부터 anchorMinutes)을 쓴다.
+차이가 없다는 결과에는 반드시 minimumDetectableEffectPts를 함께 보고한다. 40세션의 "차이 없음"과 4000세션의 "차이 없음"은 다른 주장이며, 후자만 무언가를 배제한다.`,
+    input_schema: {
+      type: "object",
+      properties: {
+        symbols: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 8, description: "티커 1~8개. 2개 이상이면 풀링해서 검정한다" },
+        targetPct: { type: "number", description: "방향 판정 기준 이동폭 %. 기본 2" },
+        gapThresholdPct: { type: "number", description: "갭 상승/하락으로 분류할 최소 갭 %. 기본 1" },
+        volumeThreshold: { type: "number", description: "거래량이 많은 날로 볼 상대거래량 배수. 기본 1.5. null이면 거래량 분할을 건너뛴다" },
+        source: { type: "string", enum: ["daily", "intraday"], description: "daily=일봉·전일 거래량 / intraday=5분봉·실제 시초 거래량. 기본 daily" },
+        lookbackDays: { type: "integer", description: "조회 기간(일). daily 기본 1825, intraday는 Alpaca 연결 시 기본 365·미연결 시 55" },
+      },
+      required: ["symbols"],
+    },
+  },
+  {
+    name: "tactic_portfolio",
+    description: `여러 전술을 하나의 책으로 합산해 일일 목표에 얼마나 모자라는지 계산하고, 수수료를 넘지 못하는 전술을 걸러낸다. "작은 전략 여러 개로 하루 N%" 계획을 검증하는 도구다.
+먼저 수수료를 R로 환산한다. 이게 핵심이다. 편도 0.1% 수수료는 손절폭 1%에서 0.23R이지만 손절폭 0.25%에서는 0.92R이다. 같은 수수료라도 손절을 조이면 부담이 배로 늘어난다. 따라서 "수수료보다 많이 벌면 쓸 만한 전략"이라는 기준은 손절폭을 함께 말해야 성립한다.
+각 전술의 activeDayRatePct(발동하는 날의 비율)를 반영해 하루 기여도를 계산하고, 채택 전술의 합계와 목표의 차이, 그 차이를 메우는 데 필요한 추가 전술 수를 반환한다.
+기대값은 상관과 무관하게 더해지지만 변동성과 낙폭은 더해지지 않는다. 합계는 체감 성적의 상한이며, 전술 간 상관은 페이퍼 원장의 전략 태그별 손익으로 측정해야 한다는 점을 반드시 함께 보고한다.`,
+    input_schema: {
+      type: "object",
+      properties: {
+        targetDailyPct: { type: "number", description: "합산 목표 일일 수익률 %. 기본 2" },
+        feePerSidePct: { type: "number", description: `편도 수수료(명목가 대비 %). 비우면 lib/broker-costs.ts의 Toss 값을 쓴다 (현재 ${feePerSidePct()}%)` },
+        slippagePct: { type: "number", description: `왕복 슬리피지+스프레드 추정치 %. 비우면 현재 가정값 ${assumedSlippagePct()}%` },
+        stopDistancePct: { type: "number", description: "평균 손절폭(진입가 대비 %). 1R의 크기이며 수수료 부담을 좌우한다. 기본 1" },
+        tactics: {
+          type: "array", minItems: 1, maxItems: 12,
+          description: "합산할 전술 목록",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              tradesPerDay: { type: "number", description: "발동한 날 기준 거래 횟수" },
+              winRatePct: { type: "number" },
+              rewardRisk: { type: "number", description: "손익비" },
+              riskPerTradePct: { type: "number", description: "거래당 자본 대비 리스크 %" },
+              activeDayRatePct: { type: "number", description: "이 전술이 발동하는 날의 비율 %. 기본 100" },
+            },
+            required: ["name", "tradesPerDay", "winRatePct", "rewardRisk", "riskPerTradePct"],
+          },
+        },
+      },
+      required: ["tactics"],
+    },
+  },
+  {
+    name: "event_day_profile",
+    description: `일일 목표 수익률을 줄 수 있는 '날'이 어떤 날인지 일봉으로 측정한다. 그날 시가 기준 최대 유리 이동(MFE)이 목표 폭에 도달했는지를 세션별로 판정하고, 경제 이벤트 발표일과 그 외 평범한 날을 비교한다. 분봉 60일 제한을 받지 않고 가격 이력 전 구간을 쓴다.
+핵심 지표: reachEither(양방향 중 하나라도 도달 — 상한선), bothSides(양방향 모두 도달 — 손절 사용자에겐 기회가 아님), cleanReach(reachEither에서 bothSides 제외 — 계획 근거로 쓸 숫자), closeAligned(종가가 향한 방향으로 도달 — 하한선).
+includeEarnings=true면 SEC EDGAR 8-K 항목 2.02에서 실적 발표일과 발표 시각을 가져와 그룹으로 넣는다. 장 마감 후 발표는 다음 거래일에 앵커되므로 발표 전날을 반응일로 착각하는 룩어헤드가 없다.
+검정은 피셔 정확검정이며 한 호출의 모든 그룹에 Benjamini-Hochberg 다중검정 보정을 적용한다. significantUncorrected는 true인데 significant가 false면, 그 그룹 수만큼 검정하면 우연히 나올 수 있는 수준이라는 뜻이다.`,
+    input_schema: {
+      type: "object",
+      properties: {
+        symbol: { type: "string", description: "회사명 또는 티커" },
+        targetPct: { type: "number", description: "하루 목표 이동폭 %. 기본 2" },
+        eventRoots: { type: "array", items: { type: "string", enum: [...knownEventRoots()] }, description: "비교할 경제 이벤트 종류. 비우면 주요 루트 전체. includeEarnings만 쓰려면 빈 배열을 넣는다" },
+        includeEarnings: { type: "boolean", description: "해당 종목의 실적 발표일을 SEC EDGAR 8-K(항목 2.02)에서 가져와 그룹으로 추가한다. 장 마감 후 발표는 다음 거래일에 앵커된다. 개별 종목 분석에는 이 옵션을 켠다" },
+        lookbackDays: { type: "integer", description: "조회 기간(일). 기본 1825 (5년)" },
+        to: { type: "string", description: "YYYY-MM-DD (선택)" },
+      },
+      required: ["symbol"],
+    },
+  },
 ];
 
 const STUDY_IDS: Record<string, string> = {
@@ -618,26 +774,37 @@ async function intradayEventStudy(input: Input, context: ToolContext): Promise<T
 
   const requestedSymbols = (Array.isArray(input.symbols) && input.symbols.length ? input.symbols : ["QQQ", "IWD"]).map(String).slice(0, 4);
   const resolved = await resolveSymbols(requestedSymbols);
-  const interval = (input.interval === "15m" ? "15m" : "5m") as IntradayInterval;
-  const intervalMinutes = interval === "15m" ? 15 : 5;
+  const interval = (input.interval === "1m" ? "1m" : input.interval === "15m" ? "15m" : "5m") as IntradayInterval;
+  const intervalMinutes = interval === "1m" ? 1 : interval === "15m" ? 15 : 5;
   const preMinutes = Math.min(120, Math.max(15, Number(input.preMinutes) || 30));
   const postMinutes = Math.min(240, Math.max(15, Number(input.postMinutes) || 30));
   const rows: Array<IntradayEventInput & { symbol: string; name: string; reaction: Omit<NonNullable<ReturnType<typeof calculateIntradayReaction>>, "normalizedPath"> | null; unavailable: string | null }> = [];
 
-  // One fetch per symbol across the whole span, not one per event. Fetching per
-  // event turned 24 events x 4 symbols into 96 sequential Yahoo round trips for a
-  // single tool call: slow, redundant (each pulled an overlapping 3-day window),
-  // and far enough into rate limiting that later symbols came back empty.
-  const eventDates = events.map((event) => event.date).sort();
-  const spanFrom = maxDate(shiftDate(eventDates[0], -1), shiftDate(context.today, -59));
-  const spanTo = shiftDate(eventDates.at(-1)!, 1);
-  const series = new Map<string, { points: Awaited<ReturnType<typeof fetchYahooIntradayWindow>> | null; error: string | null }>();
+  const hasLongHistory = alpacaConfigured();
+  const eligibleDates = [...new Set(events.filter((event) => {
+    const age = daysBetween(event.date, context.today);
+    return age >= 0 && (hasLongHistory ? event.date >= "2016-01-01" : age <= 59);
+  }).map((event) => event.date))].sort();
+  // Yahoo is cheapest as one recent span. With Alpaca, sparse event windows are
+  // cheaper and much safer than loading years of irrelevant bars into a 128 MB
+  // Worker merely to measure 24 announcement windows.
+  const ranges = hasLongHistory
+    ? eligibleDates.map((date) => ({ from: shiftDate(date, -1), to: shiftDate(date, 1) }))
+    : eligibleDates.length ? [{ from: maxDate(shiftDate(eligibleDates[0], -1), shiftDate(context.today, -59)), to: shiftDate(eligibleDates.at(-1)!, 1) }] : [];
+  const series = new Map<string, { points: Awaited<ReturnType<typeof fetchIntradayWindow>>["points"] | null; error: string | null; provider: string | null }>();
   await Promise.all(resolved.map(async (asset) => {
     if (!asset.public || !asset.symbol) return;
     try {
-      series.set(asset.symbol, { points: await fetchYahooIntradayWindow(asset.symbol, spanFrom, spanTo, interval), error: null });
+      const byTimestamp = new Map<number, Awaited<ReturnType<typeof fetchIntradayWindow>>["points"][number]>();
+      const providers = new Set<string>();
+      for (const range of ranges) {
+        const history = await fetchIntradayWindow(asset.symbol, range.from, range.to, interval, { maxBars: 20_000 });
+        history.points.forEach((point) => byTimestamp.set(point.timestamp, point));
+        providers.add(`${history.provider}${history.feed ? ` ${history.feed.toUpperCase()}` : ""}`);
+      }
+      series.set(asset.symbol, { points: [...byTimestamp.values()].sort((left, right) => left.timestamp - right.timestamp), error: null, provider: [...providers].join(" / ") || null });
     } catch (error) {
-      series.set(asset.symbol, { points: null, error: error instanceof Error ? error.message : "분봉 데이터를 가져오지 못했습니다." });
+      series.set(asset.symbol, { points: null, error: error instanceof Error ? error.message : "분봉 데이터를 가져오지 못했습니다.", provider: null });
     }
   }));
 
@@ -648,7 +815,8 @@ async function intradayEventStudy(input: Input, context: ToolContext): Promise<T
       const base = { ...event, symbol, name: asset.name };
       if (!asset.public || !asset.symbol) { rows.push({ ...base, reaction: null, unavailable: asset.note ?? "거래 가능 종목을 확인하지 못했습니다." }); continue; }
       if (age < 0) { rows.push({ ...base, reaction: null, unavailable: "아직 지나지 않은 이벤트입니다." }); continue; }
-      if (age > 59) { rows.push({ ...base, reaction: null, unavailable: `${interval} 공급 범위(최근 약 60일)를 벗어났습니다.` }); continue; }
+      if (hasLongHistory && event.date < "2016-01-01") { rows.push({ ...base, reaction: null, unavailable: "Alpaca 분봉 보존 시작일(2016년) 이전입니다." }); continue; }
+      if (!hasLongHistory && age > 59) { rows.push({ ...base, reaction: null, unavailable: `${interval} Yahoo 공급 범위(최근 약 60일)를 벗어났습니다. Alpaca 키를 연결하면 2016년 이후를 조회할 수 있습니다.` }); continue; }
       const loaded = series.get(asset.symbol);
       if (!loaded?.points) { rows.push({ ...base, reaction: null, unavailable: loaded?.error ?? "분봉 데이터를 가져오지 못했습니다." }); continue; }
       const calculated = calculateIntradayReaction(loaded.points, event.date, event.timeET, intervalMinutes, preMinutes, postMinutes);
@@ -662,6 +830,7 @@ async function intradayEventStudy(input: Input, context: ToolContext): Promise<T
 
   const summaries = summarizeIntradayStudy(rows.map((row) => ({ symbol: row.symbol, surprise: row.surprise, reaction: row.reaction ? { ...row.reaction, normalizedPath: [] } : null })));
   const available = rows.filter((row) => row.reaction).length;
+  const providerLabel = [...new Set([...series.values()].flatMap((value) => value.provider ? [value.provider] : []))].join(" / ") || (hasLongHistory ? "Alpaca" : "Yahoo Finance");
   const artifact: LabArtifact = {
     id: id(), type: "table", title: `분봉 이벤트 스터디 · ${interval}`, subtitle: `${events.length}개 이벤트 · ${available}/${rows.length}개 자산-이벤트 관측 가능`,
     columns: ["발표일·시각 ET", "이벤트", "실제/예상", "Surprise", "자산", `발표 전 ${preMinutes}분 %`, `발표 후 ${postMinutes}분 %`, "정규장 종가까지 %", "상태"],
@@ -671,12 +840,12 @@ async function intradayEventStudy(input: Input, context: ToolContext): Promise<T
     ]),
     notes: [
       `발표 직전 완결 ${interval} 봉을 기준가로 사용 · 미국 동부시각(ET)`,
-      `현재 공급자: Yahoo Finance · ${interval}은 최근 약 60일 범위만 보장`,
+      `현재 공급자: ${providerLabel}${hasLongHistory ? " · 2016년 이후 이벤트별 최소 구간 조회" : " · 최근 약 60일 범위"}`,
       "Surprise는 입력된 실제치·컨센서스 분류를 그대로 사용하며 임의 추정하지 않음",
     ],
   };
   return {
-    result: { methodology: { timezone: "America/New_York", interval, preMinutes, postMinutes, base: "last completed bar at or before release time", provider: "Yahoo Finance", guaranteedLookbackDays: 59 }, coverage: { events: events.length, symbols: resolved.length, requested: rows.length, available, unavailable: rows.length - available }, rows, summaries },
+    result: { methodology: { timezone: "America/New_York", interval, preMinutes, postMinutes, base: "last completed bar at or before release time", provider: providerLabel, availableSince: hasLongHistory ? "2016" : null, yahooFallbackDays: 59 }, coverage: { events: events.length, symbols: resolved.length, requested: rows.length, available, unavailable: rows.length - available }, rows, summaries },
     artifacts: [artifact],
     trace: { name: "intraday_event_study", label: "분봉 이벤트 스터디", status: available ? "complete" : "failed", detail: `${available}/${rows.length}개 관측 · ${interval} · 전후 ${preMinutes}/${postMinutes}분` },
   };
@@ -687,67 +856,113 @@ async function intradayFvgBacktest(input: Input, context: ToolContext): Promise<
   const requested = (Array.isArray(input.symbols) ? input.symbols : []).map(String).filter(Boolean).slice(0, 3);
   if (!requested.length) return failed("티커가 필요합니다.");
 
-  const interval = (input.interval === "15m" ? "15m" : "5m") as IntradayInterval;
-  const intervalMinutes = interval === "15m" ? 15 : 5;
+  const interval = (input.interval === "1m" ? "1m" : input.interval === "15m" ? "15m" : "5m") as IntradayInterval;
+  const intervalMinutes = interval === "1m" ? 1 : interval === "15m" ? 15 : 5;
   // The reference candle is built from the trading bars themselves, so its length
   // has to land on a bar boundary.
   const anchorMinutes = Math.max(intervalMinutes, Math.round((Number(input.anchorMinutes) || 15) / intervalMinutes) * intervalMinutes);
   const windowMinutes = Math.min(390, Math.max(anchorMinutes + intervalMinutes * 2, Math.round(Number(input.windowMinutes) || 90)));
   const rewardRisk = Math.min(5, Math.max(0.5, Number(input.rewardRisk) || 2));
-  const costBps = input.costBps === undefined ? 5 : Math.max(0, Number(input.costBps) || 0);
+  const costBps = input.costBps === undefined ? tossCostBps() : Math.max(0, Number(input.costBps) || 0);
   const holdUntil = input.holdUntil === "window" ? "window" : "session_close";
-  // 59 days is the provider's guaranteed intraday window; asking for more returns
-  // nothing rather than an error, which would read as "no setups".
-  const lookbackDays = Math.min(59, Math.max(7, Math.round(Number(input.lookbackDays) || 55)));
-  const options: FvgOptions = { intervalMinutes, anchorMinutes, windowMinutes, rewardRisk, costBps, holdUntil };
+  const hasLongHistory = alpacaConfigured();
+  // A Worker has 128 MB. Five- and fifteen-minute regular-session bars fit for
+  // the full provider history; one-minute bars are capped at one year per run.
+  const maxLookbackDays = hasLongHistory ? (interval === "1m" ? 365 : 2556) : (interval === "1m" ? 7 : 59);
+  const defaultLookbackDays = hasLongHistory ? (interval === "1m" ? 120 : 365) : (interval === "1m" ? 7 : 55);
+  const lookbackDays = Math.min(maxLookbackDays, Math.max(7, Math.round(Number(input.lookbackDays) || defaultLookbackDays)));
+  const optionalNumber = (value: unknown, min: number, max: number) => {
+    if (value === undefined || value === null || value === "") return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : null;
+  };
+  const minAbsGapPct = optionalNumber(input.minAbsGapPct, 0, 25);
+  const minRelativeVolume = optionalNumber(input.minRelativeVolume, 0, 20);
+  const dayTargetPct = optionalNumber(input.dayTargetPct, 0.1, 25);
+  const options: FvgOptions = { intervalMinutes, anchorMinutes, windowMinutes, rewardRisk, costBps, holdUntil, minAbsGapPct, minRelativeVolume, dayTargetPct };
 
   const from = shiftDate(context.today, -lookbackDays);
   const resolved = await resolveSymbols(requested);
-  const results = await Promise.all(resolved.map(async (asset) => {
+  const results: Array<{
+    symbol: string;
+    name: string;
+    error: string | null;
+    result: ReturnType<typeof runFvgBacktest> | null;
+    history: Awaited<ReturnType<typeof fetchIntradayWindow>> | null;
+  }> = [];
+  // Resolve one symbol at a time so several multi-year minute arrays never sit
+  // in the Worker's memory together. The compact backtest result is retained.
+  for (const asset of resolved) {
     const symbol = asset.symbol ?? asset.input;
-    if (!asset.public || !asset.symbol) return { symbol, name: asset.name, error: asset.note ?? "거래 가능 종목을 확인하지 못했습니다.", result: null };
-    try {
-      const points = await fetchYahooIntradayWindow(asset.symbol, from, context.today, interval);
-      if (!points.length) return { symbol, name: asset.name, error: "해당 구간의 분봉 데이터가 없습니다.", result: null };
-      return { symbol, name: asset.name, error: null, result: runFvgBacktest(asset.symbol, asset.name, points, options) };
-    } catch (error) {
-      return { symbol, name: asset.name, error: error instanceof Error ? error.message : "분봉 데이터를 가져오지 못했습니다.", result: null };
+    if (!asset.public || !asset.symbol) {
+      results.push({ symbol, name: asset.name, error: asset.note ?? "거래 가능 종목을 확인하지 못했습니다.", result: null, history: null });
+      continue;
     }
-  }));
+    try {
+      const history = await fetchIntradayWindow(asset.symbol, from, context.today, interval, { session: "regular", maxBars: 160_000 });
+      if (!history.points.length) {
+        results.push({ symbol, name: asset.name, error: "해당 구간의 분봉 데이터가 없습니다.", result: null, history });
+        continue;
+      }
+      results.push({ symbol, name: asset.name, error: null, result: runFvgBacktest(asset.symbol, asset.name, history.points, options), history });
+    } catch (error) {
+      results.push({ symbol, name: asset.name, error: error instanceof Error ? error.message : "분봉 데이터를 가져오지 못했습니다.", result: null, history: null });
+    }
+  }
 
-  const usable = results.flatMap((item) => item.result ? [item.result] : []);
+  const usable = results.flatMap((item) => item.result && item.history ? [{ ...item.result, history: item.history }] : []);
   if (!usable.length) return failed(results.map((item) => `${item.symbol}: ${item.error}`).join(" · "));
 
-  const rows = usable.flatMap((item) => item.summaries.map((summary) => [
-    item.symbol, summary.label, summary.sessions, summary.trades, summary.winRatePct, summary.breakevenWinRatePct,
+  const providerLabel = [...new Set(usable.map((item) => `${item.history.provider}${item.history.feed ? ` ${item.history.feed.toUpperCase()}` : ""}`))].join(" / ");
+  const fallbackNotes = [...new Set(usable.flatMap((item) => item.history.fallbackReason ? [item.history.fallbackReason] : []))];
+
+  const rows = usable.flatMap((item) => [...item.summaries, ...(item.unfilteredSummaries ?? [])].map((summary) => [
+    item.symbol, summary.label, summary.scope, summary.sessions, summary.trades, summary.winRatePct, summary.breakevenWinRatePct,
     summary.averageR, summary.medianR, summary.totalR, summary.totalRExcludingBest, summary.targetHits, summary.stopHits, summary.timeExits,
+    summary.dayTargetHitRatePct, summary.medianMaxFavorablePct,
   ]));
+  const filterActive = usable.some((item) => item.filter.active);
   const artifact: LabArtifact = {
     id: id(), type: "table", title: `분봉 FVG 백테스트 · ${interval}`,
-    subtitle: `기준선 ${anchorMinutes}분 · 매매 창 ${windowMinutes}분 · 손익비 1:${rewardRisk} · 비용 ${costBps}bps 편도`,
-    columns: ["종목", "규칙", "세션", "거래", "승률 %", "손익분기 승률 %", "평균 R", "중앙 R", "누적 R", "최고거래 제외 누적 R", "익절", "손절", "시간청산"],
+    subtitle: [
+      `기준선 ${anchorMinutes}분 · 매매 창 ${windowMinutes}분 · 손익비 1:${rewardRisk} · 비용 ${costBps}bps 편도`,
+      minAbsGapPct === null ? "" : `갭 ${minAbsGapPct}% 이상`,
+      minRelativeVolume === null ? "" : `상대거래량 ${minRelativeVolume}배 이상`,
+      dayTargetPct === null ? "" : `일일 목표 ${dayTargetPct}%`,
+    ].filter(Boolean).join(" · "),
+    columns: ["종목", "규칙", "표본", "세션", "거래", "승률 %", "손익분기 승률 %", "평균 R", "중앙 R", "누적 R", "최고거래 제외 누적 R", "익절", "손절", "시간청산", `목표 ${dayTargetPct ?? "—"}% 도달률 %`, "중앙 최대유리 %"],
     rows,
     notes: [
-      `데이터 ${usable[0]?.from ?? from} ~ ${usable.at(-1)?.to ?? context.today} · Yahoo Finance ${interval} · 최근 약 59일만 공급`,
+      `데이터 ${usable[0]?.from ?? from} ~ ${usable.at(-1)?.to ?? context.today} · ${providerLabel} ${interval} · ${lookbackDays}일 요청`,
+      usable.some((item) => item.history.provider === "Alpaca" && item.history.feed === "sip") ? "Alpaca SIP 과거 데이터는 전체 시장 통합 피드이며 무료 Basic에서는 최근 15분이 제외된다." : "",
+      fallbackNotes.length ? `Alpaca 폴백: ${fallbackNotes.join(" / ")}` : "",
       "FVG는 다음 봉 마감 후 확정 · 진입은 그 이후 봉부터만 허용 (룩어헤드 차단)",
       "한 봉이 손절가와 익절가를 모두 덮으면 손절로 처리 (분봉은 선후를 알려주지 않음)",
       "롱 전용 · 하루 최대 1거래 · 슬리피지와 호가 스프레드는 미반영이므로 실제 승률 기준은 더 높음",
       "대조군과 원문 규칙의 성적이 비슷하면 FVG 조건이 아무것도 더하지 못한 것",
-    ],
+      filterActive ? "세션 필터의 '필터 적용'과 '필터 없음' 성적이 비슷하면 그 필터는 아무 일도 하지 않은 것" : "",
+      filterActive ? `필터 통과 ${usable.map((item) => `${item.symbol} ${item.filter.sessionsPassed}/${item.sessions}`).join(" · ")}` : "",
+      dayTargetPct === null ? "" : `목표 도달률은 진입가 대비 최대 유리 이동 기준이며, 손절로 끝난 봉의 고가는 선후를 알 수 없어 제외했다`,
+    ].filter(Boolean),
   };
 
   const bySymbol = usable.map((item) => ({
     symbol: item.symbol, name: item.name, sessions: item.sessions, from: item.from, to: item.to,
     summaries: item.summaries,
+    unfilteredSummaries: item.unfilteredSummaries,
+    filter: item.filter,
+    provider: item.history.provider,
+    feed: item.history.feed,
     sampleTrades: item.trades.filter((trade) => trade.variant === "fvg_pullback").slice(-8),
   }));
   const headline = usable[0]?.summaries.find((summary) => summary.variant === "fvg_pullback");
   return {
     result: {
       methodology: {
-        timezone: "America/New_York", interval, anchorMinutes, windowMinutes, rewardRisk, costBps, holdUntil,
+        timezone: "America/New_York", interval, anchorMinutes, windowMinutes, rewardRisk, costBps, holdUntil, minAbsGapPct, minRelativeVolume, dayTargetPct,
+        sessionFilters: "갭·상대거래량 모두 진입 전 확정 정보이며, 상대거래량 기준선은 직전 세션들의 중앙값만 사용 (룩어헤드 없음)",
         direction: "long_only", entryConfirmation: "FVG는 다음 봉 마감 후 확정, 진입은 그 이후 봉부터",
-        sameBarTie: "손절 우선", provider: "Yahoo Finance", guaranteedLookbackDays: 59,
+        sameBarTie: "손절 우선", provider: providerLabel, availableSince: usable.some((item) => item.history.provider === "Alpaca") ? "2016" : null, requestedLookbackDays: lookbackDays, maxLookbackDays,
       },
       unavailable: results.flatMap((item) => item.error ? [{ symbol: item.symbol, reason: item.error }] : []),
       bySymbol,
@@ -1423,6 +1638,556 @@ async function eventReactionTool(input: Input, context: ToolContext): Promise<To
   };
 }
 
+function dailyTargetMathTool(input: Input): ToolOutcome {
+  const result = computeTargetMath({
+    targetDailyPct: input.targetDailyPct === undefined ? undefined : Number(input.targetDailyPct),
+    riskPerTradePct: input.riskPerTradePct === undefined ? undefined : Number(input.riskPerTradePct),
+    rewardRisk: input.rewardRisk === undefined ? undefined : Number(input.rewardRisk),
+    tradesPerDay: input.tradesPerDay === undefined ? undefined : Number(input.tradesPerDay),
+    winRatePct: input.winRatePct === undefined || input.winRatePct === null ? null : Number(input.winRatePct),
+    costPerTradeR: input.costPerTradeR === undefined ? undefined : Number(input.costPerTradeR),
+    simulationDays: input.simulationDays === undefined ? undefined : Number(input.simulationDays),
+  });
+  const { input: settings, evaluation, simulation } = result;
+
+  const requirement: LabArtifact = {
+    id: id(), type: "table", title: `일일 ${settings.targetDailyPct}% 목표 · 요구 조건`,
+    subtitle: `거래당 리스크 ${settings.riskPerTradePct}% · 손익비 1:${settings.rewardRisk} · 하루 ${settings.tradesPerDay}회 · 마찰 ${settings.costPerTradeR}R`,
+    columns: ["항목", "값"],
+    rows: [
+      ["하루에 필요한 R", result.targetDailyR],
+      ["거래당 필요한 R", result.requiredRPerTrade],
+      ["요구 승률 (%)", result.requiredWinRatePct],
+      ["손익분기 승률 (%)", result.breakevenWinRatePct],
+      ["손익분기 대비 필요한 우위 (%p)", result.edgeOverBreakevenPts],
+      ["실현 가능성", FEASIBILITY_LABELS[result.verdict]],
+    ],
+    notes: result.notes,
+  };
+
+  const sensitivity: LabArtifact = {
+    id: id(), type: "table", title: "요구 승률 민감도",
+    subtitle: "손익비와 하루 거래 횟수를 바꿨을 때 목표 달성에 필요한 승률",
+    columns: ["손익비", "하루 거래 횟수", "요구 승률 (%)", "가능 여부"],
+    rows: result.sensitivity.map((cell) => [`1:${cell.rewardRisk}`, cell.tradesPerDay, cell.requiredWinRatePct, cell.feasible ? "가능" : "불가능"]),
+    notes: ["100%를 넘는 칸은 승률과 무관하게 도달할 수 없는 조합이다.", "거래 횟수를 늘려 요구 승률을 낮추는 선택은 마찰 비용을 그만큼 더 낸다는 뜻이기도 하다."],
+  };
+
+  const artifacts: LabArtifact[] = [requirement, sensitivity];
+  if (evaluation && simulation) {
+    artifacts.push({
+      id: id(), type: "table", title: `승률 ${evaluation.winRatePct}% 가정의 결과`,
+      subtitle: `${simulation.runs}회 경로 · ${simulation.days}거래일 복리 시뮬레이션`,
+      columns: ["항목", "값"],
+      rows: [
+        ["거래당 기대값 (R)", evaluation.expectedRPerTrade],
+        ["기대 일수익 (%)", evaluation.expectedDailyPct],
+        ["중앙값 일수익 (%)", evaluation.medianDailyPct],
+        [`목표 ${settings.targetDailyPct}% 달성일 비율 (%)`, evaluation.hitTargetRatePct],
+        ["손실일 비율 (%)", evaluation.losingDayRatePct],
+        ["전패일 손실 (%)", evaluation.fullLossDayPct],
+        ["켈리 최적 거래당 리스크 (%)", evaluation.kellyRiskPerTradePct],
+        ["현재 베팅 크기 판정", evaluation.riskVsKelly === "over" ? "켈리 초과 (과베팅)" : evaluation.riskVsKelly === "under" ? "켈리 미만 (보수적)" : evaluation.riskVsKelly === "at" ? "켈리 근처" : "우위 없음"],
+        ["중앙값 최종 배수", simulation.medianTerminalMultiple],
+        ["하위 5% 최종 배수", simulation.p5TerminalMultiple],
+        ["상위 95% 최종 배수", simulation.p95TerminalMultiple],
+        ["중앙값 최대낙폭 (%)", simulation.medianMaxDrawdownPct],
+        ["상위 5% 최대낙폭 (%)", simulation.p95MaxDrawdownPct],
+        ["원금 손실로 끝난 경로 (%)", simulation.lossRunRatePct],
+        ["원금 반토막을 겪은 경로 (%)", simulation.halvedRatePct],
+      ],
+      notes: [
+        "시뮬레이션은 자본 대비 정률 리스크로 하루 안에서도 복리 계산한다. 닫힌 해의 기대 일수익과 다르게 나오는 것이 정상이다.",
+        "각 거래는 독립으로 가정한다. 실제로는 같은 날 같은 시장 상태에서 나온 거래끼리 상관이 높아 손실이 몰리므로, 여기 낙폭은 낙관적인 하한이다.",
+        "시드는 고정되어 있어 같은 입력이면 같은 결과가 나온다.",
+      ],
+    });
+  }
+
+  const detail = result.requiredWinRatePct === null || result.requiredWinRatePct > 100
+    ? `요구 승률 ${result.requiredWinRatePct ?? "—"}% · ${FEASIBILITY_LABELS[result.verdict]}`
+    : `요구 승률 ${result.requiredWinRatePct}% (손익분기 ${result.breakevenWinRatePct}%) · ${FEASIBILITY_LABELS[result.verdict]}`;
+  return { result, artifacts, trace: { name: "daily_target_math", label: `일일 ${settings.targetDailyPct}% 목표 산술`, status: "complete", detail } };
+}
+
+/** Turns a Finnhub failure into a trace the agent can act on rather than retry blindly. */
+function finnhubFailure(name: string, label: string, error: unknown): ToolOutcome {
+  const kind = error instanceof FinnhubError ? error.kind : "upstream";
+  const reason = error instanceof Error ? error.message : "Finnhub 호출 실패";
+  const suggestions = kind === "forbidden"
+    ? ["이 데이터는 현재 요금제에서 제공되지 않습니다. 다른 도구로 대체하세요.", "가격 이력은 get_price_history를 쓰세요."]
+    : kind === "not_configured" ? ["Settings에서 Finnhub 연결 상태를 확인하세요.", ".dev.vars에 FINNHUB_API_KEY를 설정하세요."]
+      : ["잠시 후 다시 시도하세요.", "무료 티어는 분당 60회로 제한됩니다."];
+  return {
+    result: { available: false, reason, failure: kind, permanent: kind === "forbidden" || kind === "not_configured" },
+    artifacts: [limitation(`${label} 불가`, reason, suggestions)],
+    trace: { name, label, status: "failed", detail: FINNHUB_FAILURE_LABELS[kind as keyof typeof FINNHUB_FAILURE_LABELS] ?? reason },
+  };
+}
+
+async function companyFundamentalsTool(input: Input): Promise<ToolOutcome> {
+  const symbol = String(input.symbol ?? "").trim().toUpperCase();
+  if (!symbol) return finnhubFailure("company_fundamentals", "기업 펀더멘털", new Error("symbol이 필요합니다."));
+  if (!finnhubConfigured()) return finnhubFailure("company_fundamentals", "기업 펀더멘털", new FinnhubError("not_configured", FINNHUB_FAILURE_LABELS.not_configured));
+  const wanted = new Set(Array.isArray(input.include) && input.include.length ? input.include.map(String) : ["profile", "metrics", "recommendations", "peers"]);
+  try {
+    const [profile, metrics, recommendations, peers] = await Promise.all([
+      wanted.has("profile") ? fetchProfile(symbol).catch(() => null) : null,
+      wanted.has("metrics") ? fetchMetrics(symbol).catch(() => null) : null,
+      wanted.has("recommendations") ? fetchRecommendations(symbol).catch(() => []) : [],
+      wanted.has("peers") ? fetchPeers(symbol).catch(() => []) : [],
+    ]);
+    if (!profile && !metrics && !recommendations.length && !peers.length) throw new FinnhubError("empty", `${symbol}에서 가져온 데이터가 없습니다.`);
+
+    const artifacts: LabArtifact[] = [];
+    if (profile || metrics) {
+      artifacts.push({
+        id: id(), type: "table", title: `${symbol} 펀더멘털`,
+        subtitle: profile ? `${profile.name} · ${profile.exchange} · ${profile.industry}` : symbol,
+        columns: ["항목", "값"],
+        rows: [
+          ["시가총액 ($M)", profile?.marketCapUsdMillions ?? null],
+          ["상장일", profile?.ipo || null],
+          ["베타", metrics?.beta ?? null],
+          ["PER (TTM)", metrics?.peRatio ?? null],
+          ["PSR (TTM)", metrics?.psRatio ?? null],
+          ["영업이익률 (TTM, %)", metrics?.operatingMarginTtm ?? null],
+          ["순이익률 (TTM, %)", metrics?.netMarginTtm ?? null],
+          ["매출 성장률 (TTM YoY, %)", metrics?.revenueGrowthTtmYoy ?? null],
+          ["부채비율 (D/E)", metrics?.totalDebtToEquity ?? null],
+          ["52주 고가", metrics?.week52High ?? null],
+          ["52주 저가", metrics?.week52Low ?? null],
+          ["90일 변동성", metrics?.volatility90Day ?? null],
+          ["13주 수익률 (%)", metrics?.return13WeekPct ?? null],
+          ["52주 수익률 (%)", metrics?.return52WeekPct ?? null],
+        ],
+        notes: ["출처 Finnhub. 재무 지표는 최신 보고 분기 기준이라 가격 지표와 기준일이 다를 수 있습니다."],
+      });
+    }
+    if (recommendations.length) {
+      artifacts.push({
+        id: id(), type: "table", title: `${symbol} 애널리스트 컨센서스`,
+        subtitle: `최근 ${recommendations.length}개월 · 순매수 = (적극매수+매수-매도-적극매도)/전체`,
+        columns: ["기준월", "적극매수", "매수", "보유", "매도", "적극매도", "합계", "순매수 (%)"],
+        rows: recommendations.slice(0, 12).map((row) => [row.period, row.strongBuy, row.buy, row.hold, row.sell, row.strongSell, row.total, row.netBullishPct]),
+        notes: ["애널리스트 등급은 후행 지표입니다. 가격이 움직인 뒤에 조정되는 경우가 많으므로 진입 신호로 쓰지 마세요."],
+      });
+    }
+    const detail = [profile ? profile.industry : "", metrics?.beta != null ? `베타 ${metrics.beta}` : "", peers.length ? `유사기업 ${peers.length}개` : ""].filter(Boolean).join(" · ");
+    return {
+      result: { symbol, profile, metrics, recommendations: recommendations.slice(0, 24), peers },
+      artifacts,
+      trace: { name: "company_fundamentals", label: `${symbol} 펀더멘털`, status: "complete", detail: detail || "조회 완료" },
+    };
+  } catch (error) {
+    return finnhubFailure("company_fundamentals", "기업 펀더멘털", error);
+  }
+}
+
+async function earningsScheduleTool(input: Input, context: ToolContext): Promise<ToolOutcome> {
+  if (!finnhubConfigured()) return finnhubFailure("earnings_schedule", "실적 일정", new FinnhubError("not_configured", FINNHUB_FAILURE_LABELS.not_configured));
+  const symbol = input.symbol ? String(input.symbol).trim().toUpperCase() : undefined;
+  const from = isDate(input.from) ? input.from : context.today;
+  const to = isDate(input.to) ? input.to : shiftDate(from, 30);
+  try {
+    const calendar = await fetchEarningsCalendar(from, to, symbol);
+    const surprises = symbol && input.includeSurprises !== false ? await fetchEarningsSurprises(symbol).catch(() => []) : [];
+    const timingLabel = (hour: string | null) => hour === "bmo" ? "장전" : hour === "amc" ? "장후" : hour === "dmh" ? "장중" : "미정";
+    const artifacts: LabArtifact[] = [{
+      id: id(), type: "table", title: symbol ? `${symbol} 실적 일정` : "실적 캘린더",
+      subtitle: `${from} ~ ${to} · ${calendar.length}건`,
+      columns: ["종목", "발표일", "발표 시각", "반응 세션", "분기", "EPS 컨센서스", "EPS 실제", "매출 컨센서스"],
+      rows: calendar.slice(0, 60).map((row) => [
+        row.symbol, row.date, timingLabel(row.hour),
+        // The tradable session is the point of the timing flag, so it is
+        // resolved here rather than left for the reader to work out.
+        row.hour === "amc" ? "다음 거래일" : row.hour === "bmo" ? "당일" : row.hour === "dmh" ? "당일 장중" : "확인 필요",
+        row.quarter ? `${row.year} Q${row.quarter}` : null,
+        row.epsEstimate, row.epsActual, row.revenueEstimate,
+      ]),
+      notes: [
+        "장후(amc) 발표는 다음 거래일이 반응 세션입니다. 발표일 자체를 반응일로 재면 뉴스 이전을 재는 것이 됩니다.",
+        "발표 시각이 '미정'인 항목은 확정 전이므로 반응 세션을 단정하지 마세요.",
+        "출처 Finnhub 실적 캘린더. 과거 확정 발표일은 SEC EDGAR 8-K가 더 정확합니다 (event_day_profile의 includeEarnings).",
+      ],
+    }];
+    if (surprises.length) {
+      artifacts.push({
+        id: id(), type: "table", title: `${symbol} 실적 서프라이즈 이력`,
+        subtitle: `최근 ${Math.min(surprises.length, 12)}분기`,
+        columns: ["분기", "컨센서스 EPS", "실제 EPS", "서프라이즈", "서프라이즈 (%)"],
+        rows: surprises.slice(0, 12).map((row) => [row.period, row.estimate, row.actual, row.surprise, row.surprisePercent]),
+        notes: ["서프라이즈 부호와 주가 반응은 자주 어긋납니다. 가이던스가 실적 자체보다 중요한 경우가 많습니다."],
+      });
+    }
+    const next = calendar.find((row) => row.date >= context.today);
+    return {
+      result: { from, to, symbol: symbol ?? null, calendar, surprises },
+      artifacts,
+      trace: { name: "earnings_schedule", label: symbol ? `${symbol} 실적 일정` : "실적 캘린더", status: "complete", detail: next ? `다음 ${next.symbol} ${next.date} ${timingLabel(next.hour)}` : `${calendar.length}건` },
+    };
+  } catch (error) {
+    return finnhubFailure("earnings_schedule", "실적 일정", error);
+  }
+}
+
+async function insiderActivityTool(input: Input, context: ToolContext): Promise<ToolOutcome> {
+  const symbol = String(input.symbol ?? "").trim().toUpperCase();
+  if (!symbol) return finnhubFailure("insider_activity", "내부자 거래", new Error("symbol이 필요합니다."));
+  if (!finnhubConfigured()) return finnhubFailure("insider_activity", "내부자 거래", new FinnhubError("not_configured", FINNHUB_FAILURE_LABELS.not_configured));
+  const { from, to } = windowFor(input, context.today, 365);
+  try {
+    const [transactions, sentiment] = await Promise.all([
+      fetchInsiderTransactions(symbol, from, to),
+      fetchInsiderSentiment(symbol, from, to).catch(() => []),
+    ]);
+    const buys = transactions.filter((row) => row.change > 0);
+    const sells = transactions.filter((row) => row.change < 0);
+    const shares = (list: typeof transactions) => list.reduce((sum, row) => sum + Math.abs(row.change), 0);
+    const artifacts: LabArtifact[] = [{
+      id: id(), type: "table", title: `${symbol} 내부자 거래`,
+      subtitle: `${from} ~ ${to} · ${transactions.length}건 · 매수 ${buys.length} / 매도 ${sells.length}`,
+      columns: ["제출일", "거래일", "성명", "코드", "주식수 변동", "체결가"],
+      rows: transactions.slice(0, 30).map((row) => [row.filingDate, row.transactionDate, row.name, row.transactionCode, row.change, row.transactionPrice]),
+      notes: [
+        "내부자 매도는 대부분 사전 계획된 분산 매도(10b5-1)라 정보가 거의 없습니다. 매수가 신호에 가깝습니다.",
+        "Form 4는 거래 후 2영업일 이내 제출입니다. 백테스트는 filingDate에 앵커해야 하며 transactionDate를 쓰면 룩어헤드입니다.",
+        `기간 합계 · 매수 ${shares(buys).toLocaleString()}주 / 매도 ${shares(sells).toLocaleString()}주`,
+      ],
+    }];
+    if (sentiment.length) {
+      artifacts.push({
+        id: id(), type: "table", title: `${symbol} 내부자 심리 (MSPR)`,
+        subtitle: "월별 · MSPR은 -100(전량 매도)에서 +100(전량 매수)",
+        columns: ["연", "월", "순주식수 변동", "MSPR"],
+        rows: sentiment.map((row) => [row.year, row.month, row.change, row.mspr]),
+        notes: ["MSPR은 Finnhub 자체 집계치이며 계산식이 공개되지 않았습니다. 방향 참고용으로만 쓰고 임계값 규칙의 근거로 삼지 마세요."],
+      });
+    }
+    return {
+      result: { symbol, period: { from, to }, transactions, sentiment, summary: { buys: buys.length, sells: sells.length, buyShares: shares(buys), sellShares: shares(sells) } },
+      artifacts,
+      trace: { name: "insider_activity", label: `${symbol} 내부자 거래`, status: "complete", detail: `${transactions.length}건 · 매수 ${buys.length} / 매도 ${sells.length}` },
+    };
+  } catch (error) {
+    return finnhubFailure("insider_activity", "내부자 거래", error);
+  }
+}
+
+async function marketStatusTool(input: Input): Promise<ToolOutcome> {
+  if (!finnhubConfigured()) return finnhubFailure("market_status", "거래소 상태", new FinnhubError("not_configured", FINNHUB_FAILURE_LABELS.not_configured));
+  try {
+    const status = await fetchMarketStatus(String(input.exchange ?? "US"));
+    const detail = status.holiday ? `휴장 · ${status.holiday}` : status.isOpen ? `장중 · ${status.session ?? ""}`.trim() : `장외 · ${status.session ?? "closed"}`;
+    return {
+      result: status,
+      artifacts: [{
+        id: id(), type: "table", title: `${status.exchange} 거래소 상태`, subtitle: `확인 ${new Date(status.asOf).toLocaleString("ko-KR")}`,
+        columns: ["항목", "값"],
+        rows: [["개장 여부", status.isOpen ? "장중" : "장외"], ["세션", status.session], ["휴장일", status.holiday ?? "아님"], ["표준시", status.timezone]],
+        notes: ["휴장일과 반휴장일(13:00 조기 마감)에는 인트라데이 규칙의 '장 마감까지 보유'가 다른 시각을 의미합니다."],
+      }],
+      trace: { name: "market_status", label: "거래소 상태", status: "complete", detail },
+    };
+  } catch (error) {
+    return finnhubFailure("market_status", "거래소 상태", error);
+  }
+}
+
+async function directionStudyTool(input: Input, context: ToolContext): Promise<ToolOutcome> {
+  const failed = (reason: string): ToolOutcome => ({ result: { available: false, reason }, artifacts: [limitation("방향 검정 불가", reason, ["티커 확인", "종목 수를 늘려 표본 확대"])], trace: { name: "direction_study", label: "방향 예측 검정", status: "failed", detail: reason } });
+  const requested = (Array.isArray(input.symbols) ? input.symbols : []).map(String).filter(Boolean).slice(0, 8);
+  if (!requested.length) return failed("티커가 필요합니다.");
+
+  const targetPct = Math.max(0.1, Math.min(20, Number(input.targetPct) || 2));
+  const gapThresholdPct = Math.max(0, Math.min(20, Number(input.gapThresholdPct) || 1));
+  const volumeThreshold = input.volumeThreshold === null ? null : Math.max(0.1, Math.min(20, Number(input.volumeThreshold) || 1.5));
+  const source = input.source === "intraday" ? "intraday" : "daily";
+
+  const resolved = await resolveSymbols(requested);
+  const pooled: DirectionInput[] = [];
+  const failures: string[] = [];
+  const perSymbol: Array<{ symbol: string; sessions: number; provider?: string }> = [];
+  const hasLongHistory = alpacaConfigured();
+  const intradayLookbackDays = Math.min(hasLongHistory ? 1825 : 55, Math.max(7, Math.round(Number(input.lookbackDays) || (hasLongHistory ? 365 : 55))));
+
+  for (const asset of resolved) {
+    const symbol = asset.symbol ?? asset.input;
+    if (!asset.public || !asset.symbol) { failures.push(`${symbol}: ${asset.note ?? "거래 가능 종목 확인 실패"}`); continue; }
+    try {
+      if (source === "daily") {
+        const { from, to } = windowFor(input, context.today, 1825);
+        const load = await loadDailyRows(asset.symbol, from, to);
+        if (!load.rows.length) { failures.push(`${symbol}: 일봉 없음`); continue; }
+        const volumes = load.rows.map((row) => row.volume);
+        const rows = load.rows.map((row, index) => ({
+          date: `${asset.symbol}:${row.date}`,
+          open: row.open, high: row.high, low: row.low, close: row.close,
+          gapPct: index > 0 ? round((row.open / load.rows[index - 1].close - 1) * 100, 4) : null,
+          relativeVolume: priorRelativeVolume(volumes, index, 20),
+        }));
+        pooled.push(...rows);
+        perSymbol.push({ symbol: asset.symbol, sessions: rows.length });
+      } else {
+        // The intraday path exists to test *opening* volume rather than a
+        // previous-day proxy. Alpaca extends the old Yahoo-only 59-day sample.
+        const from = shiftDate(context.today, -intradayLookbackDays);
+        const history = await fetchIntradayWindow(asset.symbol, from, context.today, "5m", { session: "regular", maxBars: 120_000 });
+        const points = history.points;
+        if (!points.length) { failures.push(`${symbol}: 분봉 없음`); continue; }
+        const options: FvgOptions = { intervalMinutes: 5, anchorMinutes: 15, windowMinutes: 90, rewardRisk: 2, costBps: tossCostBps(), holdUntil: "session_close" };
+        const contexts = new Map(buildSessionContexts(points, options).map((entry) => [entry.date, entry]));
+        const rows: DirectionInput[] = [];
+        for (const [date, entry] of contexts) {
+          const bars = regularSession(points, date);
+          if (!bars.length) continue;
+          rows.push({
+            date: `${asset.symbol}:${date}`,
+            open: bars[0].open,
+            high: Math.max(...bars.map((bar) => bar.high)),
+            low: Math.min(...bars.map((bar) => bar.low)),
+            close: bars.at(-1)!.close,
+            gapPct: entry.gapPct,
+            relativeVolume: entry.relativeVolume,
+          });
+        }
+        pooled.push(...rows);
+        perSymbol.push({ symbol: asset.symbol, sessions: rows.length, provider: `${history.provider}${history.feed ? ` ${history.feed.toUpperCase()}` : ""}` });
+      }
+    } catch (error) {
+      failures.push(`${symbol}: ${error instanceof Error ? error.message : "데이터 조회 실패"}`);
+    }
+  }
+
+  if (!pooled.length) return failed(failures.join(" / ") || "사용할 수 있는 데이터가 없습니다.");
+  pooled.sort((left, right) => left.date.localeCompare(right.date));
+  const study = buildDirectionStudy(pooled, perSymbol.map((item) => item.symbol).join(","), { targetPct, gapThresholdPct, volumeThreshold });
+  const intradayProviderLabel = [...new Set(perSymbol.flatMap((item) => item.provider ? [item.provider] : []))].join(" / ") || "Yahoo Finance";
+
+  const bucketArtifact: LabArtifact = {
+    id: id(), type: "table", title: `방향 예측 · 목표 ${targetPct}%`,
+    subtitle: `${perSymbol.length}종목 풀링 · ${pooled.length}세션 · ${source === "daily" ? "일봉 · 전일 상대거래량" : `${intradayProviderLabel} 5분봉 · 실제 시초 거래량 · ${intradayLookbackDays}일 요청`}`,
+    columns: ["구간", "세션", "방향 결정된 날", "상방 비중 (%)", "휩쏘 비율 (%)", "평균 시가→종가 (%)", "중앙 갭 (%)"],
+    rows: study.buckets.map((bucket) => [bucket.label, bucket.sessions, bucket.decisive, bucket.upShareOfDecisivePct, bucket.whipsawRatePct, bucket.meanOpenToClosePct, bucket.medianGapPct]),
+    notes: [
+      ...study.notes,
+      perSymbol.map((item) => `${item.symbol} ${item.sessions}세션`).join(" · "),
+      failures.length ? `제외: ${failures.join(" / ")}` : "",
+    ].filter(Boolean),
+  };
+  const testArtifact: LabArtifact = {
+    id: id(), type: "table", title: "검정 결과",
+    subtitle: "피셔 정확검정 · Benjamini-Hochberg 보정 · 차이 없음에는 검출 가능한 최소 차이를 함께 표기",
+    columns: ["검정", "왼쪽 (%)", "n", "오른쪽 (%)", "n", "차이 (%p)", "±95%", "검출 최소 (%p)", "p", "보정 기준", "판정"],
+    rows: study.tests.map((test) => [
+      test.label, test.leftUpSharePct, test.leftDecisive, test.rightUpSharePct, test.rightDecisive,
+      test.spreadPts, test.marginOfErrorPts, test.minimumDetectableEffectPts, test.pValue, test.correctedThreshold, test.verdict,
+    ]),
+    notes: [
+      "방향 검정의 '상방 비중'은 방향이 결정된 날 중 위로 간 비율이다. 50%가 우위 없음이다.",
+      "휩쏘 검정의 두 값은 전체 세션 중 양방향 모두 목표에 도달한 비율이다. 방향이 아니라 손절이 맞을 확률에 관한 것이다.",
+      "차이 없음으로 나온 검정은 '검출 최소' 미만의 우위까지 배제하지는 못한다.",
+    ],
+  };
+
+  const decisive = study.tests.filter((test) => test.significant);
+  return {
+    result: { ...study, rows: study.rows.slice(-50), perSymbol, failures, source, intradayProvider: source === "intraday" ? intradayProviderLabel : null, intradayLookbackDays: source === "intraday" ? intradayLookbackDays : null },
+    artifacts: [bucketArtifact, testArtifact],
+    trace: {
+      name: "direction_study", label: `방향 예측 검정 · ${perSymbol.length}종목`, status: "complete",
+      detail: decisive.length ? `유의: ${decisive.map((test) => test.label).join(", ")}` : `${study.tests.length}개 검정 모두 유의한 차이 없음 (세션 ${pooled.length})`,
+    },
+  };
+}
+
+function tacticPortfolioTool(input: Input): ToolOutcome {
+  const raw = Array.isArray(input.tactics) ? input.tactics : [];
+  const tactics: Tactic[] = raw.slice(0, 12).flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    const item = entry as Record<string, unknown>;
+    return [{
+      name: String(item.name ?? "이름 없는 전술"),
+      tradesPerDay: Number(item.tradesPerDay) || 0,
+      winRatePct: Number(item.winRatePct) || 0,
+      rewardRisk: Number(item.rewardRisk) || 1,
+      riskPerTradePct: Number(item.riskPerTradePct) || 0,
+      activeDayRatePct: item.activeDayRatePct === undefined ? 100 : Number(item.activeDayRatePct) || 0,
+    }];
+  });
+  if (!tactics.length) {
+    return { result: { available: false, reason: "전술이 최소 하나 필요합니다." }, artifacts: [], trace: { name: "tactic_portfolio", label: "전술 포트폴리오", status: "failed", detail: "전술 없음" } };
+  }
+  const targetDailyPct = Math.max(0.01, Math.min(50, Number(input.targetDailyPct) || 2));
+  const rewardRiskForFloor = tactics.reduce((sum, tactic) => sum + tactic.rewardRisk, 0) / tactics.length;
+  const fee = feeFloor({
+    feePerSidePct: input.feePerSidePct === undefined ? feePerSidePct() : Number(input.feePerSidePct),
+    slippagePct: input.slippagePct === undefined ? assumedSlippagePct() : Number(input.slippagePct),
+    stopDistancePct: input.stopDistancePct === undefined ? 1 : Number(input.stopDistancePct),
+  }, rewardRiskForFloor);
+  const book = combineTactics(tactics, targetDailyPct, fee);
+
+  const costArtifact: LabArtifact = {
+    id: id(), type: "table", title: "수수료를 R로 환산",
+    subtitle: `편도 ${fee.model.feePerSidePct}% + 슬리피지 ${fee.model.slippagePct}% · 손절폭 ${fee.model.stopDistancePct}% · 평균 손익비 1:${round(rewardRiskForFloor, 2)}`,
+    columns: ["항목", "값"],
+    rows: [
+      ["왕복 비용 (명목가 %)", fee.roundTripCostPct],
+      ["거래당 비용 (R)", fee.costPerTradeR],
+      ["손익분기 승률 · 비용 반영 (%)", fee.breakevenWinRatePct],
+      ["손익분기 승률 · 비용 없음 (%)", fee.frictionlessWinRatePct],
+      ["수수료가 요구하는 추가 승률 (%p)", fee.winRatePenaltyPts],
+    ],
+    notes: [
+      ...fee.notes,
+      "손절폭을 좁히면 포지션은 커지지만 수수료의 R 부담도 같은 비율로 커진다. 손절폭은 리스크 관리 변수인 동시에 비용 변수다.",
+    ],
+  };
+  const bookArtifact: LabArtifact = {
+    id: id(), type: "table", title: `전술 합산 · 목표 ${targetDailyPct}%/일`,
+    subtitle: `채택 ${book.kept}개 / 검토 ${book.tactics.length}개 · 합산 ${book.combinedExpectedDailyPct}% · 부족 ${book.shortfallPct}%`,
+    columns: ["전술", "거래당 기대 R", "하루 기여 (%)", "유효 거래/일", "손익분기 승률 (%)", "승률 여유 (%p)", "채택", "사유"],
+    rows: book.tactics.map((tactic) => [
+      tactic.name, tactic.expectedRPerTrade, tactic.expectedDailyPct, tactic.effectiveTradesPerDay,
+      tactic.breakevenWinRatePct, tactic.edgeOverBreakevenPts, tactic.keep ? "예" : "아니오", tactic.reason,
+    ]),
+    notes: [
+      ...book.notes,
+      `채택 전술 전체가 하루에 내는 거래는 ${book.totalTradesPerDay}건이고, 그만큼 매일 ${book.totalDailyCostPct}%를 수수료로 낸다. 이 값이 목표에 비해 크면 전술 수를 늘리는 방향 자체가 비용에 잡아먹힌다.`,
+    ],
+  };
+
+  return {
+    result: book,
+    artifacts: [costArtifact, bookArtifact],
+    trace: {
+      name: "tactic_portfolio", label: `전술 ${book.tactics.length}개 합산`, status: "complete",
+      detail: `채택 ${book.kept}개 · 합산 ${book.combinedExpectedDailyPct}%/일 · 목표까지 ${book.shortfallPct}%${book.additionalTacticsNeeded ? ` (약 ${book.additionalTacticsNeeded}개 더 필요)` : ""}`,
+    },
+  };
+}
+
+const PROFILE_DEFAULT_ROOTS = ["cpi", "core-cpi", "nfp", "fomc", "pce", "retail-sales"];
+
+async function eventDayProfileTool(input: Input, context: ToolContext): Promise<ToolOutcome> {
+  const failed = (reason: string): ToolOutcome => ({ result: { available: false, reason }, artifacts: [limitation("이벤트 데이 프로파일 불가", reason, ["티커 확인", "조회 기간 확대"])], trace: { name: "event_day_profile", label: "이벤트 데이 프로파일", status: "failed", detail: reason } });
+  const symbol = String(input.symbol ?? "").trim();
+  if (!symbol) return failed("symbol이 필요합니다.");
+  const targetPct = Math.max(0.1, Math.min(20, Number(input.targetPct) || 2));
+  const { from, to } = windowFor(input, context.today, 1825);
+  const includeEarnings = input.includeEarnings === true;
+  const requestedRoots = (Array.isArray(input.eventRoots) ? input.eventRoots.map(String) : []).filter(Boolean);
+  // An explicit empty array with earnings on means "earnings only"; a missing
+  // field still falls back to the macro roots.
+  const roots = requestedRoots.length ? requestedRoots
+    : includeEarnings && Array.isArray(input.eventRoots) ? []
+      : PROFILE_DEFAULT_ROOTS;
+
+  const loaded = await loadAsset(symbol, from, to);
+  if ("error" in loaded) return failed(loaded.error);
+
+  // The stored table carries surprises but may not be seeded; the static calendar
+  // always has the schedule. Dates from both are unioned so the profile works
+  // either way, and the notes say which source supplied them.
+  const stored = await listMarketEvents(roots, from, to).catch(() => []);
+  const datesByRoot = new Map<string, Set<string>>();
+  for (const event of stored) {
+    if (!datesByRoot.has(event.eventRoot)) datesByRoot.set(event.eventRoot, new Set());
+    datesByRoot.get(event.eventRoot)!.add(event.eventDate);
+  }
+  let fromCalendar = 0;
+  for (const event of MARKET_EVENT_CALENDAR) {
+    if (event.date < from || event.date > to) continue;
+    const root = roots.find((candidate) => event.id.startsWith(`${candidate}-`));
+    if (!root) continue;
+    if (!datesByRoot.has(root)) datesByRoot.set(root, new Set());
+    const bucket = datesByRoot.get(root)!;
+    if (!bucket.has(event.date)) { bucket.add(event.date); fromCalendar += 1; }
+  }
+
+  const groups: EventDayGroup[] = [...datesByRoot.entries()]
+    .map(([root, dates]) => ({ label: `${eventRootLabel(root)} 발표일`, dates: [...dates].sort() }))
+    .filter((group) => group.dates.length > 0)
+    .sort((left, right) => right.dates.length - left.dates.length);
+
+  // Earnings come from EDGAR rather than the calendar, and are split by release
+  // timing because a pre-open release and an after-close one are anchored to
+  // different sessions and, for names like TSLA, are different events entirely.
+  let earnings: Awaited<ReturnType<typeof fetchEarningsHistory>> | null = null;
+  let earningsError: string | null = null;
+  if (includeEarnings) {
+    try {
+      earnings = await fetchEarningsHistory(loaded.asset.symbol!, from, to);
+      for (const timing of ["after_close", "before_open", "during_session"] as const) {
+        const dates = earnings.releases.filter((release) => release.timing === timing).map((release) => release.reactionDate);
+        if (dates.length) groups.push({ label: `실적 반응일 · ${RELEASE_TIMING_LABELS[timing]} 발표`, dates: [...new Set(dates)].sort() });
+      }
+    } catch (error) {
+      earningsError = error instanceof Error ? error.message : "실적 발표일을 가져오지 못했습니다.";
+    }
+  }
+  if (!groups.length) {
+    const reason = includeEarnings
+      ? earningsError ?? `${from}~${to} 구간에 ${loaded.asset.symbol}의 8-K 항목 2.02 공시가 없습니다.`
+      : `${from}~${to} 구간에 ${roots.join(", ")} 이벤트 날짜가 없습니다. /api/events seed 를 먼저 실행하세요.`;
+    return failed(reason);
+  }
+
+  const profile = buildEventDayProfile(loaded.rows, loaded.asset.symbol!, loaded.asset.name, groups, targetPct);
+  const statsRow = (stats: typeof profile.baseline) => [
+    stats.label, stats.sessions, stats.cleanReachRatePct, stats.reachEitherRatePct, stats.bothSidesRatePct,
+    stats.closeAlignedRatePct, stats.medianRangePct, stats.medianAbsMovePct, stats.meanAbsGapPct,
+  ];
+  const reach: LabArtifact = {
+    id: id(), type: "table", title: `${loaded.asset.symbol} · ${targetPct}% 도달 가능한 날`,
+    subtitle: `${profile.period.from} ~ ${profile.period.to} · ${profile.period.sessions}거래일 · 시가 기준 최대 유리 이동`,
+    columns: ["구분", "세션", "실질 도달률 (%)", "양방향 중 도달 (%)", "양쪽 다 도달 (%)", "종가방향 도달 (%)", "중앙 변동폭 (%)", "중앙 |시가→종가| (%)", "평균 |갭| (%)"],
+    rows: [statsRow(profile.baseline), ...profile.groups.map(statsRow)],
+    notes: [
+      ...profile.notes,
+      earnings ? `실적 발표일 ${earnings.releases.length}건 · SEC EDGAR 8-K 항목 2.02 · 발표 시각 구분 ${Object.entries(earnings.timingCounts).map(([timing, count]) => `${RELEASE_TIMING_LABELS[timing as keyof typeof RELEASE_TIMING_LABELS]} ${count}`).join(" / ")}` : "",
+      earnings?.truncated ? "EDGAR 제출 이력이 요청 구간 전체를 덮지 못했다. 오래된 구간의 발표가 빠져 있을 수 있다." : "",
+      earningsError ? `실적 발표일 조회 실패: ${earningsError}` : "",
+    ].filter(Boolean),
+  };
+  const significance: LabArtifact = {
+    id: id(), type: "table", title: "기준선 대비 검정",
+    subtitle: "피셔 정확검정(양측) · Benjamini-Hochberg 다중검정 보정 · 표본 10세션 이상",
+    columns: ["구분", "지표", "세션", "도달률 (%)", "기준선 (%)", "차이 (%p)", "배율", "p", "보정 기준", "보정 전 유의", "최종 유의"],
+    rows: profile.comparisons.map((item) => [
+      item.label, item.metric === "cleanReach" ? "실질 도달률" : "양방향 중 도달",
+      item.sessions, item.ratePct, item.baselineRatePct, item.differencePts, item.liftRatio, item.pValue,
+      item.correctedThreshold, item.significantUncorrected ? "예" : "아니오", item.significant ? "예" : "아니오",
+    ]),
+    notes: [
+      "한 호출에서 여러 그룹을 같은 기준선에 검정하면 그중 하나가 우연히 낮은 p값을 갖는다. 보정 후 유의한 것만 결론으로 옮긴다.",
+      "'보정 전 유의'가 예인데 '최종 유의'가 아니오인 항목은, 검정 개수를 감안하면 우연으로 설명되는 수준이다.",
+      "월간 지표는 5년을 모아도 60회다. 표본 10세션 미만 그룹은 검정 대상에서 빠진다.",
+      "이벤트 그룹에 속한 세션은 기준선에서 제외되므로 두 모집단은 겹치지 않는다.",
+    ],
+  };
+
+  const best = [...profile.comparisons.filter((item) => item.metric === "cleanReach" && item.sufficientSample)].sort((left, right) => (right.differencePts ?? -Infinity) - (left.differencePts ?? -Infinity))[0];
+  return {
+    result: {
+      ...profile,
+      eventSource: { storedEvents: stored.length, addedFromStaticCalendar: fromCalendar, roots },
+      earnings: earnings ? { releases: earnings.releases, timingCounts: earnings.timingCounts, cik: earnings.cik, truncated: earnings.truncated } : null,
+      earningsError,
+      priceOrigin: loaded.origin,
+    },
+    artifacts: [reach, significance],
+    trace: {
+      name: "event_day_profile", label: `${loaded.asset.symbol} · ${targetPct}% 도달 프로파일`, status: "complete",
+      detail: `기준선 ${profile.baseline.cleanReachRatePct ?? "—"}%${best ? ` · 최고 ${best.label} ${best.ratePct ?? "—"}% (p=${best.pValue ?? "—"})` : ""}`,
+    },
+  };
+}
+
+function eventRootLabel(root: string) {
+  return EVENT_ROOTS.find((item) => item.root === root)?.label ?? root;
+}
+
 export async function executeLabTool(name: string, input: unknown, context: ToolContext): Promise<ToolOutcome> {
   const args = (input && typeof input === "object" ? input : {}) as Input;
   switch (name) {
@@ -1457,6 +2222,14 @@ export async function executeLabTool(name: string, input: unknown, context: Tool
     case "audit_result": return auditResultTool(args, context);
     case "market_events": return marketEventsTool(args, context);
     case "event_reaction": return eventReactionTool(args, context);
+    case "daily_target_math": return dailyTargetMathTool(args);
+    case "event_day_profile": return eventDayProfileTool(args, context);
+    case "tactic_portfolio": return tacticPortfolioTool(args);
+    case "direction_study": return directionStudyTool(args, context);
+    case "company_fundamentals": return companyFundamentalsTool(args);
+    case "earnings_schedule": return earningsScheduleTool(args, context);
+    case "insider_activity": return insiderActivityTool(args, context);
+    case "market_status": return marketStatusTool(args);
     default: return { result: { error: `알 수 없는 도구 ${name}` }, artifacts: [], trace: { name, label: name, status: "failed", detail: "알 수 없는 도구" } };
   }
 }
@@ -1465,4 +2238,6 @@ export const TOOL_LABELS: Record<string, string> = {
   resolve_symbols: "심볼 해석", get_price_history: "가격 이력", compare_assets: "자산 비교", technical_indicators: "기술 지표", event_study: "이벤트 스터디", intraday_event_study: "분봉 이벤트 스터디", backtest_strategy: "백테스트", risk_profile: "리스크 프로파일", seasonality: "계절성", largest_moves_with_news: "급등락·뉴스", search_news: "뉴스 검색", get_quote: "현재가", market_calendar: "경제 일정", news_sentiment_tests: "뉴스 감성 Test", show_chart: "TradingView 차트", intraday_fvg_backtest: "분봉 FVG 백테스트", propose_strategy: "전략 제안", save_strategy: "전략 저장", run_strategy_backtest: "전략 백테스트", list_strategies: "저장된 전략", web_search: "웹 검색",
   screen_universe: "종목 스크리닝", conditional_stats: "조건부 통계", save_finding: "연구 노트 저장", list_findings: "연구 노트",
   sweep_conditions: "그리드 스윕", audit_result: "결론 감사", market_events: "경제 이벤트", event_reaction: "이벤트 반응",
+  daily_target_math: "일일 목표 산술", event_day_profile: "이벤트 데이 프로파일", tactic_portfolio: "전술 포트폴리오", direction_study: "방향 예측 검정",
+  company_fundamentals: "기업 펀더멘털", earnings_schedule: "실적 일정", insider_activity: "내부자 거래", market_status: "거래소 상태",
 };

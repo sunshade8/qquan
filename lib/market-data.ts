@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { alpacaConfigured, fetchAlpacaIntradayWindow } from "./alpaca.ts";
 
 export type PriceRow = {
   date: string;
@@ -50,13 +51,22 @@ export type EventWindow = {
   limitation: string | null;
 };
 
-export type IntradayInterval = "5m" | "15m" | "60m";
+export type IntradayInterval = "1m" | "5m" | "15m" | "60m";
 /**
  * One intraday bar. `close` alone answers "where was price at time T", but any
  * rule written on candles — an opening range, a body breakout, a fair value gap,
  * a stop that sits under a wick — needs the full OHLC, so the fetcher carries it.
  */
 export type IntradayPoint = { timestamp: number; date: string; time: string; close: number; open: number; high: number; low: number; volume: number };
+
+export type IntradayHistory = {
+  points: IntradayPoint[];
+  provider: "Alpaca" | "Yahoo Finance";
+  feed: "sip" | "iex" | null;
+  availableSince: string | null;
+  historicalDelayMinutes: number | null;
+  fallbackReason: string | null;
+};
 
 type TossToken = { access_token?: string; expires_in?: number; error?: string; error_description?: string };
 type TossEnvelope<T> = { result?: T; error?: { code?: string; message?: string } };
@@ -339,6 +349,54 @@ export async function fetchYahooIntradayWindow(symbol: string, from: string, to:
     lastError = new MarketProviderError("yahoo", "not_found", "해당 구간의 분봉 데이터가 없습니다.", 404);
   }
   throw lastError ?? new MarketProviderError("yahoo", "upstream", "Yahoo Finance 분봉 데이터를 가져오지 못했습니다.");
+}
+
+function calendarDays(from: string, to: string) {
+  return Math.ceil((new Date(`${to}T00:00:00Z`).getTime() - new Date(`${from}T00:00:00Z`).getTime()) / 86_400_000);
+}
+
+/**
+ * Preferred intraday source. Alpaca removes Yahoo's 59-day ceiling when keys
+ * are configured; recent, bounded requests still degrade to Yahoo so a provider
+ * outage does not erase the working research path that existed before it.
+ */
+export async function fetchIntradayWindow(
+  symbol: string,
+  from: string,
+  to: string,
+  interval: IntradayInterval,
+  options: { session?: "all" | "regular"; maxBars?: number } = {},
+): Promise<IntradayHistory> {
+  let fallbackReason: string | null = null;
+  if (alpacaConfigured()) {
+    try {
+      const history = await fetchAlpacaIntradayWindow(symbol, from, to, interval, options);
+      return {
+        points: history.points,
+        provider: history.provider,
+        feed: history.feed,
+        availableSince: history.availableSince,
+        historicalDelayMinutes: history.delayedByMinutes,
+        fallbackReason: null,
+      };
+    } catch (error) {
+      fallbackReason = error instanceof Error ? error.message : "Alpaca 분봉 조회 실패";
+    }
+  }
+
+  const yahooLimitDays = interval === "1m" ? 7 : 59;
+  if (calendarDays(from, to) > yahooLimitDays) {
+    throw new Error(fallbackReason ?? `Alpaca API 키가 없어 ${interval} 분봉은 최근 ${yahooLimitDays}일만 조회할 수 있습니다.`);
+  }
+  const points = await fetchYahooIntradayWindow(symbol, from, to, interval);
+  return {
+    points: options.session === "regular" ? points.filter((point) => point.time >= "09:30" && point.time < "16:00") : points,
+    provider: "Yahoo Finance",
+    feed: null,
+    availableSince: null,
+    historicalDelayMinutes: null,
+    fallbackReason,
+  };
 }
 
 function percentChange(from: number, to: number) {

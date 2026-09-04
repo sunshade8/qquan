@@ -1,8 +1,9 @@
-import { fetchYahooIntradayWindow, type IntradayInterval, type IntradayPoint } from "../../../../lib/market-data";
+import { fetchIntradayWindow, type IntradayInterval, type IntradayPoint } from "../../../../lib/market-data";
+import { alpacaConfigured } from "../../../../lib/alpaca";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_PATTERN = /^\d{2}:\d{2}$/;
-const intervals = new Set<IntradayInterval>(["5m", "15m", "60m"]);
+const intervals = new Set<IntradayInterval>(["1m", "5m", "15m", "60m"]);
 
 type Input = { id: string; anchorDate: string; anchorTime: string };
 
@@ -66,8 +67,10 @@ export async function POST(request: Request) {
   if (!intervals.has(interval) || !tests.length) return Response.json({ error: "분봉 주기와 비교 날짜가 필요합니다." }, { status: 400 });
   const symbol = market === "nasdaq" ? "QQQ" : "SPY";
   const today = new Date().toISOString().slice(0, 10);
-  const availabilityDays = interval === "60m" ? 729 : 59;
+  const hasLongHistory = alpacaConfigured();
+  const availabilityDays = interval === "1m" ? 7 : interval === "60m" ? 729 : 59;
   const results = [];
+  const providers = new Set<string>();
 
   for (const test of tests) {
     const age = daysBetween(test.anchorDate, today);
@@ -75,14 +78,21 @@ export async function POST(request: Request) {
       results.push({ ...test, reaction: null, unavailable: "발표일이 아직 지나지 않았습니다." });
       continue;
     }
-    if (age > availabilityDays) {
-      results.push({ ...test, reaction: null, unavailable: interval === "60m" ? "1시간봉 제공 범위(약 2년)를 벗어났습니다." : `${interval} 제공 범위(최근 약 60일)를 벗어났습니다.` });
+    if (hasLongHistory && test.anchorDate < "2016-01-01") {
+      results.push({ ...test, reaction: null, unavailable: "Alpaca 분봉 보존 시작일(2016년) 이전입니다." });
+      continue;
+    }
+    if (!hasLongHistory && age > availabilityDays) {
+      const yahooRange = interval === "1m" ? "최근 7일" : interval === "60m" ? "약 2년" : "최근 약 60일";
+      results.push({ ...test, reaction: null, unavailable: `${interval} Yahoo 제공 범위(${yahooRange})를 벗어났습니다. Alpaca 키를 연결하면 2016년 이후를 조회할 수 있습니다.` });
       continue;
     }
     try {
-      const points = await fetchYahooIntradayWindow(symbol, shiftDate(test.anchorDate, -1), shiftDate(test.anchorDate, 1), interval);
-      const resolved = reaction(points, test.anchorDate, test.anchorTime);
-      results.push({ ...test, reaction: resolved, unavailable: resolved ? null : "발표 시각 주변의 확장시간 분봉이 없습니다." });
+      const history = await fetchIntradayWindow(symbol, shiftDate(test.anchorDate, -1), shiftDate(test.anchorDate, 1), interval, { maxBars: 20_000 });
+      const provider = `${history.provider}${history.feed ? ` ${history.feed.toUpperCase()}` : ""}`;
+      providers.add(provider);
+      const resolved = reaction(history.points, test.anchorDate, test.anchorTime);
+      results.push({ ...test, reaction: resolved, provider, unavailable: resolved ? null : "발표 시각 주변의 확장시간 분봉이 없습니다." });
     } catch (error) {
       results.push({ ...test, reaction: null, unavailable: error instanceof Error ? error.message : "분봉 데이터를 가져오지 못했습니다." });
     }
@@ -92,7 +102,8 @@ export async function POST(request: Request) {
     market,
     symbol,
     interval,
+    providers: [...providers],
     results,
-    methodology: "QQQ·SPY 확장시간 가격을 사용하며, 발표 시각 직전 이용 가능한 봉을 100으로 정규화합니다. 5분·15분봉은 최근 약 60일, 1시간봉은 약 2년 범위에서 공급자 데이터가 있을 때만 계산합니다.",
+    methodology: `QQQ·SPY 확장시간 가격을 사용하며, 발표 시각 직전 이용 가능한 봉을 100으로 정규화합니다. ${hasLongHistory ? "Alpaca로 2016년 이후 이벤트를 조회하며 SIP 무료 데이터는 최근 15분이 제외됩니다." : "Alpaca 미연결 상태라 Yahoo의 제한된 최근 구간만 계산합니다."}`,
   });
 }

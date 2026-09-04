@@ -208,6 +208,21 @@ sitting at 0 calls means no code path reaches it — the balanced (Sonnet) roles
 into the News routes, so a session that used the Lab alone will show `analyst`, `auditor` and
 `planner` at zero, and `summarizer` has no call site at all.
 
+### Alpaca long-history intraday bars
+
+Set `APCA_API_KEY_ID` and `APCA_API_SECRET_KEY` to make Alpaca the preferred source for the
+Lab's 1-, 5-, and 15-minute studies. Historical requests default to the consolidated `sip`
+feed with split adjustment. Alpaca Basic exposes history from 2016, but SIP requests must end
+at least 15 minutes before now; the client enforces a 16-minute safety cutoff. Set
+`ALPACA_DATA_FEED=iex` only when the single-exchange IEX sample is intentional.
+
+Without Alpaca credentials, or when a bounded recent Alpaca request fails, the existing Yahoo
+path remains available (about 59 days for 5-/15-minute bars and 7 days for 1-minute bars).
+Long event studies fetch only the small windows around the supplied events, while FVG backtests
+load symbols sequentially and cap one-minute runs to one year to stay inside the hosted Worker's
+memory limit. Settings reports the live provider, feed, and credential state instead of treating
+"a key exists" as proof that the account can read the data.
+
 ### Lab JARVIS (`/api/lab/agent`)
 
 A streaming (SSE) tool-use loop with 25 tools in `lib/lab-tools.ts`: symbol

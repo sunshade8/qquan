@@ -1228,3 +1228,35 @@ em.verdict.inconclusive { color: #b56b00; background: rgba(216,135,0,.12); }
 .strategy-status button { padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; color: var(--secondary); background: var(--panel); font-size: 8.5px; }
 .lab-canvas-empty.compact { min-height: 160px; }
 .conversation-delete.confirm { color: #fff; background: var(--red); }
+
+/* Provider capability rows in Settings. Each row states what the plan actually
+   returns, so a locked capability reads as a fact about the plan rather than as
+   a failure the user should try to fix. */
+.connection-list { display: flex; flex-direction: column; gap: 2px; margin-top: 12px; }
+.connection-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 190px);
+  gap: 12px; align-items: center; padding: 10px 12px; border-radius: 8px;
+  background: color-mix(in srgb, currentColor 3%, transparent);
+}
+.connection-row + .connection-row { margin-top: 2px; }
+.connection-row span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.connection-row strong { font-size: 13px; font-weight: 600; }
+.connection-row small { font-size: 11px; opacity: 0.62; }
+.connection-row em { font-size: 11px; font-style: normal; opacity: 0.85; color: #18864b; }
+.connection-row code {
+  font-size: 11px; opacity: 0.72; text-align: right;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.connection-row b {
+  font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 999px; white-space: nowrap;
+}
+.connection-row b.connected { background: color-mix(in srgb, #18864b 16%, transparent); color: #18864b; }
+.connection-row b.plan_locked { background: color-mix(in srgb, #d88700 18%, transparent); color: #d88700; }
+.connection-row b.unavailable,
+.connection-row b.not_configured { background: color-mix(in srgb, #9b9ba1 20%, transparent); opacity: 0.8; }
+.connection-row.plan_locked strong,
+.connection-row.not_configured strong { opacity: 0.7; }
+@media (max-width: 720px) {
+  .connection-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .connection-row code { grid-column: 1 / -1; text-align: left; }
+}

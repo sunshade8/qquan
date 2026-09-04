@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runFvgBacktest, scanSession } from "../lib/intraday-fvg.ts";
+import { buildSessionContexts, runFvgBacktest, scanSession } from "../lib/intraday-fvg.ts";
 
 const DATE = "2026-08-05";
 
@@ -126,4 +126,97 @@ test("summaries report the breakeven win rate and outlier dependence", () => {
   assert.equal(rule.breakevenWinRatePct, 33.3);
   assert.equal(rule.totalR, 1);
   assert.equal(rule.totalRExcludingBest, -1); // the whole result is the one winner
+});
+
+// --- session filters: gap and relative opening volume -----------------------
+
+/** Same builder as above but with per-bar volume, for relative-volume tests. */
+function volumeSession(bars, date, volume) {
+  return session(bars, date).map((bar) => ({ ...bar, volume }));
+}
+
+const quietDay = [
+  [100, 101, 99, 100], [100, 101, 99.5, 100.5], [100.5, 101, 100, 100.5],
+  [100.6, 102.5, 100.4, 102.4], [103, 105, 103, 104.5],
+  [104, 104.2, 102.9, 103], [103, 109.5, 102.9, 109.4],
+];
+
+test("gap and relative volume are computed from prior sessions only", () => {
+  // Six sessions of 1000-volume bars, then one that opens 2% above the prior
+  // close on 4x the volume. The baseline median can only exist by session 6.
+  const days = ["2026-08-03", "2026-08-04", "2026-08-05", "2026-08-06", "2026-08-07", "2026-08-10"]
+    .map((date) => volumeSession(quietDay, date, 1000));
+  // The quiet day closes at 109.4, so shifting the template by 11.6 opens the
+  // next session at 111.6 — a 2.01% gap over that close.
+  const gapUp = quietDay.map(([open, high, low, close]) => [open + 11.6, high + 11.6, low + 11.6, close + 11.6]);
+  const points = [...days.flat(), ...volumeSession(gapUp, "2026-08-11", 4000)];
+
+  const contexts = buildSessionContexts(points, options);
+  assert.equal(contexts.length, 7);
+  assert.equal(contexts[0].gapPct, null);            // nothing before it
+  assert.equal(contexts[0].relativeVolume, null);    // no baseline yet
+  assert.equal(contexts[4].relativeVolume, null);    // still short of 5 prior sessions
+  assert.equal(contexts[5].relativeVolume, 1);       // baseline established, volume unchanged
+  const last = contexts.at(-1);
+  assert.ok(last.gapPct > 1.9 && last.gapPct < 2.2);  // 109.4 close -> 111.6 open
+  assert.equal(last.relativeVolume, 4);
+});
+
+test("a filter blocks sessions before the baseline exists rather than admitting them", () => {
+  const points = ["2026-08-03", "2026-08-04", "2026-08-05"].flatMap((date) => volumeSession(quietDay, date, 1000));
+  const contexts = buildSessionContexts(points, { ...options, minRelativeVolume: 1.5 });
+  assert.ok(contexts.every((context) => !context.passes));
+  assert.ok(contexts.at(-1).blockedBy.includes("기준선 미확립"));
+});
+
+test("a gap across a data hole is not treated as a gap", () => {
+  const points = [
+    ...volumeSession(quietDay, "2026-08-03", 1000),
+    ...volumeSession(quietDay, "2026-08-20", 1000), // 17 calendar days later
+  ];
+  const contexts = buildSessionContexts(points, options);
+  assert.equal(contexts[1].gapPct, null);
+  assert.equal(contexts[1].previousClose, null);
+});
+
+test("filtering scores only the passing sessions and still reports the unfiltered run", () => {
+  const winner = session([...setupBars, [104, 104.2, 102.9, 103], [103, 109.5, 102.9, 109.4]], "2026-08-05");
+  const loser = session([...setupBars, [104, 104.2, 102.9, 103], [103, 103.5, 99.0, 99.2]], "2026-08-06");
+  const all = runFvgBacktest("TEST", "Test", [...winner, ...loser], options);
+  assert.equal(all.unfilteredSummaries, null);
+  assert.equal(all.filter.active, false);
+
+  // A 50% gap threshold nothing can clear: the filtered run must be empty while
+  // the unfiltered one is unchanged, which is what makes the two comparable.
+  const filtered = runFvgBacktest("TEST", "Test", [...winner, ...loser], { ...options, minAbsGapPct: 50 });
+  const rule = filtered.summaries.find((item) => item.variant === "fvg_pullback");
+  assert.equal(filtered.filter.active, true);
+  assert.equal(filtered.filter.sessionsPassed, 0);
+  assert.equal(rule.trades, 0);
+  assert.equal(rule.scope, "필터 적용");
+  const unfiltered = filtered.unfilteredSummaries.find((item) => item.variant === "fvg_pullback");
+  assert.equal(unfiltered.trades, 2);
+  assert.equal(unfiltered.totalR, 1);
+});
+
+test("the day target is measured on excursion, and the stop bar's high does not count", () => {
+  // The winner runs to 109.4 from an entry at 103, so its excursion is ~6.2%.
+  const winner = session([...setupBars, [104, 104.2, 102.9, 103], [103, 109.5, 102.9, 109.4]], "2026-08-05");
+  const won = runFvgBacktest("TEST", "Test", winner, { ...options, dayTargetPct: 2 })
+    .trades.find((trade) => trade.variant === "fvg_pullback");
+  assert.ok(won.maxFavorablePct > 6 && won.maxFavorablePct < 7);
+  assert.equal(won.hitDayTarget, true);
+
+  // This bar's high clears +2% from the entry but its low takes out the stop.
+  // Crediting the high would invent an excursion the trade never got to take.
+  const stopped = session([...setupBars, [104, 104.2, 102.9, 103], [103, 106, 99.0, 99.2]], "2026-08-06");
+  const lost = runFvgBacktest("TEST", "Test", stopped, { ...options, dayTargetPct: 2 })
+    .trades.find((trade) => trade.variant === "fvg_pullback");
+  assert.equal(lost.exitReason, "stop");
+  assert.equal(lost.hitDayTarget, false);
+  assert.ok(lost.maxFavorablePct < 2);
+
+  const summary = runFvgBacktest("TEST", "Test", [...winner, ...stopped], { ...options, dayTargetPct: 2 })
+    .summaries.find((item) => item.variant === "fvg_pullback");
+  assert.equal(summary.dayTargetHitRatePct, 50);
 });
