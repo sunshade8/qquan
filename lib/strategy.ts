@@ -15,6 +15,10 @@ import {
 export type IndicatorKind =
   | "close" | "open" | "high" | "low" | "volume" | "sma" | "ema" | "rsi" | "macd_hist" | "macd_line"
   | "return" | "drawdown" | "volume_ratio" | "bb_pos" | "atr_pct" | "highest_close" | "lowest_close" | "volatility"
+  // Same-bar displacement measures. `screen_universe` / `conditional_stats` can already
+  // rank and test on these, so without them here a finding about gaps or wide-range days
+  // has no way to become a mechanical rule.
+  | "gap" | "range"
   // Calendar operands. These are what let a News finding ("CPI 발표 2일 전") become a
   // mechanical rule; every other indicator is derived from price and cannot express one.
   | "sessions_to_event" | "sessions_since_event" | "event_surprise" | "event_surprise_z";
@@ -130,7 +134,7 @@ export type BacktestResult = {
 };
 
 export const INDICATOR_LABELS: Record<IndicatorKind, string> = {
-  close: "종가", open: "시가", high: "고가", low: "저가", volume: "거래량", sma: "SMA", ema: "EMA", rsi: "RSI", macd_hist: "MACD 히스토그램", macd_line: "MACD", return: "N일 수익률(%)", drawdown: "고점 대비 낙폭(%)", volume_ratio: "거래량/N일 평균", bb_pos: "볼린저 위치(0~1)", atr_pct: "ATR(%)", highest_close: "N일 최고 종가", lowest_close: "N일 최저 종가", volatility: "N일 변동성(연환산 %)",
+  close: "종가", open: "시가", high: "고가", low: "저가", volume: "거래량", sma: "SMA", ema: "EMA", rsi: "RSI", macd_hist: "MACD 히스토그램", macd_line: "MACD", return: "N일 수익률(%)", drawdown: "고점 대비 낙폭(%)", volume_ratio: "거래량/N일 평균", bb_pos: "볼린저 위치(0~1)", atr_pct: "ATR(%)", highest_close: "N일 최고 종가", lowest_close: "N일 최저 종가", volatility: "N일 변동성(연환산 %)", gap: "당일 시가 갭(%)", range: "당일 변동폭(%)",
   sessions_to_event: "다음 이벤트까지 거래일", sessions_since_event: "직전 이벤트 이후 거래일", event_surprise: "직전 이벤트 서프라이즈", event_surprise_z: "직전 이벤트 서프라이즈 (z)",
 };
 
@@ -254,6 +258,10 @@ function seriesFor(rows: Bar[], operand: Operand, cache: Map<string, Array<numbe
     case "macd_line": values = macd(closes).line; break;
     case "return": values = closes.map((close, index) => index >= period ? (close / closes[index - period] - 1) * 100 : null); break;
     case "drawdown": values = drawdownSeries(closes); break;
+    // Both read only bars the signal close already knows: the gap against the
+    // *previous* close, and the current bar's own high/low span.
+    case "gap": values = rows.map((row, index) => index && rows[index - 1].close ? (row.open / rows[index - 1].close - 1) * 100 : null); break;
+    case "range": values = rows.map((row) => row.open ? ((row.high - row.low) / row.open) * 100 : null); break;
     case "volume_ratio": { const average = sma(rows.map((row) => row.volume), period); values = rows.map((row, index) => average[index] ? row.volume / average[index]! : null); break; }
     case "bb_pos": { const band = bollinger(closes, period, 2); values = closes.map((close, index) => band.upper[index] !== null && band.lower[index] !== null && band.upper[index]! !== band.lower[index]! ? (close - band.lower[index]!) / (band.upper[index]! - band.lower[index]!) : null); break; }
     case "atr_pct": { const range = atr(rows, period); values = rows.map((row, index) => range[index] !== null ? (range[index]! / row.close) * 100 : null); break; }
@@ -311,7 +319,15 @@ export function signalSeries(rows: Bar[], spec: StrategySpec, events: EventConte
   for (let index = 1; index < rows.length; index += 1) {
     if (!holding) {
       const enter = entry.length > 0 && entry.every((item) => evaluate(item.condition, index, item.left, item.right));
-      if (enter) { holding = true; entryIndex = index; entryPrice = rows[index].close; }
+      // The fill happens on the *next* close (`symbolBacktest` executes
+      // `signals[index - 1]`), so the stop and target have to be measured from
+      // that price. Measuring from the signal close tests a move the position
+      // never took: a gap between the two closes silently shifts the stop, and
+      // a 1:2 reward/risk rule ends up risking something other than 1R.
+      // Reading `index + 1` is not look-ahead — `entryPrice` is only ever read
+      // on bars after the fill, and the fallback covers a signal on the last bar
+      // (which `symbolBacktest` never fills).
+      if (enter) { holding = true; entryIndex = index; entryPrice = rows[index + 1]?.close ?? rows[index].close; }
     } else {
       const held = index - entryIndex;
       const move = (rows[index].close / entryPrice - 1) * 100;
@@ -397,7 +413,10 @@ function combine(perSymbol: Array<ReturnType<typeof symbolBacktest>>) {
   for (const item of perSymbol) for (const day of item.dailyReturns) dateSet.add(day.date);
   const dates = [...dateSet].sort();
   const maps = perSymbol.map((item) => new Map(item.dailyReturns.map((day) => [day.date, day.value])));
-  const strategyDaily = dates.map((date) => { const values = maps.map((map) => map.get(date)).filter((value): value is number => value !== undefined); return values.length ? values.reduce((sum, value) => sum + value, 0) / perSymbol.length : 0; });
+  // Divide by the symbols that have a bar that day, not by the whole universe.
+  // A symbol that had not listed yet is absent, not flat, so the fixed
+  // denominator was scaling every return down on mixed-history universes.
+  const strategyDaily = dates.map((date) => { const values = maps.map((map) => map.get(date)).filter((value): value is number => value !== undefined); return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0; });
   return { dates, strategyDaily };
 }
 
@@ -430,7 +449,7 @@ export function runStrategyBacktest(spec: StrategySpec, data: Record<string, Bar
   if (!usable.length) return null;
   const { dates, strategyDaily } = combine(usable);
   const benchmarkMaps = usable.map((item) => { const rows = data[item.symbol].filter((row) => row.date <= to); return new Map(rows.slice(1).map((row, index) => [row.date, row.close / rows[index].close - 1])); });
-  const benchmarkDaily = dates.map((date) => { const values = benchmarkMaps.map((map) => map.get(date)).filter((value): value is number => value !== undefined); return values.length ? values.reduce((sum, value) => sum + value, 0) / usable.length : 0; });
+  const benchmarkDaily = dates.map((date) => { const values = benchmarkMaps.map((map) => map.get(date)).filter((value): value is number => value !== undefined); return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0; });
   const trades = usable.flatMap((item) => item.tradesDetail).sort((a, b) => a.entryDate.localeCompare(b.entryDate));
   const exposurePct = round(mean(usable.flatMap((item) => item.exposurePct === null ? [] : [item.exposurePct])), 1);
   const metrics = portfolioMetrics(dates, strategyDaily, benchmarkDaily, trades, exposurePct);
@@ -484,7 +503,7 @@ export function presetConditions(strategy: string, params: Record<string, number
   }
 }
 
-const INDICATOR_KINDS = new Set<IndicatorKind>(["close", "open", "high", "low", "volume", "sma", "ema", "rsi", "macd_hist", "macd_line", "return", "drawdown", "volume_ratio", "bb_pos", "atr_pct", "highest_close", "lowest_close", "volatility", "sessions_to_event", "sessions_since_event", "event_surprise", "event_surprise_z"]);
+const INDICATOR_KINDS = new Set<IndicatorKind>(["close", "open", "high", "low", "volume", "sma", "ema", "rsi", "macd_hist", "macd_line", "return", "drawdown", "volume_ratio", "bb_pos", "atr_pct", "highest_close", "lowest_close", "volatility", "gap", "range", "sessions_to_event", "sessions_since_event", "event_surprise", "event_surprise_z"]);
 const OPS = new Set<ConditionOp>([">", "<", ">=", "<=", "cross_above", "cross_below"]);
 
 /**

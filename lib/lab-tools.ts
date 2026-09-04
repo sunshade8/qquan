@@ -8,6 +8,7 @@ import { findCompanyNews, searchNews } from "@/lib/company-news";
 import type { LabArtifact, LabToolTrace } from "@/lib/lab-types";
 import { fetchTossSnapshot, fetchYahooIntradayWindow, type IntradayInterval, type PriceRow } from "@/lib/market-data";
 import { calculateIntradayReaction, summarizeIntradayStudy } from "@/lib/intraday-study";
+import { runFvgBacktest, type FvgOptions } from "@/lib/intraday-fvg";
 import { deterministicTestSummary, type ResearchTest } from "@/lib/news-research-agents";
 import { loadDailyRows } from "@/lib/price-cache";
 import {
@@ -36,6 +37,11 @@ function shiftDate(date: string, days: number) {
   const value = new Date(`${date}T00:00:00Z`);
   value.setUTCDate(value.getUTCDate() + days);
   return value.toISOString().slice(0, 10);
+}
+
+/** Later of two ISO dates. Used to keep an intraday request inside the provider's window. */
+function maxDate(left: string, right: string) {
+  return left >= right ? left : right;
 }
 
 function daysBetween(from: string, to: string) {
@@ -165,6 +171,24 @@ export const LAB_TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "intraday_fvg_backtest",
+    description: "분봉 OHLC로 '시가 레인지 돌파 + FVG(공정가치 갭) 되돌림' 인트라데이 규칙을 실제로 백테스트한다. 09:30 ET부터 anchorMinutes 동안의 고가·저가를 기준선으로 잡고, windowMinutes 안에서 상승 캔들의 몸통이 기준선을 상향 돌파하며 FVG가 형성되면, 그 FVG로 되돌림이 올 때 매수해 직전 캔들 저점을 손절, 손익비 rewardRisk를 익절로 삼는다(하루 1회, 롱 전용). FVG는 다음 봉이 마감돼야 확정되므로 진입은 그 이후 봉부터만 허용하고, 한 봉이 손절과 익절을 모두 덮으면 손절로 처리한다. 같은 실행에서 'FVG 조건 없이 돌파 확인봉 종가에 진입'하는 대조군도 함께 계산하므로, FVG가 실제 알파인지 장식인지 두 결과를 비교해 판정한다. 공급 한계상 최근 약 59일(거래일 약 40개)만 가능하므로 표본이 작다는 점을 반드시 함께 보고한다.",
+    input_schema: {
+      type: "object",
+      properties: {
+        symbols: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 3, description: "티커 1~3개" },
+        interval: { type: "string", enum: ["5m", "15m"], description: "매매 분봉. 기본 5m" },
+        anchorMinutes: { type: "integer", description: "09:30 ET부터 기준선을 만드는 시간(분). 기본 15" },
+        windowMinutes: { type: "integer", description: "진입을 허용하는 오픈 이후 구간(분). 기본 90" },
+        rewardRisk: { type: "number", description: "손익비. 기본 2 (1:2)" },
+        holdUntil: { type: "string", enum: ["window", "session_close"], description: "익절·손절 미도달 시 청산 시점. 기본 session_close" },
+        costBps: { type: "number", description: "편도 비용(bps). 왕복으로 반영. 기본 5" },
+        lookbackDays: { type: "integer", description: "조회 기간(달력일). 기본 55, 최대 59" },
+      },
+      required: ["symbols"],
+    },
+  },
+  {
     name: "backtest_strategy",
     description: "롱온리 규칙 전략을 실제 일봉으로 백테스트한다(신호는 종가, 체결은 다음 종가, 편도 비용 반영). 전략: sma_cross(fast/slow), momentum(period), rsi_reversal(period/entry/exit), breakout(lookback/exitLookback), buy_and_hold. 총수익·CAGR·샤프·MDD·승률·노출도와 자본곡선을 반환한다.",
     input_schema: {
@@ -241,7 +265,7 @@ export const LAB_TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "propose_strategy",
-    description: `탑다운 가설에서 출발한 백테스트 전략 사양을 만든다. 순서: thesis(거시·구조적 논제) → mechanism(초과수익이 생기는 이유) → prediction(규칙이 맞다면 관측될 것) → falsification(무엇이 나오면 기각) → 기계적 entry/exit 규칙. 사용자가 전략을 만들어 달라고 하거나 대화가 매매 규칙으로 수렴하면 호출한다. 결과는 Canvas 카드로 표시되고, 사용자가 원하면 save_strategy로 Backtest 화면에 저장한다. 조건의 left/right는 {kind, period} 또는 {kind:'value', value}. kind: close, open, high, low, volume, sma, ema, rsi, macd_hist, macd_line, return(N일 %), drawdown(%), volume_ratio, bb_pos(0~1), atr_pct, highest_close, lowest_close, volatility. op: >, <, >=, <=, cross_above, cross_below.
+    description: `탑다운 가설에서 출발한 백테스트 전략 사양을 만든다. 순서: thesis(거시·구조적 논제) → mechanism(초과수익이 생기는 이유) → prediction(규칙이 맞다면 관측될 것) → falsification(무엇이 나오면 기각) → 기계적 entry/exit 규칙. 사용자가 전략을 만들어 달라고 하거나 대화가 매매 규칙으로 수렴하면 호출한다. 결과는 Canvas 카드로 표시되고, 사용자가 원하면 save_strategy로 Backtest 화면에 저장한다. 조건의 left/right는 {kind, period} 또는 {kind:'value', value}. kind: close, open, high, low, volume, sma, ema, rsi, macd_hist, macd_line, return(N일 %), drawdown(%), volume_ratio, bb_pos(0~1), atr_pct, highest_close, lowest_close, volatility, gap(당일 시가 갭 %), range(당일 고저 변동폭 %). gap과 range는 conditional_stats·sweep_conditions와 같은 정의이므로, 그 도구로 검증한 조건을 그대로 전략 규칙으로 옮길 수 있다. op: >, <, >=, <=, cross_above, cross_below.
 
 이벤트 드리븐 규칙: News에서 찾은 경제지표 패턴을 전략으로 만들 때는 캘린더 오퍼랜드를 쓴다. kind에 sessions_to_event(다음 발표까지 거래일 수), sessions_since_event(직전 발표 이후 거래일 수), event_surprise(직전 발표 서프라이즈), event_surprise_z(z 정규화)를 지정하고 event 필드에 이벤트 루트를 반드시 넣는다. 예: 'CPI 발표 2거래일 전 진입, 발표 다음날 청산' → entry [{left:{kind:'sessions_to_event',event:'cpi'}, op:'<=', right:{kind:'value',value:2}}], exit [{left:{kind:'sessions_since_event',event:'cpi'}, op:'>=', right:{kind:'value',value:1}}]. event 없이 캘린더 오퍼랜드를 쓰면 사양이 거부된다. 사용 가능 루트는 market_events 도구로 확인한다.`,
     input_schema: {
@@ -600,28 +624,40 @@ async function intradayEventStudy(input: Input, context: ToolContext): Promise<T
   const postMinutes = Math.min(240, Math.max(15, Number(input.postMinutes) || 30));
   const rows: Array<IntradayEventInput & { symbol: string; name: string; reaction: Omit<NonNullable<ReturnType<typeof calculateIntradayReaction>>, "normalizedPath"> | null; unavailable: string | null }> = [];
 
+  // One fetch per symbol across the whole span, not one per event. Fetching per
+  // event turned 24 events x 4 symbols into 96 sequential Yahoo round trips for a
+  // single tool call: slow, redundant (each pulled an overlapping 3-day window),
+  // and far enough into rate limiting that later symbols came back empty.
+  const eventDates = events.map((event) => event.date).sort();
+  const spanFrom = maxDate(shiftDate(eventDates[0], -1), shiftDate(context.today, -59));
+  const spanTo = shiftDate(eventDates.at(-1)!, 1);
+  const series = new Map<string, { points: Awaited<ReturnType<typeof fetchYahooIntradayWindow>> | null; error: string | null }>();
+  await Promise.all(resolved.map(async (asset) => {
+    if (!asset.public || !asset.symbol) return;
+    try {
+      series.set(asset.symbol, { points: await fetchYahooIntradayWindow(asset.symbol, spanFrom, spanTo, interval), error: null });
+    } catch (error) {
+      series.set(asset.symbol, { points: null, error: error instanceof Error ? error.message : "분봉 데이터를 가져오지 못했습니다." });
+    }
+  }));
+
   for (const event of events) {
     const age = daysBetween(event.date, context.today);
-    const eventRows = await Promise.all(resolved.map(async (asset) => {
+    for (const asset of resolved) {
       const symbol = asset.symbol ?? asset.input;
       const base = { ...event, symbol, name: asset.name };
-      if (!asset.public || !asset.symbol) return { ...base, reaction: null, unavailable: asset.note ?? "거래 가능 종목을 확인하지 못했습니다." };
-      if (age < 0) return { ...base, reaction: null, unavailable: "아직 지나지 않은 이벤트입니다." };
-      if (age > 59) return { ...base, reaction: null, unavailable: `${interval} 공급 범위(최근 약 60일)를 벗어났습니다.` };
-      try {
-        const points = await fetchYahooIntradayWindow(asset.symbol, shiftDate(event.date, -1), shiftDate(event.date, 1), interval);
-        const calculated = calculateIntradayReaction(points, event.date, event.timeET, intervalMinutes, preMinutes, postMinutes);
-        if (!calculated) return { ...base, reaction: null, unavailable: "발표 시각 직전·직후의 완결 분봉이 없습니다." };
-        const reaction = {
-          baseTime: calculated.baseTime, basePrice: calculated.basePrice, preTime: calculated.preTime, preReturnPct: calculated.preReturnPct,
-          postTime: calculated.postTime, postReturnPct: calculated.postReturnPct, toRegularClosePct: calculated.toRegularClosePct,
-        };
-        return { ...base, reaction, unavailable: null };
-      } catch (error) {
-        return { ...base, reaction: null, unavailable: error instanceof Error ? error.message : "분봉 데이터를 가져오지 못했습니다." };
-      }
-    }));
-    rows.push(...eventRows);
+      if (!asset.public || !asset.symbol) { rows.push({ ...base, reaction: null, unavailable: asset.note ?? "거래 가능 종목을 확인하지 못했습니다." }); continue; }
+      if (age < 0) { rows.push({ ...base, reaction: null, unavailable: "아직 지나지 않은 이벤트입니다." }); continue; }
+      if (age > 59) { rows.push({ ...base, reaction: null, unavailable: `${interval} 공급 범위(최근 약 60일)를 벗어났습니다.` }); continue; }
+      const loaded = series.get(asset.symbol);
+      if (!loaded?.points) { rows.push({ ...base, reaction: null, unavailable: loaded?.error ?? "분봉 데이터를 가져오지 못했습니다." }); continue; }
+      const calculated = calculateIntradayReaction(loaded.points, event.date, event.timeET, intervalMinutes, preMinutes, postMinutes);
+      if (!calculated) { rows.push({ ...base, reaction: null, unavailable: "발표 시각 직전·직후의 완결 분봉이 없습니다." }); continue; }
+      rows.push({ ...base, reaction: {
+        baseTime: calculated.baseTime, basePrice: calculated.basePrice, preTime: calculated.preTime, preReturnPct: calculated.preReturnPct,
+        postTime: calculated.postTime, postReturnPct: calculated.postReturnPct, toRegularClosePct: calculated.toRegularClosePct,
+      }, unavailable: null });
+    }
   }
 
   const summaries = summarizeIntradayStudy(rows.map((row) => ({ symbol: row.symbol, surprise: row.surprise, reaction: row.reaction ? { ...row.reaction, normalizedPath: [] } : null })));
@@ -643,6 +679,84 @@ async function intradayEventStudy(input: Input, context: ToolContext): Promise<T
     result: { methodology: { timezone: "America/New_York", interval, preMinutes, postMinutes, base: "last completed bar at or before release time", provider: "Yahoo Finance", guaranteedLookbackDays: 59 }, coverage: { events: events.length, symbols: resolved.length, requested: rows.length, available, unavailable: rows.length - available }, rows, summaries },
     artifacts: [artifact],
     trace: { name: "intraday_event_study", label: "분봉 이벤트 스터디", status: available ? "complete" : "failed", detail: `${available}/${rows.length}개 관측 · ${interval} · 전후 ${preMinutes}/${postMinutes}분` },
+  };
+}
+
+async function intradayFvgBacktest(input: Input, context: ToolContext): Promise<ToolOutcome> {
+  const failed = (reason: string): ToolOutcome => ({ result: { available: false, reason }, artifacts: [], trace: { name: "intraday_fvg_backtest", label: "분봉 FVG 백테스트", status: "failed", detail: reason } });
+  const requested = (Array.isArray(input.symbols) ? input.symbols : []).map(String).filter(Boolean).slice(0, 3);
+  if (!requested.length) return failed("티커가 필요합니다.");
+
+  const interval = (input.interval === "15m" ? "15m" : "5m") as IntradayInterval;
+  const intervalMinutes = interval === "15m" ? 15 : 5;
+  // The reference candle is built from the trading bars themselves, so its length
+  // has to land on a bar boundary.
+  const anchorMinutes = Math.max(intervalMinutes, Math.round((Number(input.anchorMinutes) || 15) / intervalMinutes) * intervalMinutes);
+  const windowMinutes = Math.min(390, Math.max(anchorMinutes + intervalMinutes * 2, Math.round(Number(input.windowMinutes) || 90)));
+  const rewardRisk = Math.min(5, Math.max(0.5, Number(input.rewardRisk) || 2));
+  const costBps = input.costBps === undefined ? 5 : Math.max(0, Number(input.costBps) || 0);
+  const holdUntil = input.holdUntil === "window" ? "window" : "session_close";
+  // 59 days is the provider's guaranteed intraday window; asking for more returns
+  // nothing rather than an error, which would read as "no setups".
+  const lookbackDays = Math.min(59, Math.max(7, Math.round(Number(input.lookbackDays) || 55)));
+  const options: FvgOptions = { intervalMinutes, anchorMinutes, windowMinutes, rewardRisk, costBps, holdUntil };
+
+  const from = shiftDate(context.today, -lookbackDays);
+  const resolved = await resolveSymbols(requested);
+  const results = await Promise.all(resolved.map(async (asset) => {
+    const symbol = asset.symbol ?? asset.input;
+    if (!asset.public || !asset.symbol) return { symbol, name: asset.name, error: asset.note ?? "거래 가능 종목을 확인하지 못했습니다.", result: null };
+    try {
+      const points = await fetchYahooIntradayWindow(asset.symbol, from, context.today, interval);
+      if (!points.length) return { symbol, name: asset.name, error: "해당 구간의 분봉 데이터가 없습니다.", result: null };
+      return { symbol, name: asset.name, error: null, result: runFvgBacktest(asset.symbol, asset.name, points, options) };
+    } catch (error) {
+      return { symbol, name: asset.name, error: error instanceof Error ? error.message : "분봉 데이터를 가져오지 못했습니다.", result: null };
+    }
+  }));
+
+  const usable = results.flatMap((item) => item.result ? [item.result] : []);
+  if (!usable.length) return failed(results.map((item) => `${item.symbol}: ${item.error}`).join(" · "));
+
+  const rows = usable.flatMap((item) => item.summaries.map((summary) => [
+    item.symbol, summary.label, summary.sessions, summary.trades, summary.winRatePct, summary.breakevenWinRatePct,
+    summary.averageR, summary.medianR, summary.totalR, summary.totalRExcludingBest, summary.targetHits, summary.stopHits, summary.timeExits,
+  ]));
+  const artifact: LabArtifact = {
+    id: id(), type: "table", title: `분봉 FVG 백테스트 · ${interval}`,
+    subtitle: `기준선 ${anchorMinutes}분 · 매매 창 ${windowMinutes}분 · 손익비 1:${rewardRisk} · 비용 ${costBps}bps 편도`,
+    columns: ["종목", "규칙", "세션", "거래", "승률 %", "손익분기 승률 %", "평균 R", "중앙 R", "누적 R", "최고거래 제외 누적 R", "익절", "손절", "시간청산"],
+    rows,
+    notes: [
+      `데이터 ${usable[0]?.from ?? from} ~ ${usable.at(-1)?.to ?? context.today} · Yahoo Finance ${interval} · 최근 약 59일만 공급`,
+      "FVG는 다음 봉 마감 후 확정 · 진입은 그 이후 봉부터만 허용 (룩어헤드 차단)",
+      "한 봉이 손절가와 익절가를 모두 덮으면 손절로 처리 (분봉은 선후를 알려주지 않음)",
+      "롱 전용 · 하루 최대 1거래 · 슬리피지와 호가 스프레드는 미반영이므로 실제 승률 기준은 더 높음",
+      "대조군과 원문 규칙의 성적이 비슷하면 FVG 조건이 아무것도 더하지 못한 것",
+    ],
+  };
+
+  const bySymbol = usable.map((item) => ({
+    symbol: item.symbol, name: item.name, sessions: item.sessions, from: item.from, to: item.to,
+    summaries: item.summaries,
+    sampleTrades: item.trades.filter((trade) => trade.variant === "fvg_pullback").slice(-8),
+  }));
+  const headline = usable[0]?.summaries.find((summary) => summary.variant === "fvg_pullback");
+  return {
+    result: {
+      methodology: {
+        timezone: "America/New_York", interval, anchorMinutes, windowMinutes, rewardRisk, costBps, holdUntil,
+        direction: "long_only", entryConfirmation: "FVG는 다음 봉 마감 후 확정, 진입은 그 이후 봉부터",
+        sameBarTie: "손절 우선", provider: "Yahoo Finance", guaranteedLookbackDays: 59,
+      },
+      unavailable: results.flatMap((item) => item.error ? [{ symbol: item.symbol, reason: item.error }] : []),
+      bySymbol,
+    },
+    artifacts: [artifact],
+    trace: {
+      name: "intraday_fvg_backtest", label: `분봉 FVG 백테스트 · ${usable.map((item) => item.symbol).join(", ")}`, status: "complete",
+      detail: headline ? `${headline.sessions}세션 · 거래 ${headline.trades}건 · 승률 ${headline.winRatePct ?? "—"}% (손익분기 ${headline.breakevenWinRatePct}%) · 누적 ${headline.totalR ?? "—"}R` : `${usable.length}종목 계산`,
+    },
   };
 }
 
@@ -1321,6 +1435,7 @@ export async function executeLabTool(name: string, input: unknown, context: Tool
     case "technical_indicators": return technicalIndicators(args, context);
     case "event_study": return runEventStudy(args, context);
     case "intraday_event_study": return intradayEventStudy(args, context);
+    case "intraday_fvg_backtest": return intradayFvgBacktest(args, context);
     case "backtest_strategy": return runBacktest(args, context);
     case "risk_profile": return riskTable(args, context);
     case "seasonality": return seasonalityTool(args, context);
@@ -1347,7 +1462,7 @@ export async function executeLabTool(name: string, input: unknown, context: Tool
 }
 
 export const TOOL_LABELS: Record<string, string> = {
-  resolve_symbols: "심볼 해석", get_price_history: "가격 이력", compare_assets: "자산 비교", technical_indicators: "기술 지표", event_study: "이벤트 스터디", intraday_event_study: "분봉 이벤트 스터디", backtest_strategy: "백테스트", risk_profile: "리스크 프로파일", seasonality: "계절성", largest_moves_with_news: "급등락·뉴스", search_news: "뉴스 검색", get_quote: "현재가", market_calendar: "경제 일정", news_sentiment_tests: "뉴스 감성 Test", show_chart: "TradingView 차트", propose_strategy: "전략 제안", save_strategy: "전략 저장", run_strategy_backtest: "전략 백테스트", list_strategies: "저장된 전략", web_search: "웹 검색",
+  resolve_symbols: "심볼 해석", get_price_history: "가격 이력", compare_assets: "자산 비교", technical_indicators: "기술 지표", event_study: "이벤트 스터디", intraday_event_study: "분봉 이벤트 스터디", backtest_strategy: "백테스트", risk_profile: "리스크 프로파일", seasonality: "계절성", largest_moves_with_news: "급등락·뉴스", search_news: "뉴스 검색", get_quote: "현재가", market_calendar: "경제 일정", news_sentiment_tests: "뉴스 감성 Test", show_chart: "TradingView 차트", intraday_fvg_backtest: "분봉 FVG 백테스트", propose_strategy: "전략 제안", save_strategy: "전략 저장", run_strategy_backtest: "전략 백테스트", list_strategies: "저장된 전략", web_search: "웹 검색",
   screen_universe: "종목 스크리닝", conditional_stats: "조건부 통계", save_finding: "연구 노트 저장", list_findings: "연구 노트",
   sweep_conditions: "그리드 스윕", audit_result: "결론 감사", market_events: "경제 이벤트", event_reaction: "이벤트 반응",
 };

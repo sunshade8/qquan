@@ -12,6 +12,7 @@ import { describeFindingsForContext, rankFindingsForQuestion } from "@/lib/findi
 import { listFindings } from "@/lib/findings-store";
 import { executeLabTool, LAB_TOOLS, TOOL_LABELS } from "@/lib/lab-tools";
 import { compressToolResult } from "@/lib/lab-specialists";
+import { writeLabRunProgress } from "@/lib/lab-runs";
 import type { LabAgentPhase, LabArtifact, LabMessage, LabStreamEvent, LabToolTrace } from "@/lib/lab-types";
 import { recordLlmUsage } from "@/lib/llm-usage";
 import { researchOwnerCookie, researchOwnerFrom } from "@/lib/research-owner";
@@ -42,6 +43,13 @@ const SYSTEM_PROMPT = `당신은 QQuant Lab의 JARVIS다. 사용자의 개인 �
 - "A일 때 B가 일어나나?" 류의 질문은 단일 종목 event_study보다 conditional_stats를 우선한다. 여러 종목 표본을 풀링해 베이스라인과 비교하므로 표본 부족 문제를 피한다.
 - 표본 수(n), 베이스라인 대비 초과분, 종목별 편차를 반드시 함께 보고한다. n이 작거나 초과분이 베이스라인과 구분되지 않으면 "차이가 없다"고 분명히 말한다. t값은 관측 구간이 겹치므로 참고용이라고 밝힌다.
 - conditional_stats에서 유망한 결과(초과분 양수)가 나오면 그 한 칸을 결론으로 삼지 말고 sweep_conditions로 임계값·기간 그리드 전체를 확인한다. 인접 칸에서 무너지는 효과는 우연이다. 전략 규칙의 파라미터를 정하기 전에도 반드시 스윕한다.
+
+인트라데이 규칙 검증
+- 시가 레인지, 캔들 몸통 돌파, FVG, 손익비처럼 분봉 캔들 위에서만 정의되는 규칙은 intraday_fvg_backtest로 실제 분봉 OHLC에서 돌린다. 일봉 도구나 종가만 있는 intraday_event_study로 대신 설명하지 않는다.
+- 이 도구는 원문 규칙과 'FVG 조건을 뺀 대조군'을 같은 실행에서 함께 계산한다. 두 성적이 비슷하면 FVG가 기여한 게 없다는 뜻이므로 그대로 보고한다. 원문 규칙 숫자만 인용하지 않는다.
+- 분봉 공급은 최근 약 59일(거래일 약 40개)뿐이다. 표본 수를 반드시 밝히고, 이 표본으로 장기 수익 주장을 검증했다고 말하지 않는다.
+- 승률은 반드시 손익분기 승률(1/(1+손익비))과 함께 보고한다. 누적 R이 최고 거래 1건에 의존하는지 totalRExcludingBest로 확인하고, 의존한다면 그렇게 말한다.
+- 슬리피지와 호가 스프레드는 반영되지 않는다. 결과가 손익분기 근처면 실제로는 마이너스라고 판단한다.
 
 전문가 위임 (중요)
 - 당신은 오케스트레이터다. 판단 중 두 가지는 당신이 직접 하지 않고 위임한다.
@@ -82,6 +90,7 @@ const SYSTEM_PROMPT = `당신은 QQuant Lab의 JARVIS다. 사용자의 개인 �
 
 전략과 Backtest 연동 (탑다운 원칙)
 - 사용자가 전략을 만들어 달라고 하거나 대화가 매매 규칙으로 수렴하면, 바텀업으로 지표를 조합하지 말고 탑다운으로 간다: (1) 거시·구조적 논제 thesis → (2) 초과수익이 생기는 메커니즘 → (3) 규칙이 맞다면 관측될 예측 → (4) 어떤 결과가 나오면 기각할지 falsification → (5) 그제서야 기계적 entry/exit 규칙과 통과 기준(successCriteria).
+- gap(당일 시가 갭 %)과 range(당일 고저 변동폭 %)는 conditional_stats·sweep_conditions와 propose_strategy에서 같은 정의를 쓴다. 스크리너나 조건부 통계로 검증한 gap·range 조건은 추가 번역 없이 그대로 전략 규칙에 넣는다.
 - 그 내용으로 propose_strategy를 호출해 Canvas에 전략 카드를 만든 뒤, "Backtest에 저장할까요?"라고 짧게 묻는다. 사용자가 동의하면 save_strategy(runNow=true 권장)를 호출한다. 동의 없이 저장하지 않는다.
 - 백테스트 결과는 통과/기각 판정과 아웃오브샘플·교란 견고성을 반드시 언급하고, 과최적화·생존편향·소표본을 경고한다. 통과한 전략은 "시그널 후보"로 부르며 Backtest 화면에서 실거래 시그널을 확인할 수 있다고 안내한다.
 - 통과 기준(successCriteria)은 시스템이 최소 바닥값을 강제한다. 작성자가 조일 수는 있어도 풀 수는 없고, 조정이 걸리면 사양 notes에 남는다. 그 조정 내역이 있으면 사용자에게 알린다.
@@ -101,30 +110,32 @@ function today() {
 }
 
 function encodeEvent(event: LabStreamEvent) {
-  const frame = `data: ${JSON.stringify(event)}\n\n`;
-  // Control frames are deliberately padded. Sites/edge intermediaries may
-  // buffer tiny chunks even with no-transform; text deltas stay unpadded.
-  return event.type === "text" ? frame : `${frame}${ssePadding(1024)}`;
+  return `data: ${JSON.stringify(event)}\n\n`;
 }
 
-// Repeated spaces compress to almost nothing and did not cross the production
-// edge's flush threshold. UUID comments are valid SSE, hard to compress, and
-// make the first phase observable before the model has finished reasoning.
-function ssePadding(bytes: number) {
-  let value = ": ";
-  while (value.length < bytes) value += crypto.randomUUID();
-  return `${value.slice(0, bytes)}\n\n`;
-}
+const SSE_PREAMBLE = ": connected\n\n";
 
 function executionContext(date: string) {
   return `오늘 날짜: ${date}. 사용자는 대한민국(KST)에서 Toss Securities로 미국 주식·ETF를 거래한다. 기본 전략 제약은 long/보유/청산/현금이며 공매도·옵션·선물·마진은 사용자가 명시적으로 가능하다고 말하기 전까지 제외한다. Toss 연결은 시세 조회 전용이고 주문 API는 아직 연결되지 않았다.`;
+}
+
+function parseTraces(payload: string): LabToolTrace[] {
+  try {
+    const parsed = JSON.parse(payload) as unknown;
+    return Array.isArray(parsed) ? parsed as LabToolTrace[] : [];
+  } catch {
+    return [];
+  }
 }
 
 async function loadHistory(ownerId: string, conversationId: string): Promise<LabMessage[]> {
   try {
     await ensureSchema();
     const rows = await getDb().select().from(labMessages).where(and(eq(labMessages.ownerId, ownerId), eq(labMessages.conversationId, conversationId))).orderBy(asc(labMessages.createdAt)).limit(200);
-    return rows.slice(-MAX_HISTORY).map((row) => ({ id: row.id, role: row.role === "agent" ? "agent" : "user", content: row.content, tools: [], artifacts: [], createdAt: row.createdAt.toISOString() }));
+    // Traces come back so a later turn knows which grids were already swept and
+    // with what inputs. Artifacts stay out: chart payloads are large and the UI
+    // restores them separately from `/api/lab/state`.
+    return rows.slice(-MAX_HISTORY).map((row) => ({ id: row.id, role: row.role === "agent" ? "agent" : "user", content: row.content, tools: parseTraces(row.toolsPayload), artifacts: [], createdAt: row.createdAt.toISOString() }));
   } catch {
     return [];
   }
@@ -145,11 +156,24 @@ async function persist(ownerId: string, conversationId: string, message: LabMess
   }
 }
 
+/**
+ * A prior turn's tool runs, compact enough to carry every turn.
+ *
+ * Without this the model only sees its own prose, so a follow-up turn cannot
+ * tell which thresholds a sweep already covered and re-runs them.
+ */
+function describeTraces(traces: LabToolTrace[]) {
+  if (!traces.length) return "";
+  const lines = traces.slice(0, 12).map((trace) => `- ${trace.label}${trace.status === "failed" ? " (실패)" : ""}${trace.detail ? `: ${trace.detail.slice(0, 120)}` : ""}`);
+  const omitted = traces.length - lines.length;
+  return `\n\n[이 답변에서 실제로 실행한 도구]\n${lines.join("\n")}${omitted > 0 ? `\n- 외 ${omitted}건` : ""}`;
+}
+
 function historyToMessages(history: LabMessage[]): Anthropic.MessageParam[] {
   const messages: Anthropic.MessageParam[] = [];
   for (const item of history) {
     const role = item.role === "agent" ? "assistant" : "user";
-    const content = item.content.slice(0, 6000);
+    const content = `${item.content.slice(0, 6000)}${role === "assistant" ? describeTraces(item.tools) : ""}`;
     if (!content.trim()) continue;
     const previous = messages.at(-1);
     if (previous && previous.role === role && typeof previous.content === "string") previous.content = `${previous.content}\n\n${content}`;
@@ -209,12 +233,13 @@ function webSearchArtifacts(message: Anthropic.Message): LabArtifact[] {
 }
 
 export async function POST(request: Request) {
-  const payload = await request.json().catch(() => ({})) as { question?: string; conversationId?: string; userMessageId?: string; history?: Array<{ role?: string; content?: string }> };
+  const payload = await request.json().catch(() => ({})) as { question?: string; conversationId?: string; runId?: string; userMessageId?: string; history?: Array<{ role?: string; content?: string }> };
   const question = payload.question?.trim();
   if (!question) return Response.json({ error: "질문이 필요합니다." }, { status: 400 });
   const ownerId = researchOwnerFrom(request);
   const conversationId = validConversationId(payload.conversationId) ? payload.conversationId : crypto.randomUUID();
-  const headers = { "content-type": "text/event-stream; charset=utf-8", "content-encoding": "identity", "cache-control": "no-cache, no-store, no-transform", "x-accel-buffering": "no", connection: "keep-alive", "set-cookie": researchOwnerCookie(ownerId) };
+  const runId = validConversationId(payload.runId) ? payload.runId : crypto.randomUUID();
+  const headers = { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-store, no-transform", "x-accel-buffering": "no", connection: "keep-alive", "set-cookie": researchOwnerCookie(ownerId) };
   const useOpenAiFrontier = frontierProvider() === "openai";
   if (useOpenAiFrontier && !openaiConfigured()) {
     return new Response(encodeEvent({ type: "error", message: "OpenAI 서버 키가 연결되지 않았습니다.", status: 503 }), { status: 503, headers });
@@ -229,10 +254,18 @@ export async function POST(request: Request) {
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
-      controller.enqueue(encoder.encode(ssePadding(32_768)));
+      controller.enqueue(encoder.encode(SSE_PREAMBLE));
       const startedAt = Date.now();
       const activeToolIds = new Set<string>();
+      let runFailed = false;
+      let progressWrite: Promise<void> = Promise.resolve();
       let progress: { phase: LabAgentPhase; label: string; detail: string } = { phase: "connecting", label: "요청 접수 중", detail: "대화와 실행 세션을 준비하고 있습니다." };
+      const persistProgress = (status: "running" | "complete" | "failed") => {
+        const snapshot = { ...progress };
+        progressWrite = progressWrite
+          .then(() => writeLabRunProgress(ownerId, { id: runId, conversationId, ...snapshot, status }))
+          .catch((error) => console.error("[lab/agent] progress persist failed", error instanceof Error ? error.message : error));
+      };
       const emit = (event: LabStreamEvent) => {
         if (event.type === "status") progress = { phase: event.phase, label: event.label, detail: event.detail ?? "" };
         else if (event.type === "tool_start") {
@@ -243,7 +276,13 @@ export async function POST(request: Request) {
           progress = activeToolIds.size
             ? { phase: "tools", label: `데이터 도구 ${activeToolIds.size}개 실행 중`, detail: "완료된 결과부터 검증하면서 나머지 계산을 기다립니다." }
             : { phase: "verifying", label: `${event.label} 결과 검증`, detail: event.detail };
-        }
+        } else if (event.type === "error") {
+          runFailed = true;
+          progress = { phase: progress.phase, label: "작업 중 오류 확인", detail: event.message };
+        } else if (event.type === "done") progress = { phase: "writing", label: runFailed ? "부분 결과 저장" : "답변 저장 완료", detail: runFailed ? "확보된 결과와 오류 내용을 함께 저장했습니다." : "대화와 분석 결과를 저장했습니다." };
+        if (event.type === "status" || event.type === "tool_start" || event.type === "tool_end") persistProgress("running");
+        else if (event.type === "error") persistProgress("failed");
+        else if (event.type === "done") persistProgress(runFailed ? "failed" : "complete");
         controller.enqueue(encoder.encode(encodeEvent(event)));
       };
       const heartbeat = setInterval(() => emit({ type: "heartbeat", ...progress, elapsedMs: Date.now() - startedAt }), 4_000);
@@ -389,10 +428,15 @@ export async function POST(request: Request) {
         emit({ type: "done", message: agentMessage, conversationId });
       } finally {
         clearInterval(heartbeat);
+        await progressWrite;
         controller.close();
       }
-      })().catch((error) => {
+      })().catch(async (error) => {
         clearInterval(heartbeat);
+        runFailed = true;
+        progress = { phase: progress.phase, label: "작업 중단", detail: error instanceof Error ? error.message : "알 수 없는 오류" };
+        persistProgress("failed");
+        await progressWrite;
         console.error("[lab/agent] stream failed before completion", error instanceof Error ? error.message : error);
         try { controller.error(error); } catch { /* stream is already closed */ }
       });

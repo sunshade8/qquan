@@ -183,6 +183,7 @@ export function LabWorkspace({ conversationId, onConversationChange, onActivityC
   async function askAgent(prompt: string) {
     if (!prompt || running || !ready) return;
     const userMessage: LabMessage = { id: messageId("user"), role: "user", content: prompt, tools: [], artifacts: [], createdAt: new Date().toISOString() };
+    const runId = messageId("run");
     stickToBottomRef.current = true;
     setMessages((current) => [...current, userMessage].slice(-200));
     setQuestion("");
@@ -192,11 +193,39 @@ export function LabWorkspace({ conversationId, onConversationChange, onActivityC
     setLive({ text: "", tools: [], status: "요청 접수 중", detail: "JARVIS에 질문을 전달하고 작업 공간을 준비하고 있습니다.", phase: "connecting" });
     liveArtifacts.current = [];
     setPendingArtifacts([]);
+    const progressController = new AbortController();
+    let progressTimer: number | undefined;
+    let progressBusy = false;
+    const pollProgress = async () => {
+      if (progressBusy || progressController.signal.aborted) return;
+      progressBusy = true;
+      try {
+        const response = await fetch(`/api/lab/progress?run=${encodeURIComponent(runId)}`, { cache: "no-store", signal: progressController.signal });
+        const data = await response.json() as { progress?: { phase: LabAgentPhase; label: string; detail?: string; status: "running" | "complete" | "failed" } | null };
+        if (data.progress) {
+          applyEvent({ type: "status", phase: data.progress.phase, label: data.progress.label, detail: data.progress.detail });
+          if (data.progress.status === "failed") setError(data.progress.detail || "백엔드 작업에서 오류가 발생했습니다.");
+        }
+      } catch {
+        // The SSE response remains the fallback if a progress poll is interrupted.
+      } finally {
+        progressBusy = false;
+      }
+    };
     try {
-      const response = await fetch("/api/lab/agent", {
+      const initialized = await fetch("/api/lab/progress", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ question: prompt, conversationId, userMessageId: userMessage.id, history: messages.slice(-12).map(({ role, content }) => ({ role, content })) }),
+        body: JSON.stringify({ runId, conversationId }),
+      }).then((response) => response.ok).catch(() => false);
+      const responsePromise = fetch("/api/lab/agent", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ question: prompt, conversationId, runId, userMessageId: userMessage.id, history: messages.slice(-12).map(({ role, content }) => ({ role, content })) }),
       });
+      if (initialized) {
+        progressTimer = window.setInterval(() => { void pollProgress(); }, 750);
+        void pollProgress();
+      }
+      const response = await responsePromise;
       if (!response.body) throw new Error("서버가 스트림을 반환하지 않았습니다.");
       if (!response.headers.get("content-type")?.includes("text/event-stream")) {
         const data = await response.json().catch(() => ({})) as { error?: string };
@@ -230,6 +259,8 @@ export function LabWorkspace({ conversationId, onConversationChange, onActivityC
       setError(detail);
       setMessages((current) => [...current, { id: messageId("agent"), role: "agent", content: `⚠️ ${detail}`, tools: live?.tools ?? [], artifacts: liveArtifacts.current, createdAt: new Date().toISOString() }]);
     } finally {
+      progressController.abort();
+      if (progressTimer !== undefined) window.clearInterval(progressTimer);
       setRunning(false);
       setLive(null);
       setPendingArtifacts([]);

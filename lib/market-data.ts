@@ -51,7 +51,12 @@ export type EventWindow = {
 };
 
 export type IntradayInterval = "5m" | "15m" | "60m";
-export type IntradayPoint = { timestamp: number; date: string; time: string; close: number };
+/**
+ * One intraday bar. `close` alone answers "where was price at time T", but any
+ * rule written on candles — an opening range, a body breakout, a fair value gap,
+ * a stop that sits under a wick — needs the full OHLC, so the fetcher carries it.
+ */
+export type IntradayPoint = { timestamp: number; date: string; time: string; close: number; open: number; high: number; low: number; volume: number };
 
 type TossToken = { access_token?: string; expires_in?: number; error?: string; error_description?: string };
 type TossEnvelope<T> = { result?: T; error?: { code?: string; message?: string } };
@@ -312,12 +317,23 @@ export async function fetchYahooIntradayWindow(symbol: string, from: string, to:
     const payload = await response.json().catch(() => ({})) as YahooChart;
     const result = payload.chart?.result?.[0];
     const timestamps = result?.timestamp ?? [];
-    const closes = result?.indicators?.quote?.[0]?.close ?? [];
+    const quote = result?.indicators?.quote?.[0];
+    const closes = quote?.close ?? [];
+    const opens = quote?.open ?? [];
+    const highs = quote?.high ?? [];
+    const lows = quote?.low ?? [];
+    const volumes = quote?.volume ?? [];
     const points = timestamps.flatMap((timestamp, index): IntradayPoint[] => {
       const close = closes[index];
       if (close === null || close === undefined || !Number.isFinite(close)) return [];
+      // A bar missing part of its OHLC is dropped rather than patched with the
+      // close: a synthetic high/low would invent the very wick a stop reads.
+      const open = opens[index];
+      const high = highs[index];
+      const low = lows[index];
+      if (![open, high, low].every((value) => typeof value === "number" && Number.isFinite(value))) return [];
       const eastern = newYorkDateTime(timestamp);
-      return [{ timestamp, date: eastern.date, time: eastern.time, close }];
+      return [{ timestamp, date: eastern.date, time: eastern.time, close, open: open as number, high: high as number, low: low as number, volume: Number(volumes[index]) || 0 }];
     });
     if (points.length) return points;
     lastError = new MarketProviderError("yahoo", "not_found", "해당 구간의 분봉 데이터가 없습니다.", 404);

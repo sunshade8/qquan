@@ -129,6 +129,17 @@ export const labMessages = sqliteTable("lab_messages", {
   index("idx_lab_messages_owner_created").on(table.ownerId, table.createdAt),
 ]);
 
+export const labAgentRuns = sqliteTable("lab_agent_runs", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull(),
+  conversationId: text("conversation_id").notNull(),
+  phase: text("phase").notNull(),
+  label: text("label").notNull(),
+  detail: text("detail").notNull().default(""),
+  status: text("status").notNull().default("running"),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => [index("idx_lab_agent_runs_owner_updated").on(table.ownerId, table.updatedAt)]);
+
 export const conversations = sqliteTable("conversations", {
   id: text("id").primaryKey(),
   ownerId: text("owner_id").notNull(),
