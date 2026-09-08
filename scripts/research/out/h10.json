@@ -1,0 +1,224 @@
+{
+  "hypothesis": "H10 downtrend bounce fade via inverse ETF",
+  "period": {
+    "from": "2021-09-07",
+    "oosStart": "2025-09-07"
+  },
+  "costPct": 0.2308,
+  "stopPct": 4,
+  "takeProfitPct": 4,
+  "feeInR": 0.058,
+  "sweep": [
+    {
+      "bouncePct": 1.5,
+      "holding": 2,
+      "trades": 183,
+      "winRate": 43.169,
+      "avgNetPct": -0.741,
+      "t": -2.575,
+      "payoff": 0.897,
+      "isAvg": -1.033,
+      "oosAvg": 1.508,
+      "oosTrades": 21
+    },
+    {
+      "bouncePct": 1.5,
+      "holding": 3,
+      "trades": 183,
+      "winRate": 42.623,
+      "avgNetPct": -0.793,
+      "t": -2.729,
+      "payoff": 0.898,
+      "isAvg": -1.099,
+      "oosAvg": 1.571,
+      "oosTrades": 21
+    },
+    {
+      "bouncePct": 1.5,
+      "holding": 5,
+      "trades": 183,
+      "winRate": 42.077,
+      "avgNetPct": -0.834,
+      "t": -2.859,
+      "payoff": 0.902,
+      "isAvg": -1.134,
+      "oosAvg": 1.483,
+      "oosTrades": 21
+    },
+    {
+      "bouncePct": 2,
+      "holding": 2,
+      "trades": 143,
+      "winRate": 44.755,
+      "avgNetPct": -0.61,
+      "t": -1.859,
+      "payoff": 0.902,
+      "isAvg": -0.761,
+      "oosAvg": 0.505,
+      "oosTrades": 17
+    },
+    {
+      "bouncePct": 2,
+      "holding": 3,
+      "trades": 143,
+      "winRate": 44.056,
+      "avgNetPct": -0.658,
+      "t": -1.994,
+      "payoff": 0.908,
+      "isAvg": -0.826,
+      "oosAvg": 0.584,
+      "oosTrades": 17,
+      "perPair": {
+        "SQQQ": {
+          "trades": 44,
+          "winRate": 43.182,
+          "avgNetPct": -0.715,
+          "medianNetPct": -4.231,
+          "tStat": -1.202,
+          "avgWinPct": 3.71,
+          "avgLossPct": -4.078,
+          "payoff": 0.91,
+          "totalNetPct": -31.464,
+          "worstLossStreak": 5,
+          "avgStopPct": 4,
+          "feeInR": 0.058,
+          "activeDayPct": null,
+          "sessionsCovered": null
+        },
+        "SOXS": {
+          "trades": 71,
+          "winRate": 42.254,
+          "avgNetPct": -0.851,
+          "medianNetPct": -4.231,
+          "tStat": -1.801,
+          "avgWinPct": 3.769,
+          "avgLossPct": -4.231,
+          "payoff": 0.891,
+          "totalNetPct": -60.387,
+          "worstLossStreak": 8,
+          "avgStopPct": 4,
+          "feeInR": 0.058,
+          "activeDayPct": null,
+          "sessionsCovered": null
+        },
+        "SPXS": {
+          "trades": 28,
+          "winRate": 50,
+          "avgNetPct": -0.081,
+          "medianNetPct": 0.941,
+          "tStat": -0.108,
+          "avgWinPct": 3.769,
+          "avgLossPct": -3.931,
+          "payoff": 0.959,
+          "totalNetPct": -2.271,
+          "worstLossStreak": 3,
+          "avgStopPct": 4,
+          "feeInR": 0.058,
+          "activeDayPct": null,
+          "sessionsCovered": null
+        }
+      }
+    },
+    {
+      "bouncePct": 2,
+      "holding": 5,
+      "trades": 143,
+      "winRate": 44.056,
+      "avgNetPct": -0.688,
+      "t": -2.07,
+      "payoff": 0.898,
+      "isAvg": -0.845,
+      "oosAvg": 0.475,
+      "oosTrades": 17
+    },
+    {
+      "bouncePct": 3,
+      "holding": 2,
+      "trades": 87,
+      "winRate": 40.23,
+      "avgNetPct": -0.968,
+      "t": -2.369,
+      "payoff": 0.886,
+      "isAvg": -0.874,
+      "oosAvg": -1.62,
+      "oosTrades": 11
+    },
+    {
+      "bouncePct": 3,
+      "holding": 3,
+      "trades": 87,
+      "winRate": 37.931,
+      "avgNetPct": -1.08,
+      "t": -2.606,
+      "payoff": 0.932,
+      "isAvg": -0.939,
+      "oosAvg": -2.049,
+      "oosTrades": 11
+    },
+    {
+      "bouncePct": 3,
+      "holding": 5,
+      "trades": 87,
+      "winRate": 37.931,
+      "avgNetPct": -1.166,
+      "t": -2.796,
+      "payoff": 0.901,
+      "isAvg": -1.039,
+      "oosAvg": -2.049,
+      "oosTrades": 11
+    }
+  ],
+  "upRegime": [
+    {
+      "holding": 2,
+      "trades": 263,
+      "winRate": 44.487,
+      "avgNetPct": -0.42,
+      "t": -1.869
+    },
+    {
+      "holding": 3,
+      "trades": 263,
+      "winRate": 47.529,
+      "avgNetPct": -0.383,
+      "t": -1.646
+    },
+    {
+      "holding": 5,
+      "trades": 263,
+      "winRate": 46.388,
+      "avgNetPct": -0.403,
+      "t": -1.677
+    }
+  ],
+  "unconditional3Session": {
+    "trades": 3753,
+    "winRate": 42.18,
+    "avgNetPct": -0.907,
+    "medianNetPct": -1.256,
+    "tStat": -6.09,
+    "avgWinPct": 6.486,
+    "avgLossPct": -6.3,
+    "payoff": 1.03,
+    "totalNetPct": -3403.619,
+    "worstLossStreak": 20,
+    "avgStopPct": null,
+    "feeInR": null,
+    "activeDayPct": null,
+    "sessionsCovered": null
+  },
+  "inverseFundDrift": {
+    "SQQQ": {
+      "totalPct": -94.648,
+      "sessions": 1255
+    },
+    "SOXS": {
+      "totalPct": -99.997,
+      "sessions": 1255
+    },
+    "SPXS": {
+      "totalPct": -86.063,
+      "sessions": 1255
+    }
+  }
+}

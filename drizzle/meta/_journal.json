@@ -43,6 +43,13 @@
       "when": 1788507269805,
       "tag": "0005_lab_agent_runs",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1788898527230,
+      "tag": "0006_trade_strategy_board",
+      "breakpoints": true
     }
   ]
 }

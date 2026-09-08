@@ -1,0 +1,141 @@
+{
+ "source": "https://openapi.tossinvest.com/openapi-docs/latest/openapi.json",
+ "apiVersion": "1.2.14",
+ "capturedAt": "2026-09-07",
+ "schema": {
+  "oneOf": [
+   {
+    "title": "OrderCreateQuantityBased",
+    "description": "수량 기반 주문. quantity 로 주문 수량을 지정.",
+    "type": "object",
+    "required": [
+     "symbol",
+     "side",
+     "orderType",
+     "quantity"
+    ],
+    "properties": {
+     "clientOrderId": {
+      "type": "string",
+      "maxLength": 36,
+      "pattern": "^[a-zA-Z0-9\\-_]+$",
+      "description": "클라이언트 지정 주문 식별자. 멱등성 키로 사용됩니다.\n- 미전달: 멱등성 미적용. 매 요청을 별개 주문으로 처리합니다.\n- 전달: 동일 값으로 재요청 시 이전 주문 결과를 그대로 재반환합니다.\n서버는 자동 생성하지 않습니다.\n최대 36자, 영숫자 및 `-`, `_` 허용.\n멱등성 키는 10분간 유효하며, 이후 동일 값으로 재요청 시 새 주문으로 처리됩니다.\n",
+      "example": "my-order-001"
+     },
+     "symbol": {
+      "type": "string",
+      "description": "종목 심볼. KRX: 6자리 숫자, US: 영문 티커",
+      "example": "005930"
+     },
+     "side": {
+      "type": "string",
+      "enum": [
+       "BUY",
+       "SELL"
+      ],
+      "description": "주문 방향",
+      "example": "BUY"
+     },
+     "orderType": {
+      "type": "string",
+      "enum": [
+       "LIMIT",
+       "MARKET"
+      ],
+      "description": "호가 유형.\n- `LIMIT`: 지정가\n- `MARKET`: 시장가\n",
+      "example": "LIMIT"
+     },
+     "timeInForce": {
+      "type": "string",
+      "enum": [
+       "DAY",
+       "CLS",
+       "OPG"
+      ],
+      "description": "주문 유효 조건 (Time In Force). 미전달 시 `DAY`. `orderType` 과 결합되어 주문 방식이 결정됩니다 (예: `LIMIT` + `CLS` = LOC).\n- `DAY`: 당일 유효 (Day). 정규장 종료까지 미체결분은 자동 취소됩니다.\n- `CLS`: 장 마감 주문 (At the Close). 현재 미국 주식 + `orderType=LIMIT` 조합만 지원합니다.\n- `OPG`: 장 개시 주문 (At the Opening, 국내 시가단일가). 현재 국내 주식 전용이며 `orderType` 은 `LIMIT`/`MARKET` 모두 지원합니다. 세션 시간(장전 사전접수) 외 접수는 원장에서 거절될 수 있습니다.\n",
+      "default": "DAY",
+      "example": "DAY"
+     },
+     "quantity": {
+      "type": "string",
+      "format": "decimal",
+      "pattern": "^\\d+(\\.\\d+)?$",
+      "maxLength": 30,
+      "description": "주문 수량 (주 단위). 지정한 수량만큼 주문합니다.\n- 기본: 양의 정수만 가능합니다.\n- 소수점 수량: 미국 주식 시장가 매도(`orderType=MARKET` + `side=SELL`) 주문에만 허용됩니다.\n  그 외(매수/지정가/국내) 소수점 수량은 `400 invalid-request` 를 반환합니다.\n  소수점 매수는 `orderAmount` 를 사용하세요.\n  소수점 수량 매도는 정규장 시작부터 정규장 종료 1시간 전까지만 접수 가능하며, 그 외 시간 요청 시 `422 fractional-quantity-outside-regular-hours` 를 반환합니다.\n  소수점 수량은 소수점 6자리까지 지원하며, 초과 시 `400 invalid-request` (`fractional-quantity-scale-exceeded`) 를 반환합니다.\n",
+      "example": "10"
+     },
+     "price": {
+      "type": "string",
+      "format": "decimal",
+      "pattern": "^\\d+(\\.\\d+)?$",
+      "maxLength": 30,
+      "description": "주문 가격. `orderType`이 `LIMIT` 일 때만 사용합니다.\n- `LIMIT`: 필수. 미전달 시 `400 invalid-request`.\n- `MARKET`: 전달 불가. 전달 시 `400 invalid-request`.\n- KR: 정수 (원 단위). 호가 단위에 맞아야 합니다 (예: 50,000~200,000원 구간은 100원 단위). 맞지 않으면 `400 invalid-request` 에러와 함께 올바른 호가 단위가 `data`에 포함됩니다.\n- US: 소수점 (달러 단위).\n  - $1 미만: 소수점 넷째 자리까지 (그 이하 자릿수는 절삭).\n  - $1 이상: 소수점 둘째 자리까지 (그 이하 자릿수는 절삭).\n",
+      "example": "70000"
+     },
+     "confirmHighValueOrder": {
+      "type": "boolean",
+      "description": "착오주문 방지를 위한 주문 확인 플래그. 기본값 `false`.\n1억원 이상의 주문 시 `true`가 아니면 `400 confirm-high-value-required` 에러를 반환합니다.\n사용자가 해당 주문의 금액을 인지하고 있음을 표시하기 위한 필드입니다.\n",
+      "default": false,
+      "example": false
+     }
+    }
+   },
+   {
+    "title": "OrderCreateAmountBased",
+    "description": "금액 기반 주문 (US MARKET 전용). orderAmount 로 주문 금액을 지정.",
+    "type": "object",
+    "required": [
+     "symbol",
+     "side",
+     "orderType",
+     "orderAmount"
+    ],
+    "properties": {
+     "clientOrderId": {
+      "type": "string",
+      "maxLength": 36,
+      "pattern": "^[a-zA-Z0-9\\-_]+$",
+      "description": "클라이언트 지정 주문 식별자. 멱등성 키로 사용됩니다.\n- 미전달: 멱등성 미적용. 매 요청을 별개 주문으로 처리합니다.\n- 전달: 동일 값으로 재요청 시 이전 주문 결과를 그대로 재반환합니다.\n서버는 자동 생성하지 않습니다.\n최대 36자, 영숫자 및 `-`, `_` 허용.\n멱등성 키는 10분간 유효하며, 이후 동일 값으로 재요청 시 새 주문으로 처리됩니다.\n",
+      "example": "my-order-001"
+     },
+     "symbol": {
+      "type": "string",
+      "description": "US 종목 심볼 (영문 티커). 금액 기반 주문은 US MARKET 전용입니다.",
+      "example": "AAPL"
+     },
+     "side": {
+      "type": "string",
+      "enum": [
+       "BUY",
+       "SELL"
+      ],
+      "description": "주문 방향",
+      "example": "BUY"
+     },
+     "orderType": {
+      "type": "string",
+      "enum": [
+       "MARKET"
+      ],
+      "description": "호가 유형. 금액 기반 주문은 `MARKET` 만 허용합니다.",
+      "example": "MARKET"
+     },
+     "orderAmount": {
+      "type": "string",
+      "format": "decimal",
+      "pattern": "^\\d+(\\.\\d+)?$",
+      "maxLength": 30,
+      "description": "주문 금액 (달러). 지정한 금액만큼 주문합니다.\n체결 수량은 체결 시점의 시장가에 따라 결정됩니다.\n\nQuantity-based 와의 차이: quantity 는 수량을 확정하고 비용이 변동하며,\norderAmount 는 금액을 확정하고 수량이 변동합니다.\n\n정규장 시작부터 정규장 종료 1시간 전까지만 접수 가능합니다.\n그 외 시간 요청 시 `422 amount-order-outside-regular-hours` 에러를 반환합니다.\n",
+      "example": "100.5"
+     },
+     "confirmHighValueOrder": {
+      "type": "boolean",
+      "description": "착오주문 방지를 위한 주문 확인 플래그. 기본값 `false`.\n1억원 이상의 주문 시 `true`가 아니면 `400 confirm-high-value-required` 에러를 반환합니다.\n사용자가 해당 주문의 금액을 인지하고 있음을 표시하기 위한 필드입니다.\n",
+      "default": false,
+      "example": false
+     }
+    }
+   }
+  ]
+ }
+}

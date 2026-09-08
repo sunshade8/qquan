@@ -1,0 +1,340 @@
+{
+  "hypothesis": "H8 turn of month",
+  "period": {
+    "from": "2015-09-01",
+    "oosStart": "2021-09-07"
+  },
+  "costPct": 0.2308,
+  "results": [
+    {
+      "symbol": "SPY",
+      "window": "(-1,+3)",
+      "sessions": 4,
+      "trades": 132,
+      "winRate": 54.545,
+      "avgNetPct": 0.067,
+      "t": 0.392,
+      "isAvg": 0.162,
+      "oosAvg": -0.047,
+      "oosTrades": 60,
+      "poolAvgNetPct": 0.015,
+      "percentileOfSingleWindows": 47.265,
+      "bootstrapPercentile": 62
+    },
+    {
+      "symbol": "SPY",
+      "window": "(-2,+2)",
+      "sessions": 4,
+      "trades": 132,
+      "winRate": 53.03,
+      "avgNetPct": 0.2,
+      "t": 1.302,
+      "isAvg": 0.078,
+      "oosAvg": 0.347,
+      "oosTrades": 60,
+      "poolAvgNetPct": 0.015,
+      "percentileOfSingleWindows": 51.431,
+      "bootstrapPercentile": 84.7
+    },
+    {
+      "symbol": "SPY",
+      "window": "(0,+3)",
+      "sessions": 3,
+      "trades": 132,
+      "winRate": 50.758,
+      "avgNetPct": 0.059,
+      "t": 0.355,
+      "isAvg": 0.179,
+      "oosAvg": -0.084,
+      "oosTrades": 60,
+      "poolAvgNetPct": -0.046,
+      "percentileOfSingleWindows": 49.747,
+      "bootstrapPercentile": 73.5
+    },
+    {
+      "symbol": "QQQ",
+      "window": "(-1,+3)",
+      "sessions": 4,
+      "trades": 132,
+      "winRate": 56.061,
+      "avgNetPct": 0.182,
+      "t": 0.829,
+      "isAvg": 0.316,
+      "oosAvg": 0.022,
+      "oosTrades": 60,
+      "poolAvgNetPct": 0.092,
+      "percentileOfSingleWindows": 48.424,
+      "bootstrapPercentile": 65.4
+    },
+    {
+      "symbol": "QQQ",
+      "window": "(-2,+2)",
+      "sessions": 4,
+      "trades": 132,
+      "winRate": 56.818,
+      "avgNetPct": 0.316,
+      "t": 1.514,
+      "isAvg": 0.233,
+      "oosAvg": 0.415,
+      "oosTrades": 60,
+      "poolAvgNetPct": 0.092,
+      "percentileOfSingleWindows": 51.032,
+      "bootstrapPercentile": 84.6
+    },
+    {
+      "symbol": "QQQ",
+      "window": "(0,+3)",
+      "sessions": 3,
+      "trades": 132,
+      "winRate": 53.788,
+      "avgNetPct": 0.076,
+      "t": 0.356,
+      "isAvg": 0.204,
+      "oosAvg": -0.078,
+      "oosTrades": 60,
+      "poolAvgNetPct": 0.012,
+      "percentileOfSingleWindows": 48.009,
+      "bootstrapPercentile": 64.3
+    },
+    {
+      "symbol": "TQQQ",
+      "window": "(-1,+3)",
+      "sessions": 4,
+      "trades": 132,
+      "winRate": 56.061,
+      "avgNetPct": 0.868,
+      "t": 1.321,
+      "isAvg": 1.324,
+      "oosAvg": 0.32,
+      "oosTrades": 60,
+      "poolAvgNetPct": 0.598,
+      "percentileOfSingleWindows": 49.04,
+      "bootstrapPercentile": 65.7
+    },
+    {
+      "symbol": "TQQQ",
+      "window": "(-2,+2)",
+      "sessions": 4,
+      "trades": 132,
+      "winRate": 58.333,
+      "avgNetPct": 1.25,
+      "t": 1.966,
+      "isAvg": 1.032,
+      "oosAvg": 1.512,
+      "oosTrades": 60,
+      "poolAvgNetPct": 0.598,
+      "percentileOfSingleWindows": 51.394,
+      "bootstrapPercentile": 81.8
+    },
+    {
+      "symbol": "TQQQ",
+      "window": "(0,+3)",
+      "sessions": 3,
+      "trades": 132,
+      "winRate": 56.061,
+      "avgNetPct": 0.596,
+      "t": 0.941,
+      "isAvg": 0.992,
+      "oosAvg": 0.121,
+      "oosTrades": 60,
+      "poolAvgNetPct": 0.395,
+      "percentileOfSingleWindows": 48.117,
+      "bootstrapPercentile": 63.2
+    },
+    {
+      "symbol": "UPRO",
+      "window": "(-1,+3)",
+      "sessions": 4,
+      "trades": 132,
+      "winRate": 56.061,
+      "avgNetPct": 0.543,
+      "t": 1.061,
+      "isAvg": 0.888,
+      "oosAvg": 0.129,
+      "oosTrades": 60,
+      "poolAvgNetPct": 0.383,
+      "percentileOfSingleWindows": 47.773,
+      "bootstrapPercentile": 60.6
+    },
+    {
+      "symbol": "UPRO",
+      "window": "(-2,+2)",
+      "sessions": 4,
+      "trades": 132,
+      "winRate": 53.788,
+      "avgNetPct": 0.913,
+      "t": 1.956,
+      "isAvg": 0.586,
+      "oosAvg": 1.306,
+      "oosTrades": 60,
+      "poolAvgNetPct": 0.383,
+      "percentileOfSingleWindows": 51.865,
+      "bootstrapPercentile": 83.3
+    },
+    {
+      "symbol": "UPRO",
+      "window": "(0,+3)",
+      "sessions": 3,
+      "trades": 132,
+      "winRate": 56.061,
+      "avgNetPct": 0.564,
+      "t": 1.128,
+      "isAvg": 0.937,
+      "oosAvg": 0.116,
+      "oosTrades": 60,
+      "poolAvgNetPct": 0.231,
+      "percentileOfSingleWindows": 50.072,
+      "bootstrapPercentile": 74.9
+    }
+  ],
+  "bootstrap": [
+    {
+      "symbol": "SPY",
+      "bootstrapP5": -0.263,
+      "bootstrapP50": 0.011,
+      "bootstrapP90": 0.255,
+      "actual": 0.067
+    },
+    {
+      "symbol": "QQQ",
+      "bootstrapP5": -0.284,
+      "bootstrapP50": 0.084,
+      "bootstrapP90": 0.379,
+      "actual": 0.182
+    },
+    {
+      "symbol": "TQQQ",
+      "bootstrapP5": -0.464,
+      "bootstrapP50": 0.64,
+      "bootstrapP90": 1.434,
+      "actual": 0.868
+    },
+    {
+      "symbol": "UPRO",
+      "bootstrapP5": -0.491,
+      "bootstrapP50": 0.383,
+      "bootstrapP90": 1.054,
+      "actual": 0.543
+    }
+  ],
+  "seasonality": {
+    "monthly": [
+      {
+        "label": "1월",
+        "samples": 11,
+        "averagePct": 1.469,
+        "medianPct": 1.593,
+        "positiveRatePct": 63.6
+      },
+      {
+        "label": "2월",
+        "samples": 11,
+        "averagePct": -0.37,
+        "medianPct": -0.864,
+        "positiveRatePct": 36.4
+      },
+      {
+        "label": "3월",
+        "samples": 11,
+        "averagePct": -0.164,
+        "medianPct": 1.81,
+        "positiveRatePct": 63.6
+      },
+      {
+        "label": "4월",
+        "samples": 11,
+        "averagePct": 2.037,
+        "medianPct": 0.993,
+        "positiveRatePct": 72.7
+      },
+      {
+        "label": "5월",
+        "samples": 11,
+        "averagePct": 1.989,
+        "medianPct": 1.701,
+        "positiveRatePct": 90.9
+      },
+      {
+        "label": "6월",
+        "samples": 11,
+        "averagePct": 1.673,
+        "medianPct": 1.773,
+        "positiveRatePct": 81.8
+      },
+      {
+        "label": "7월",
+        "samples": 11,
+        "averagePct": 3.207,
+        "medianPct": 2.441,
+        "positiveRatePct": 100
+      },
+      {
+        "label": "8월",
+        "samples": 11,
+        "averagePct": 1.204,
+        "medianPct": 2.052,
+        "positiveRatePct": 72.7
+      },
+      {
+        "label": "9월",
+        "samples": 11,
+        "averagePct": -1.327,
+        "medianPct": 0.006,
+        "positiveRatePct": 54.5
+      },
+      {
+        "label": "10월",
+        "samples": 11,
+        "averagePct": 1.491,
+        "medianPct": 2.211,
+        "positiveRatePct": 54.5
+      },
+      {
+        "label": "11월",
+        "samples": 11,
+        "averagePct": 3.955,
+        "medianPct": 3.62,
+        "positiveRatePct": 90.9
+      },
+      {
+        "label": "12월",
+        "samples": 11,
+        "averagePct": 0.038,
+        "medianPct": 1.213,
+        "positiveRatePct": 63.6
+      }
+    ],
+    "weekday": [
+      {
+        "label": "월",
+        "samples": 517,
+        "averagePct": 0.088,
+        "positiveRatePct": 59
+      },
+      {
+        "label": "화",
+        "samples": 569,
+        "averagePct": 0.069,
+        "positiveRatePct": 52
+      },
+      {
+        "label": "수",
+        "samples": 567,
+        "averagePct": 0.094,
+        "positiveRatePct": 56.8
+      },
+      {
+        "label": "목",
+        "samples": 557,
+        "averagePct": 0.007,
+        "positiveRatePct": 53.1
+      },
+      {
+        "label": "금",
+        "samples": 554,
+        "averagePct": 0.052,
+        "positiveRatePct": 54.9
+      }
+    ]
+  }
+}

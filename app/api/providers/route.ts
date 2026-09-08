@@ -1,22 +1,20 @@
-import { probeFinnhub } from "@/lib/finnhub";
 import { fredConfigured } from "@/lib/fred";
-import { probeAlpaca } from "@/lib/alpaca";
+import { probeMassive } from "@/lib/massive";
 
 export const dynamic = "force-dynamic";
 
 /**
  * Live connection status for every external data provider.
  *
- * The Finnhub section is probed with real calls rather than read from a config
+ * Massive is probed with a real bar request rather than read from a config
  * flag, because "a key is set" and "the plan returns data" are different facts
  * and only the second one matters to a strategy that depends on it.
  */
 export async function GET() {
   try {
-    const [alpaca, finnhub] = await Promise.all([probeAlpaca(), probeFinnhub()]);
+    const massive = await probeMassive();
     return Response.json({
-      alpaca,
-      finnhub,
+      massive,
       fred: { configured: fredConfigured() },
       checkedAt: new Date().toISOString(),
     }, { headers: { "cache-control": "no-store" } });

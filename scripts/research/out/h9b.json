@@ -1,0 +1,277 @@
+{
+  "hypothesis": "H9b pre-FOMC drift (5-minute)",
+  "period": {
+    "from": "2024-09-09",
+    "to": "2026-09-04"
+  },
+  "costPct": 0.2308,
+  "eventCounts": {
+    "fomc": 16,
+    "cpi": 23
+  },
+  "rows": [
+    {
+      "event": "FOMC",
+      "symbol": "SPY",
+      "window": "T−1 14:00 → T 13:55 (24시간 창)",
+      "trades": 16,
+      "winRate": 18.75,
+      "avgGrossPct": -0.015,
+      "avgNetPct": -0.246,
+      "t": -2.616
+    },
+    {
+      "event": "FOMC",
+      "symbol": "SPY",
+      "window": "T−1 15:55 종가 → T 13:55",
+      "trades": 16,
+      "winRate": 18.75,
+      "avgGrossPct": 0.009,
+      "avgNetPct": -0.222,
+      "t": -2.586
+    },
+    {
+      "event": "FOMC",
+      "symbol": "SPY",
+      "window": "T 09:30 → T 13:55 (당일 오전만)",
+      "trades": 16,
+      "winRate": 12.5,
+      "avgGrossPct": -0.059,
+      "avgNetPct": -0.289,
+      "t": -5.361
+    },
+    {
+      "event": "FOMC",
+      "symbol": "QQQ",
+      "window": "T−1 14:00 → T 13:55 (24시간 창)",
+      "trades": 16,
+      "winRate": 37.5,
+      "avgGrossPct": 0.073,
+      "avgNetPct": -0.158,
+      "t": -1.125
+    },
+    {
+      "event": "FOMC",
+      "symbol": "QQQ",
+      "window": "T−1 15:55 종가 → T 13:55",
+      "trades": 16,
+      "winRate": 50,
+      "avgGrossPct": 0.106,
+      "avgNetPct": -0.125,
+      "t": -0.937
+    },
+    {
+      "event": "FOMC",
+      "symbol": "QQQ",
+      "window": "T 09:30 → T 13:55 (당일 오전만)",
+      "trades": 16,
+      "winRate": 6.25,
+      "avgGrossPct": -0.095,
+      "avgNetPct": -0.326,
+      "t": -3.625
+    },
+    {
+      "event": "FOMC",
+      "symbol": "TQQQ",
+      "window": "T−1 14:00 → T 13:55 (24시간 창)",
+      "trades": 16,
+      "winRate": 50,
+      "avgGrossPct": 0.169,
+      "avgNetPct": -0.062,
+      "t": -0.148
+    },
+    {
+      "event": "FOMC",
+      "symbol": "TQQQ",
+      "window": "T−1 15:55 종가 → T 13:55",
+      "trades": 16,
+      "winRate": 50,
+      "avgGrossPct": 0.275,
+      "avgNetPct": 0.044,
+      "t": 0.111
+    },
+    {
+      "event": "FOMC",
+      "symbol": "TQQQ",
+      "window": "T 09:30 → T 13:55 (당일 오전만)",
+      "trades": 16,
+      "winRate": 31.25,
+      "avgGrossPct": -0.3,
+      "avgNetPct": -0.531,
+      "t": -1.963
+    },
+    {
+      "event": "CPI",
+      "symbol": "SPY",
+      "window": "T−1 14:00 → T 13:55 (24시간 창)",
+      "trades": 23,
+      "winRate": 47.826,
+      "avgGrossPct": 0.183,
+      "avgNetPct": -0.047,
+      "t": -0.298
+    },
+    {
+      "event": "CPI",
+      "symbol": "SPY",
+      "window": "T−1 15:55 종가 → T 13:55",
+      "trades": 23,
+      "winRate": 52.174,
+      "avgGrossPct": 0.136,
+      "avgNetPct": -0.095,
+      "t": -0.451
+    },
+    {
+      "event": "CPI",
+      "symbol": "SPY",
+      "window": "T 09:30 → T 13:55 (당일 오전만)",
+      "trades": 23,
+      "winRate": 43.478,
+      "avgGrossPct": -0.004,
+      "avgNetPct": -0.235,
+      "t": -2.157
+    },
+    {
+      "event": "CPI",
+      "symbol": "QQQ",
+      "window": "T−1 14:00 → T 13:55 (24시간 창)",
+      "trades": 23,
+      "winRate": 60.87,
+      "avgGrossPct": 0.452,
+      "avgNetPct": 0.221,
+      "t": 1.001
+    },
+    {
+      "event": "CPI",
+      "symbol": "QQQ",
+      "window": "T−1 15:55 종가 → T 13:55",
+      "trades": 23,
+      "winRate": 60.87,
+      "avgGrossPct": 0.374,
+      "avgNetPct": 0.143,
+      "t": 0.502
+    },
+    {
+      "event": "CPI",
+      "symbol": "QQQ",
+      "window": "T 09:30 → T 13:55 (당일 오전만)",
+      "trades": 23,
+      "winRate": 47.826,
+      "avgGrossPct": 0.11,
+      "avgNetPct": -0.121,
+      "t": -0.792
+    },
+    {
+      "event": "CPI",
+      "symbol": "TQQQ",
+      "window": "T−1 14:00 → T 13:55 (24시간 창)",
+      "trades": 23,
+      "winRate": 73.913,
+      "avgGrossPct": 1.244,
+      "avgNetPct": 1.013,
+      "t": 1.454
+    },
+    {
+      "event": "CPI",
+      "symbol": "TQQQ",
+      "window": "T−1 15:55 종가 → T 13:55",
+      "trades": 23,
+      "winRate": 65.217,
+      "avgGrossPct": 1.079,
+      "avgNetPct": 0.848,
+      "t": 0.983
+    },
+    {
+      "event": "CPI",
+      "symbol": "TQQQ",
+      "window": "T 09:30 → T 13:55 (당일 오전만)",
+      "trades": 23,
+      "winRate": 56.522,
+      "avgGrossPct": 0.314,
+      "avgNetPct": 0.084,
+      "t": 0.18
+    }
+  ],
+  "controls": [
+    {
+      "symbol": "SPY",
+      "window": "T−1 14:00 → T 13:55 (24시간 창)",
+      "trades": 455,
+      "winRate": 42.418,
+      "avgGrossPct": 0.071,
+      "avgNetPct": -0.159,
+      "t": -3.582
+    },
+    {
+      "symbol": "SPY",
+      "window": "T−1 15:55 종가 → T 13:55",
+      "trades": 455,
+      "winRate": 43.297,
+      "avgGrossPct": 0.085,
+      "avgNetPct": -0.146,
+      "t": -3.43
+    },
+    {
+      "symbol": "SPY",
+      "window": "T 09:30 → T 13:55 (당일 오전만)",
+      "trades": 455,
+      "winRate": 37.582,
+      "avgGrossPct": 0.033,
+      "avgNetPct": -0.197,
+      "t": -5.606
+    },
+    {
+      "symbol": "QQQ",
+      "window": "T−1 14:00 → T 13:55 (24시간 창)",
+      "trades": 455,
+      "winRate": 46.593,
+      "avgGrossPct": 0.084,
+      "avgNetPct": -0.147,
+      "t": -2.452
+    },
+    {
+      "symbol": "QQQ",
+      "window": "T−1 15:55 종가 → T 13:55",
+      "trades": 455,
+      "winRate": 46.154,
+      "avgGrossPct": 0.102,
+      "avgNetPct": -0.128,
+      "t": -2.18
+    },
+    {
+      "symbol": "QQQ",
+      "window": "T 09:30 → T 13:55 (당일 오전만)",
+      "trades": 455,
+      "winRate": 42.637,
+      "avgGrossPct": 0.033,
+      "avgNetPct": -0.197,
+      "t": -4.237
+    },
+    {
+      "symbol": "TQQQ",
+      "window": "T−1 14:00 → T 13:55 (24시간 창)",
+      "trades": 455,
+      "winRate": 51.429,
+      "avgGrossPct": 0.205,
+      "avgNetPct": -0.026,
+      "t": -0.147
+    },
+    {
+      "symbol": "TQQQ",
+      "window": "T−1 15:55 종가 → T 13:55",
+      "trades": 455,
+      "winRate": 50.989,
+      "avgGrossPct": 0.271,
+      "avgNetPct": 0.04,
+      "t": 0.227
+    },
+    {
+      "symbol": "TQQQ",
+      "window": "T 09:30 → T 13:55 (당일 오전만)",
+      "trades": 455,
+      "winRate": 49.451,
+      "avgGrossPct": 0.105,
+      "avgNetPct": -0.126,
+      "t": -0.897
+    }
+  ]
+}

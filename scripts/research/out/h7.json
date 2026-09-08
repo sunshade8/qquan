@@ -1,0 +1,442 @@
+{
+  "hypothesis": "H7 leveraged-ETF pullback in trend",
+  "period": {
+    "from": "2021-09-07",
+    "oosStart": "2025-09-07"
+  },
+  "costPct": 0.2308,
+  "stopPct": 7,
+  "feeInR": 0.033,
+  "cells": [
+    {
+      "signalSource": "self",
+      "lowest": 3,
+      "sma": 20,
+      "trades": 375,
+      "avgNetPct": 0.559,
+      "winRate": 66.667,
+      "t": 1.892,
+      "oosTrades": 74,
+      "oosAvgNetPct": -0.232
+    },
+    {
+      "signalSource": "self",
+      "lowest": 3,
+      "sma": 50,
+      "trades": 416,
+      "avgNetPct": 0.555,
+      "winRate": 66.346,
+      "t": 1.972,
+      "oosTrades": 98,
+      "oosAvgNetPct": -0.055
+    },
+    {
+      "signalSource": "self",
+      "lowest": 3,
+      "sma": 100,
+      "trades": 414,
+      "avgNetPct": 0.261,
+      "winRate": 64.251,
+      "t": 0.944,
+      "oosTrades": 126,
+      "oosAvgNetPct": -0.356
+    },
+    {
+      "signalSource": "self",
+      "lowest": 5,
+      "sma": 20,
+      "trades": 188,
+      "avgNetPct": 0.72,
+      "winRate": 59.043,
+      "t": 1.416,
+      "oosTrades": 28,
+      "oosAvgNetPct": -0.446
+    },
+    {
+      "signalSource": "self",
+      "lowest": 5,
+      "sma": 50,
+      "trades": 253,
+      "avgNetPct": 0.593,
+      "winRate": 58.893,
+      "t": 1.401,
+      "oosTrades": 55,
+      "oosAvgNetPct": -0.352
+    },
+    {
+      "signalSource": "self",
+      "lowest": 5,
+      "sma": 100,
+      "trades": 266,
+      "avgNetPct": 0.511,
+      "winRate": 59.398,
+      "t": 1.284,
+      "oosTrades": 81,
+      "oosAvgNetPct": -0.594
+    },
+    {
+      "signalSource": "self",
+      "lowest": 10,
+      "sma": 20,
+      "trades": 30,
+      "avgNetPct": -0.197,
+      "winRate": 60,
+      "t": -0.201,
+      "oosTrades": 5,
+      "oosAvgNetPct": -0.23
+    },
+    {
+      "signalSource": "self",
+      "lowest": 10,
+      "sma": 50,
+      "trades": 112,
+      "avgNetPct": 0.246,
+      "winRate": 49.107,
+      "t": 0.357,
+      "oosTrades": 24,
+      "oosAvgNetPct": 1.617
+    },
+    {
+      "signalSource": "self",
+      "lowest": 10,
+      "sma": 100,
+      "trades": 144,
+      "avgNetPct": 0.301,
+      "winRate": 50.694,
+      "t": 0.517,
+      "oosTrades": 50,
+      "oosAvgNetPct": 0.499
+    },
+    {
+      "signalSource": "underlying",
+      "lowest": 3,
+      "sma": 20,
+      "trades": 392,
+      "avgNetPct": 0.408,
+      "winRate": 65.051,
+      "t": 1.405,
+      "oosTrades": 79,
+      "oosAvgNetPct": -0.057
+    },
+    {
+      "signalSource": "underlying",
+      "lowest": 3,
+      "sma": 50,
+      "trades": 462,
+      "avgNetPct": 0.38,
+      "winRate": 64.286,
+      "t": 1.445,
+      "oosTrades": 106,
+      "oosAvgNetPct": -0.137
+    },
+    {
+      "signalSource": "underlying",
+      "lowest": 3,
+      "sma": 100,
+      "trades": 474,
+      "avgNetPct": 0.407,
+      "winRate": 63.924,
+      "t": 1.553,
+      "oosTrades": 138,
+      "oosAvgNetPct": -0.023
+    },
+    {
+      "signalSource": "underlying",
+      "lowest": 5,
+      "sma": 20,
+      "trades": 200,
+      "avgNetPct": 0.597,
+      "winRate": 58.5,
+      "t": 1.213,
+      "oosTrades": 33,
+      "oosAvgNetPct": -0.373
+    },
+    {
+      "signalSource": "underlying",
+      "lowest": 5,
+      "sma": 50,
+      "trades": 281,
+      "avgNetPct": 0.618,
+      "winRate": 58.719,
+      "t": 1.55,
+      "oosTrades": 65,
+      "oosAvgNetPct": -0.703
+    },
+    {
+      "signalSource": "underlying",
+      "lowest": 5,
+      "sma": 100,
+      "trades": 299,
+      "avgNetPct": 0.703,
+      "winRate": 59.866,
+      "t": 1.847,
+      "oosTrades": 91,
+      "oosAvgNetPct": -0.418
+    },
+    {
+      "signalSource": "underlying",
+      "lowest": 10,
+      "sma": 20,
+      "trades": 35,
+      "avgNetPct": -1.17,
+      "winRate": 54.286,
+      "t": -1.267,
+      "oosTrades": 6,
+      "oosAvgNetPct": 0.484
+    },
+    {
+      "signalSource": "underlying",
+      "lowest": 10,
+      "sma": 50,
+      "trades": 136,
+      "avgNetPct": -0.265,
+      "winRate": 47.794,
+      "t": -0.459,
+      "oosTrades": 33,
+      "oosAvgNetPct": -0.005
+    },
+    {
+      "signalSource": "underlying",
+      "lowest": 10,
+      "sma": 100,
+      "trades": 162,
+      "avgNetPct": 0.326,
+      "winRate": 50.617,
+      "t": 0.577,
+      "oosTrades": 56,
+      "oosAvgNetPct": -0.025
+    }
+  ],
+  "detail": {
+    "self-base": {
+      "perSymbol": {
+        "TQQQ": {
+          "trades": 63,
+          "winRate": 63.492,
+          "avgNetPct": 0.79,
+          "medianNetPct": 2.273,
+          "tStat": 1.072,
+          "avgWinPct": 4.702,
+          "avgLossPct": -6.015,
+          "payoff": 0.782,
+          "totalNetPct": 49.744,
+          "worstLossStreak": 4,
+          "avgStopPct": 7,
+          "feeInR": 0.033,
+          "activeDayPct": 5.02,
+          "sessionsCovered": 1255,
+          "finalEquity": 1.477,
+          "cagrPct": 8.143,
+          "maxDrawdownPct": 38.041,
+          "buyHold": {
+            "cagrPct": 14.906,
+            "maxDrawdownPct": 81.66
+          }
+        },
+        "SOXL": {
+          "trades": 64,
+          "winRate": 53.125,
+          "avgNetPct": 1.846,
+          "medianNetPct": 3.46,
+          "tStat": 1.57,
+          "avgWinPct": 9.696,
+          "avgLossPct": -7.05,
+          "payoff": 1.375,
+          "totalNetPct": 118.168,
+          "worstLossStreak": 4,
+          "avgStopPct": 7,
+          "feeInR": 0.033,
+          "activeDayPct": 5.1,
+          "sessionsCovered": 1255,
+          "finalEquity": 2.48,
+          "cagrPct": 20.005,
+          "maxDrawdownPct": 33.396,
+          "buyHold": {
+            "cagrPct": 21.006,
+            "maxDrawdownPct": 90.461
+          }
+        },
+        "UPRO": {
+          "trades": 62,
+          "winRate": 58.065,
+          "avgNetPct": -0.692,
+          "medianNetPct": 0.556,
+          "tStat": -1.145,
+          "avgWinPct": 2.785,
+          "avgLossPct": -5.506,
+          "payoff": 0.506,
+          "totalNetPct": -42.914,
+          "worstLossStreak": 4,
+          "avgStopPct": 7,
+          "feeInR": 0.033,
+          "activeDayPct": 4.94,
+          "sessionsCovered": 1255,
+          "finalEquity": 0.606,
+          "cagrPct": -9.574,
+          "maxDrawdownPct": 43.152,
+          "buyHold": {
+            "cagrPct": 19.14,
+            "maxDrawdownPct": 63.943
+          }
+        },
+        "TNA": {
+          "trades": 64,
+          "winRate": 60.938,
+          "avgNetPct": 0.393,
+          "medianNetPct": 1.604,
+          "tStat": 0.538,
+          "avgWinPct": 4.533,
+          "avgLossPct": -6.065,
+          "payoff": 0.747,
+          "totalNetPct": 25.149,
+          "worstLossStreak": 4,
+          "avgStopPct": 7,
+          "feeInR": 0.033,
+          "activeDayPct": 5.1,
+          "sessionsCovered": 1255,
+          "finalEquity": 1.155,
+          "cagrPct": 2.928,
+          "maxDrawdownPct": 22.739,
+          "buyHold": {
+            "cagrPct": -4.579,
+            "maxDrawdownPct": 82.365
+          }
+        }
+      },
+      "trades": 253,
+      "years": 4.98
+    },
+    "underlying-base": {
+      "perSymbol": {
+        "TQQQ": {
+          "trades": 72,
+          "winRate": 59.722,
+          "avgNetPct": 0.515,
+          "medianNetPct": 2.083,
+          "tStat": 0.739,
+          "avgWinPct": 4.813,
+          "avgLossPct": -5.857,
+          "payoff": 0.822,
+          "totalNetPct": 37.105,
+          "worstLossStreak": 4,
+          "avgStopPct": 7,
+          "feeInR": 0.033,
+          "activeDayPct": 5.737,
+          "sessionsCovered": 1255,
+          "finalEquity": 1.279,
+          "cagrPct": 5.061,
+          "maxDrawdownPct": 36.41,
+          "buyHold": {
+            "cagrPct": 14.906,
+            "maxDrawdownPct": 81.66
+          }
+        },
+        "SOXL": {
+          "trades": 72,
+          "winRate": 51.389,
+          "avgNetPct": 1.318,
+          "medianNetPct": 1.448,
+          "tStat": 1.25,
+          "avgWinPct": 9.12,
+          "avgLossPct": -6.93,
+          "payoff": 1.316,
+          "totalNetPct": 94.862,
+          "worstLossStreak": 5,
+          "avgStopPct": 7,
+          "feeInR": 0.033,
+          "activeDayPct": 5.737,
+          "sessionsCovered": 1255,
+          "finalEquity": 1.957,
+          "cagrPct": 14.429,
+          "maxDrawdownPct": 41.249,
+          "buyHold": {
+            "cagrPct": 21.006,
+            "maxDrawdownPct": 90.461
+          }
+        },
+        "UPRO": {
+          "trades": 68,
+          "winRate": 63.235,
+          "avgNetPct": 0.087,
+          "medianNetPct": 1.439,
+          "tStat": 0.144,
+          "avgWinPct": 3.365,
+          "avgLossPct": -5.551,
+          "payoff": 0.606,
+          "totalNetPct": 5.913,
+          "worstLossStreak": 4,
+          "avgStopPct": 7,
+          "feeInR": 0.033,
+          "activeDayPct": 5.418,
+          "sessionsCovered": 1255,
+          "finalEquity": 0.976,
+          "cagrPct": -0.483,
+          "maxDrawdownPct": 25.39,
+          "buyHold": {
+            "cagrPct": 19.14,
+            "maxDrawdownPct": 63.943
+          }
+        },
+        "TNA": {
+          "trades": 69,
+          "winRate": 60.87,
+          "avgNetPct": 0.52,
+          "medianNetPct": 1.859,
+          "tStat": 0.693,
+          "avgWinPct": 4.906,
+          "avgLossPct": -6.303,
+          "payoff": 0.778,
+          "totalNetPct": 35.892,
+          "worstLossStreak": 4,
+          "avgStopPct": 7,
+          "feeInR": 0.033,
+          "activeDayPct": 5.498,
+          "sessionsCovered": 1255,
+          "finalEquity": 1.255,
+          "cagrPct": 4.666,
+          "maxDrawdownPct": 29.628,
+          "buyHold": {
+            "cagrPct": -4.579,
+            "maxDrawdownPct": 82.365
+          }
+        }
+      },
+      "trades": 281,
+      "years": 4.98
+    }
+  },
+  "controls": {
+    "noTrendFilter": {
+      "trades": 640,
+      "winRate": 51.719,
+      "avgNetPct": 0.451,
+      "medianNetPct": 0.458,
+      "tStat": 1.407,
+      "avgWinPct": 6.991,
+      "avgLossPct": -6.554,
+      "payoff": 1.067,
+      "totalNetPct": 288.839,
+      "worstLossStreak": 7,
+      "avgStopPct": 7,
+      "feeInR": 0.033,
+      "activeDayPct": null,
+      "sessionsCovered": null
+    },
+    "unconditional5Session": {
+      "trades": 4996,
+      "winRate": 53.082,
+      "avgNetPct": 0.548,
+      "medianNetPct": 0.583,
+      "tStat": 3.707,
+      "avgWinPct": 7.812,
+      "avgLossPct": -7.67,
+      "payoff": 1.018,
+      "totalNetPct": 2737.864,
+      "worstLossStreak": 22,
+      "avgStopPct": null,
+      "feeInR": null,
+      "activeDayPct": null,
+      "sessionsCovered": null
+    }
+  }
+}

@@ -41,6 +41,12 @@ const STATEMENTS = [
   "CREATE INDEX IF NOT EXISTS idx_paper_fills_signal_date ON paper_fills (signal_date)",
   "CREATE TABLE IF NOT EXISTS paper_daily_pnl (id text PRIMARY KEY NOT NULL, owner_id text NOT NULL, strategy_id text NOT NULL, trading_date text NOT NULL, equity_usd real NOT NULL, realized_pnl_usd real DEFAULT 0 NOT NULL, unrealized_pnl_usd real DEFAULT 0 NOT NULL, return_pct real, benchmark_return_pct real, open_positions integer DEFAULT 0 NOT NULL, created_at integer NOT NULL)",
   "CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_pnl_strategy_date ON paper_daily_pnl (owner_id, strategy_id, trading_date)",
+  // The 전략 board: which coded rules are running, and the markdown record of every run.
+  "CREATE TABLE IF NOT EXISTS trade_strategy_instances (id text PRIMARY KEY NOT NULL, owner_id text NOT NULL, strategy_key text NOT NULL, name text NOT NULL, capital_usd real NOT NULL, gateway text DEFAULT 'dry_run' NOT NULL, last_backtest_at integer, last_trade_at integer, created_at integer NOT NULL, updated_at integer NOT NULL)",
+  "CREATE INDEX IF NOT EXISTS idx_trade_instances_owner ON trade_strategy_instances (owner_id, updated_at)",
+  "CREATE TABLE IF NOT EXISTS trade_strategy_reports (id text PRIMARY KEY NOT NULL, owner_id text NOT NULL, instance_id text NOT NULL, strategy_key text NOT NULL, kind text NOT NULL, title text NOT NULL, filename text NOT NULL, markdown text NOT NULL, summary_payload text DEFAULT '{}' NOT NULL, created_at integer NOT NULL)",
+  "CREATE INDEX IF NOT EXISTS idx_trade_reports_instance ON trade_strategy_reports (instance_id, created_at)",
+  "CREATE INDEX IF NOT EXISTS idx_trade_reports_owner ON trade_strategy_reports (owner_id, created_at)",
 ];
 
 // SQLite has no ADD COLUMN IF NOT EXISTS; a duplicate-column error just means the column is already there.

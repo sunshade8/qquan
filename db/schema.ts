@@ -270,3 +270,45 @@ export const paperDailyPnl = sqliteTable("paper_daily_pnl", {
 }, (table) => [
   uniqueIndex("idx_paper_pnl_strategy_date").on(table.ownerId, table.strategyId, table.tradingDate),
 ]);
+
+/**
+ * A strategy the owner put on the 전략 board. `strategyKey` points at a rule in
+ * `lib/trade-strategies.ts`; the row carries only what the owner chose — how much
+ * capital it runs and which gateway it submits to — so the rule itself stays in
+ * code where it can be reviewed and versioned.
+ */
+export const tradeStrategyInstances = sqliteTable("trade_strategy_instances", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull(),
+  strategyKey: text("strategy_key").notNull(),
+  name: text("name").notNull(),
+  capitalUsd: real("capital_usd").notNull(),
+  gateway: text("gateway").notNull().default("dry_run"),
+  lastBacktestAt: integer("last_backtest_at", { mode: "timestamp_ms" }),
+  lastTradeAt: integer("last_trade_at", { mode: "timestamp_ms" }),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => [
+  index("idx_trade_instances_owner").on(table.ownerId, table.updatedAt),
+]);
+
+/**
+ * The markdown record of one run. Stored as rendered text, not regenerated on
+ * demand: a report rebuilt from today's prices is not evidence of what the run
+ * decided at the time.
+ */
+export const tradeStrategyReports = sqliteTable("trade_strategy_reports", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  strategyKey: text("strategy_key").notNull(),
+  kind: text("kind").notNull(),
+  title: text("title").notNull(),
+  filename: text("filename").notNull(),
+  markdown: text("markdown").notNull(),
+  summaryPayload: text("summary_payload").notNull().default("{}"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => [
+  index("idx_trade_reports_instance").on(table.instanceId, table.createdAt),
+  index("idx_trade_reports_owner").on(table.ownerId, table.createdAt),
+]);

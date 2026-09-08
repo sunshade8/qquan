@@ -1,0 +1,243 @@
+{
+  "hypothesis": "H3 sector momentum persistence",
+  "period": {
+    "from": "2021-09-07",
+    "oosStart": "2025-09-07"
+  },
+  "costPct": 0.2308,
+  "stopPct": 3,
+  "feeInR": 0.077,
+  "sweep": [
+    {
+      "sigmaMultiple": 1.5,
+      "holding": 2,
+      "trades": 793,
+      "winRate": 48.802,
+      "avgNetPct": -0.125,
+      "pooledT": -1.96,
+      "clusteredT": -1.47,
+      "baselineNetPct": -0.129,
+      "excessPct": 0.004,
+      "isAvg": -0.129,
+      "oosAvg": -0.115,
+      "oosTrades": 244
+    },
+    {
+      "sigmaMultiple": 1.5,
+      "holding": 3,
+      "trades": 793,
+      "winRate": 48.172,
+      "avgNetPct": -0.161,
+      "pooledT": -2.193,
+      "clusteredT": -1.663,
+      "baselineNetPct": -0.079,
+      "excessPct": -0.082,
+      "isAvg": -0.18,
+      "oosAvg": -0.119,
+      "oosTrades": 244
+    },
+    {
+      "sigmaMultiple": 1.5,
+      "holding": 5,
+      "trades": 793,
+      "winRate": 44.893,
+      "avgNetPct": -0.223,
+      "pooledT": -2.48,
+      "clusteredT": -2.031,
+      "baselineNetPct": 0.02,
+      "excessPct": -0.243,
+      "isAvg": -0.339,
+      "oosAvg": 0.037,
+      "oosTrades": 244
+    },
+    {
+      "sigmaMultiple": 2,
+      "holding": 2,
+      "trades": 273,
+      "winRate": 52.015,
+      "avgNetPct": -0.104,
+      "pooledT": -1.032,
+      "clusteredT": -1.336,
+      "baselineNetPct": -0.129,
+      "excessPct": 0.025,
+      "isAvg": -0.174,
+      "oosAvg": 0.038,
+      "oosTrades": 90
+    },
+    {
+      "sigmaMultiple": 2,
+      "holding": 3,
+      "trades": 273,
+      "winRate": 49.817,
+      "avgNetPct": -0.147,
+      "pooledT": -1.262,
+      "clusteredT": -1.767,
+      "baselineNetPct": -0.079,
+      "excessPct": -0.068,
+      "isAvg": -0.217,
+      "oosAvg": -0.003,
+      "oosTrades": 90
+    },
+    {
+      "sigmaMultiple": 2,
+      "holding": 5,
+      "trades": 273,
+      "winRate": 48.352,
+      "avgNetPct": -0.145,
+      "pooledT": -0.991,
+      "clusteredT": -1.57,
+      "baselineNetPct": 0.02,
+      "excessPct": -0.165,
+      "isAvg": -0.352,
+      "oosAvg": 0.278,
+      "oosTrades": 90
+    },
+    {
+      "sigmaMultiple": 2.5,
+      "holding": 2,
+      "trades": 75,
+      "winRate": 52,
+      "avgNetPct": 0.206,
+      "pooledT": 0.995,
+      "clusteredT": 0.133,
+      "baselineNetPct": -0.129,
+      "excessPct": 0.335,
+      "isAvg": 0.106,
+      "oosAvg": 0.418,
+      "oosTrades": 24
+    },
+    {
+      "sigmaMultiple": 2.5,
+      "holding": 3,
+      "trades": 75,
+      "winRate": 49.333,
+      "avgNetPct": -0.003,
+      "pooledT": -0.015,
+      "clusteredT": -0.188,
+      "baselineNetPct": -0.079,
+      "excessPct": 0.076,
+      "isAvg": -0.302,
+      "oosAvg": 0.631,
+      "oosTrades": 24
+    },
+    {
+      "sigmaMultiple": 2.5,
+      "holding": 5,
+      "trades": 75,
+      "winRate": 53.333,
+      "avgNetPct": 0.059,
+      "pooledT": 0.215,
+      "clusteredT": 0.562,
+      "baselineNetPct": 0.02,
+      "excessPct": 0.039,
+      "isAvg": -0.375,
+      "oosAvg": 0.982,
+      "oosTrades": 24
+    }
+  ],
+  "downside": [
+    {
+      "holding": 2,
+      "trades": 495,
+      "winRate": 46.465,
+      "avgNetPct": -0.34,
+      "clusteredT": -0.878
+    },
+    {
+      "holding": 3,
+      "trades": 495,
+      "winRate": 45.455,
+      "avgNetPct": -0.321,
+      "clusteredT": -1.115
+    },
+    {
+      "holding": 5,
+      "trades": 495,
+      "winRate": 44.242,
+      "avgNetPct": -0.24,
+      "clusteredT": -0.756
+    }
+  ],
+  "noTrendBaseCell": {
+    "trades": 411,
+    "winRate": 49.878,
+    "avgNetPct": -0.083,
+    "medianNetPct": -0.01,
+    "tStat": -0.749,
+    "avgWinPct": 1.699,
+    "avgLossPct": -1.855,
+    "payoff": 0.916,
+    "totalNetPct": -33.924,
+    "worstLossStreak": 9,
+    "avgStopPct": 3,
+    "feeInR": 0.077,
+    "activeDayPct": null,
+    "sessionsCovered": null
+  },
+  "leveraged": [
+    {
+      "pair": "SMH→SOXL",
+      "base": {
+        "trades": 23,
+        "avgNetPct": 0.159,
+        "winRate": 52.174
+      },
+      "geared": {
+        "trades": 23,
+        "avgNetPct": -0.26,
+        "winRate": 39.13,
+        "stopPct": 9,
+        "feeInR": 0.026
+      },
+      "gearedOverBase": -1.635
+    },
+    {
+      "pair": "XLK→TQQQ",
+      "base": {
+        "trades": 19,
+        "avgNetPct": -0.363,
+        "winRate": 47.368
+      },
+      "geared": {
+        "trades": 19,
+        "avgNetPct": -0.295,
+        "winRate": 63.158,
+        "stopPct": 9,
+        "feeInR": 0.026
+      },
+      "gearedOverBase": -295000000
+    },
+    {
+      "pair": "QQQ→TQQQ",
+      "base": {
+        "trades": 19,
+        "avgNetPct": -0.126,
+        "winRate": 57.895
+      },
+      "geared": {
+        "trades": 19,
+        "avgNetPct": -0.062,
+        "winRate": 57.895,
+        "stopPct": 9,
+        "feeInR": 0.026
+      },
+      "gearedOverBase": -62000000
+    },
+    {
+      "pair": "SPY→UPRO",
+      "base": {
+        "trades": 15,
+        "avgNetPct": -0.535,
+        "winRate": 40
+      },
+      "geared": {
+        "trades": 15,
+        "avgNetPct": -1.256,
+        "winRate": 46.667,
+        "stopPct": 9,
+        "feeInR": 0.026
+      },
+      "gearedOverBase": -1256000000
+    }
+  ]
+}

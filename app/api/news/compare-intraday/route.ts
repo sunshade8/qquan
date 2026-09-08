@@ -1,5 +1,5 @@
 import { fetchIntradayWindow, type IntradayInterval, type IntradayPoint } from "../../../../lib/market-data";
-import { alpacaConfigured } from "../../../../lib/alpaca";
+import { massiveAvailableFrom, massiveConfigured } from "../../../../lib/massive";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_PATTERN = /^\d{2}:\d{2}$/;
@@ -67,24 +67,33 @@ export async function POST(request: Request) {
   if (!intervals.has(interval) || !tests.length) return Response.json({ error: "분봉 주기와 비교 날짜가 필요합니다." }, { status: 400 });
   const symbol = market === "nasdaq" ? "QQQ" : "SPY";
   const today = new Date().toISOString().slice(0, 10);
-  const hasLongHistory = alpacaConfigured();
+  const hasMassive = massiveConfigured();
+  const massiveFloor = massiveAvailableFrom(today);
   const availabilityDays = interval === "1m" ? 7 : interval === "60m" ? 729 : 59;
   const results = [];
   const providers = new Set<string>();
+  const massiveEligibleIndexes = new Set(tests.flatMap((test, index) => {
+    const age = daysBetween(test.anchorDate, today);
+    return age >= 0 && test.anchorDate >= massiveFloor ? [index] : [];
+  }).slice(-4));
 
-  for (const test of tests) {
+  for (const [testIndex, test] of tests.entries()) {
     const age = daysBetween(test.anchorDate, today);
     if (age < 0) {
       results.push({ ...test, reaction: null, unavailable: "발표일이 아직 지나지 않았습니다." });
       continue;
     }
-    if (hasLongHistory && test.anchorDate < "2016-01-01") {
-      results.push({ ...test, reaction: null, unavailable: "Alpaca 분봉 보존 시작일(2016년) 이전입니다." });
+    if (hasMassive && test.anchorDate < massiveFloor) {
+      results.push({ ...test, reaction: null, unavailable: `Massive Basic 제공 범위(${massiveFloor} 이후)를 벗어났습니다.` });
       continue;
     }
-    if (!hasLongHistory && age > availabilityDays) {
+    if (!hasMassive && age > availabilityDays) {
       const yahooRange = interval === "1m" ? "최근 7일" : interval === "60m" ? "약 2년" : "최근 약 60일";
-      results.push({ ...test, reaction: null, unavailable: `${interval} Yahoo 제공 범위(${yahooRange})를 벗어났습니다. Alpaca 키를 연결하면 2016년 이후를 조회할 수 있습니다.` });
+      results.push({ ...test, reaction: null, unavailable: `${interval} Yahoo 제공 범위(${yahooRange})를 벗어났습니다. Massive 키를 연결하면 최근 2년을 조회할 수 있습니다.` });
+      continue;
+    }
+    if (hasMassive && !massiveEligibleIndexes.has(testIndex)) {
+      results.push({ ...test, reaction: null, unavailable: "Massive Basic 5회/분 제한으로 이번 실행은 최근 4개 발표만 조회했습니다." });
       continue;
     }
     try {
@@ -104,6 +113,6 @@ export async function POST(request: Request) {
     interval,
     providers: [...providers],
     results,
-    methodology: `QQQ·SPY 확장시간 가격을 사용하며, 발표 시각 직전 이용 가능한 봉을 100으로 정규화합니다. ${hasLongHistory ? "Alpaca로 2016년 이후 이벤트를 조회하며 SIP 무료 데이터는 최근 15분이 제외됩니다." : "Alpaca 미연결 상태라 Yahoo의 제한된 최근 구간만 계산합니다."}`,
+    methodology: `QQQ·SPY 확장시간 가격을 사용하며, 발표 시각 직전 이용 가능한 봉을 100으로 정규화합니다. ${hasMassive ? `Massive Basic으로 ${massiveFloor} 이후 이벤트를 조회하며 데이터는 거래일 종가 확정 후 제공됩니다.` : "Massive 미연결 상태라 Yahoo의 제한된 최근 구간만 계산합니다."}`,
   });
 }

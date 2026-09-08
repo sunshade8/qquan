@@ -7,7 +7,7 @@ import { MARKET_EVENT_CALENDAR, MARKET_EVENT_CATEGORY_LABELS } from "@/app/marke
 import { findCompanyNews, searchNews } from "@/lib/company-news";
 import type { LabArtifact, LabToolTrace } from "@/lib/lab-types";
 import { fetchIntradayWindow, fetchTossSnapshot, type IntradayInterval, type PriceRow } from "@/lib/market-data";
-import { alpacaConfigured } from "@/lib/alpaca";
+import { massiveAvailableFrom, massiveConfigured, massiveHistoryYears } from "@/lib/massive";
 import { calculateIntradayReaction, summarizeIntradayStudy } from "@/lib/intraday-study";
 import { runFvgBacktest, type FvgOptions } from "@/lib/intraday-fvg";
 import { combineTactics, computeTargetMath, feeFloor, FEASIBILITY_LABELS, type Tactic } from "@/lib/daily-target";
@@ -16,11 +16,6 @@ import { fetchEarningsHistory, RELEASE_TIMING_LABELS } from "@/lib/earnings-date
 import { buildDirectionStudy, priorRelativeVolume, type DirectionInput } from "@/lib/direction-study";
 import { assumedSlippagePct, costBps as tossCostBps, describeCosts, feePerSidePct } from "@/lib/broker-costs";
 import { buildSessionContexts, regularSession } from "@/lib/intraday-fvg";
-import {
-  fetchEarningsCalendar, fetchEarningsSurprises, fetchInsiderSentiment, fetchInsiderTransactions,
-  fetchMarketStatus, fetchMetrics, fetchPeers, fetchProfile, fetchRecommendations, finnhubConfigured,
-  FinnhubError, FINNHUB_FAILURE_LABELS,
-} from "@/lib/finnhub";
 import { deterministicTestSummary, type ResearchTest } from "@/lib/news-research-agents";
 import { loadDailyRows } from "@/lib/price-cache";
 import {
@@ -155,7 +150,7 @@ export const LAB_TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "intraday_event_study",
-    description: "경제지표·실적·뉴스 이벤트의 정확한 날짜와 미국 동부시각(ET)을 기준으로 여러 자산의 발표 전/후 분봉 수익률을 계산한다. 기본 자산은 기술주 QQQ와 가치주 IWD, 기본 구간은 발표 전 30분·후 30분이다. 1분/5분/15분 종가 경계로 계산한다. Alpaca가 연결되면 2016년 이후 장기 분봉을 쓰고, 없으면 Yahoo의 최근 구간으로 자동 폴백한다. 이벤트 날짜·시각을 market_calendar 또는 web_search로 먼저 확인한 뒤 호출한다.",
+    description: "경제지표·실적·뉴스 이벤트의 정확한 날짜와 미국 동부시각(ET)을 기준으로 여러 자산의 발표 전/후 분봉 수익률을 계산한다. 기본 자산은 기술주 QQQ와 가치주 IWD, 기본 구간은 발표 전 30분·후 30분이다. 1분/5분/15분 종가 경계로 계산한다. Massive Basic이 연결되면 최근 2년 분봉을 쓰고, 없으면 Yahoo의 최근 구간으로 자동 폴백한다. 이벤트 날짜·시각을 market_calendar 또는 web_search로 먼저 확인한 뒤 호출한다.",
     input_schema: {
       type: "object",
       properties: {
@@ -184,7 +179,7 @@ export const LAB_TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "intraday_fvg_backtest",
-    description: "분봉 OHLC로 '시가 레인지 돌파 + FVG(공정가치 갭) 되돌림' 인트라데이 규칙을 실제로 백테스트한다. 09:30 ET부터 anchorMinutes 동안의 고가·저가를 기준선으로 잡고, windowMinutes 안에서 상승 캔들의 몸통이 기준선을 상향 돌파하며 FVG가 형성되면, 그 FVG로 되돌림이 올 때 매수해 직전 캔들 저점을 손절, 손익비 rewardRisk를 익절로 삼는다(하루 1회, 롱 전용). FVG는 다음 봉이 마감돼야 확정되므로 진입은 그 이후 봉부터만 허용하고, 한 봉이 손절과 익절을 모두 덮으면 손절로 처리한다. 같은 실행에서 'FVG 조건 없이 돌파 확인봉 종가에 진입'하는 대조군도 함께 계산하므로, FVG가 실제 알파인지 장식인지 두 결과를 비교해 판정한다. minAbsGapPct·minRelativeVolume으로 '갭이 크고 시초 거래량이 실린 날'만 골라 매매하는 세션 필터를 걸 수 있다. 두 값 모두 진입 전에 알 수 있는 정보이고 상대거래량 기준선은 직전 세션들의 중앙값만 쓰므로 룩어헤드가 없다. 필터를 걸면 같은 규칙의 무필터 성적(unfilteredSummaries)도 함께 반환하므로, 필터가 실제로 무언가를 하는지 두 결과를 비교해 판정한다. dayTargetPct를 주면 각 거래가 진입가 대비 그 %까지 갔는지 기록해 일일 목표 수익률 달성 가능성을 함께 본다. Alpaca가 연결되면 2016년 이후 1·5·15분봉을 쓰고, 없으면 Yahoo 최근 구간만 쓴다.",
+    description: "분봉 OHLC로 '시가 레인지 돌파 + FVG(공정가치 갭) 되돌림' 인트라데이 규칙을 실제로 백테스트한다. 09:30 ET부터 anchorMinutes 동안의 고가·저가를 기준선으로 잡고, windowMinutes 안에서 상승 캔들의 몸통이 기준선을 상향 돌파하며 FVG가 형성되면, 그 FVG로 되돌림이 올 때 매수해 직전 캔들 저점을 손절, 손익비 rewardRisk를 익절로 삼는다(하루 1회, 롱 전용). FVG는 다음 봉이 마감돼야 확정되므로 진입은 그 이후 봉부터만 허용하고, 한 봉이 손절과 익절을 모두 덮으면 손절로 처리한다. 같은 실행에서 'FVG 조건 없이 돌파 확인봉 종가에 진입'하는 대조군도 함께 계산하므로, FVG가 실제 알파인지 장식인지 두 결과를 비교해 판정한다. minAbsGapPct·minRelativeVolume으로 '갭이 크고 시초 거래량이 실린 날'만 골라 매매하는 세션 필터를 걸 수 있다. 두 값 모두 진입 전에 알 수 있는 정보이고 상대거래량 기준선은 직전 세션들의 중앙값만 쓰므로 룩어헤드가 없다. 필터를 걸면 같은 규칙의 무필터 성적(unfilteredSummaries)도 함께 반환하므로, 필터가 실제로 무언가를 하는지 두 결과를 비교해 판정한다. dayTargetPct를 주면 각 거래가 진입가 대비 그 %까지 갔는지 기록해 일일 목표 수익률 달성 가능성을 함께 본다. Massive Basic이 연결되면 최근 2년 1·5·15분봉을 쓰고, 없으면 Yahoo 최근 구간만 쓴다.",
     input_schema: {
       type: "object",
       properties: {
@@ -195,9 +190,10 @@ export const LAB_TOOLS: Anthropic.Tool[] = [
         rewardRisk: { type: "number", description: "손익비. 기본 2 (1:2)" },
         holdUntil: { type: "string", enum: ["window", "session_close"], description: "익절·손절 미도달 시 청산 시점. 기본 session_close" },
         costBps: { type: "number", description: `편도 비용(bps). 왕복으로 반영. 기본값은 실제 Toss 비용에서 계산된다 — ${describeCosts()}` },
-        lookbackDays: { type: "integer", description: "조회 기간(달력일). Alpaca 연결 시 기본 365(1분봉 120), 5·15분봉 최대 약 7년. Yahoo 폴백은 1분봉 7일, 나머지 59일" },
+        lookbackDays: { type: "integer", description: "조회 기간(달력일). Massive Basic 연결 시 호출 한도에 맞춰 1종목 최대 365일(기본 1분봉 60일, 5·15분봉 120일). Yahoo 폴백은 1분봉 7일, 나머지 59일" },
         minAbsGapPct: { type: "number", description: "세션 필터: 시가 갭이 이 % 이상인 날만 매매(방향 무관). 예: 1" },
         minRelativeVolume: { type: "number", description: "세션 필터: 기준 캔들 거래량이 자기 중앙값의 이 배 이상인 날만 매매. 예: 1.5" },
+        maxRelativeVolume: { type: "number", description: "세션 필터: 기준 캔들 거래량이 자기 중앙값의 이 배 이하인 날만 매매. 고거래량일은 휩쏘(양방향 도달)가 약 2배라는 결과가 있으므로 돌파 규칙을 조용한 아침에만 돌리고 싶을 때 쓴다. 예: 1.2" },
         dayTargetPct: { type: "number", description: "진입가 대비 이 %까지 갔는지 거래별로 기록. 일일 목표 수익률 검증용. 예: 2" },
       },
       required: ["symbols"],
@@ -485,71 +481,21 @@ symbols로 티커를 직접 줄 수도 있다(반드시 티커여야 하며, 한
     },
   },
   {
-    name: "company_fundamentals",
-    description: `Finnhub에서 종목의 펀더멘털과 포지셔닝을 한 번에 가져온다. 기업 프로필(업종·시총·상장일), 재무 지표(베타·PER·PSR·마진·성장률·52주 고저·90일 변동성), 애널리스트 컨센서스 추이, 유사 기업 목록을 반환한다.
-QQuant의 다른 도구는 전부 가격 기반이라 "왜 이 종목인가"에 답하지 못한다. 이 도구가 그 공백을 메운다. 전략의 유니버스를 정하거나 종목 선택 근거를 댈 때 쓴다.
-peers는 페어 트레이딩이나 리드랙 분석의 후보군을 만들 때 유용하다. 직접 종목을 나열해 추측하지 말고 이걸 쓴다.
-가격 캔들은 이 요금제에서 제공되지 않으므로 가격 이력은 get_price_history를 쓴다.`,
-    input_schema: {
-      type: "object",
-      properties: {
-        symbol: { type: "string", description: "티커" },
-        include: { type: "array", items: { type: "string", enum: ["profile", "metrics", "recommendations", "peers"] }, description: "가져올 항목. 비우면 전부" },
-      },
-      required: ["symbol"],
-    },
-  },
-  {
-    name: "earnings_schedule",
-    description: `향후·과거 실적 발표 일정을 장전(bmo)/장후(amc)/장중(dmh) 구분과 컨센서스 EPS·매출 추정치와 함께 가져온다. 과거 서프라이즈 이력도 함께 반환한다.
-event_day_profile의 includeEarnings는 SEC EDGAR 공시 기반이라 이미 제출된 과거만 안다. 앞으로의 발표일과 컨센서스는 이 도구만 안다. 실적 앞두고 포지션을 잡거나 특정 날짜를 피해야 할 때 쓴다.
-발표 시각 구분이 핵심이다. 장후 발표면 반응 세션은 다음 거래일이다. 이 구분을 무시하면 뉴스가 나오기 전날을 반응일로 재게 된다.`,
-    input_schema: {
-      type: "object",
-      properties: {
-        symbol: { type: "string", description: "특정 종목만. 비우면 기간 전체 캘린더" },
-        from: { type: "string", description: "YYYY-MM-DD. 기본 오늘" },
-        to: { type: "string", description: "YYYY-MM-DD. 기본 30일 후" },
-        includeSurprises: { type: "boolean", description: "symbol이 있을 때 과거 서프라이즈 이력도 함께. 기본 true" },
-      },
-    },
-  },
-  {
-    name: "insider_activity",
-    description: `내부자(임원·이사) 거래 내역과 월별 내부자 심리 지수(MSPR, -100~100)를 가져온다. QQuant에 없던 신호 계열이다.
-주의: 내부자 매도는 대부분 사전 계획된 분산 매도(10b5-1)라 정보가 거의 없다. 매수가 신호에 가깝다. 이 비대칭을 반드시 함께 보고한다.
-Form 4 제출은 거래 후 2영업일 이내이므로 실시간 신호가 아니라 사후 확인 자료다. 백테스트에 쓸 때는 filingDate 기준으로 앵커해야 하며 transactionDate를 쓰면 룩어헤드다.`,
-    input_schema: {
-      type: "object",
-      properties: {
-        symbol: { type: "string" },
-        from: { type: "string", description: "YYYY-MM-DD" },
-        to: { type: "string", description: "YYYY-MM-DD" },
-      },
-      required: ["symbol"],
-    },
-  },
-  {
-    name: "market_status",
-    description: "미국 거래소가 지금 열려 있는지, 어떤 세션인지(pre-market/regular/post-market), 휴장일인지 조회한다. 반휴장일(13:00 조기 마감) 판단에도 쓴다. 사용자에게 지금 매매 가능한지 답하거나, 인트라데이 규칙이 정상 세션을 가정해도 되는지 확인할 때 호출한다.",
-    input_schema: { type: "object", properties: { exchange: { type: "string", description: "거래소 코드. 기본 US" } } },
-  },
-  {
     name: "direction_study",
     description: `장 시작 전에 알 수 있는 정보(갭 방향, 상대 거래량)가 그날의 방향을 예측하는지 검정한다. 고베타 종목은 목표 폭 자체는 이미 대부분의 날에 나오므로, 병목이 "어떤 날인가"가 아니라 "어느 방향인가"일 때 쓴다.
 판정 기준이 핵심이다. "방향이 결정된 날"은 한쪽만 목표에 도달한 날이며, 이런 날은 봉의 선후와 무관하게 결과가 정해지므로 일봉으로도 정직하게 셀 수 있다. 양방향 모두 도달한 휩쏘는 방향 판정에서 제외한다. 그날의 승패는 고가와 저가 중 무엇이 먼저 찍혔는지에 달렸고 일봉은 그것을 말해주지 않기 때문이다.
 상방 비중 50%는 우위가 없다는 뜻이다. 갭 상승일과 갭 하락일의 상방 비중 차이가 검정 대상이다.
-source=daily면 가격 이력 전 구간을 쓰고 상대거래량은 전일 거래량 대비 직전 20일 중앙값이다(장 시작 전에 알 수 있는 값). source=intraday면 Alpaca 연결 시 장기 5분봉, 미연결 시 Yahoo 최근 약 59일 분봉으로 실제 시초 거래량(09:30부터 anchorMinutes)을 쓴다.
+source=daily면 가격 이력 전 구간을 쓰고 상대거래량은 전일 거래량 대비 직전 20일 중앙값이다(장 시작 전에 알 수 있는 값). source=intraday면 Massive 연결 시 최근 2년 이내 5분봉, 미연결 시 Yahoo 최근 약 59일 분봉으로 실제 시초 거래량(09:30부터 anchorMinutes)을 쓴다.
 차이가 없다는 결과에는 반드시 minimumDetectableEffectPts를 함께 보고한다. 40세션의 "차이 없음"과 4000세션의 "차이 없음"은 다른 주장이며, 후자만 무언가를 배제한다.`,
     input_schema: {
       type: "object",
       properties: {
-        symbols: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 8, description: "티커 1~8개. 2개 이상이면 풀링해서 검정한다" },
+        symbols: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 8, description: "티커 1~8개. 2개 이상이면 풀링해서 검정한다. Massive Basic 호출 한도 때문에 intraday는 앞 4개까지 처리한다" },
         targetPct: { type: "number", description: "방향 판정 기준 이동폭 %. 기본 2" },
         gapThresholdPct: { type: "number", description: "갭 상승/하락으로 분류할 최소 갭 %. 기본 1" },
         volumeThreshold: { type: "number", description: "거래량이 많은 날로 볼 상대거래량 배수. 기본 1.5. null이면 거래량 분할을 건너뛴다" },
         source: { type: "string", enum: ["daily", "intraday"], description: "daily=일봉·전일 거래량 / intraday=5분봉·실제 시초 거래량. 기본 daily" },
-        lookbackDays: { type: "integer", description: "조회 기간(일). daily 기본 1825, intraday는 Alpaca 연결 시 기본 365·미연결 시 55" },
+        lookbackDays: { type: "integer", description: "조회 기간(일). daily 기본 1825, intraday는 Massive 연결 시 호출 한도에 맞춰 기본 120·미연결 시 55" },
       },
       required: ["symbols"],
     },
@@ -780,17 +726,21 @@ async function intradayEventStudy(input: Input, context: ToolContext): Promise<T
   const postMinutes = Math.min(240, Math.max(15, Number(input.postMinutes) || 30));
   const rows: Array<IntradayEventInput & { symbol: string; name: string; reaction: Omit<NonNullable<ReturnType<typeof calculateIntradayReaction>>, "normalizedPath"> | null; unavailable: string | null }> = [];
 
-  const hasLongHistory = alpacaConfigured();
+  const hasMassive = massiveConfigured();
+  const massiveFloor = massiveAvailableFrom(context.today);
   const eligibleDates = [...new Set(events.filter((event) => {
     const age = daysBetween(event.date, context.today);
-    return age >= 0 && (hasLongHistory ? event.date >= "2016-01-01" : age <= 59);
+    return age >= 0 && (hasMassive ? event.date >= massiveFloor : age <= 59);
   }).map((event) => event.date))].sort();
-  // Yahoo is cheapest as one recent span. With Alpaca, sparse event windows are
+  const massiveDateBudget = Math.max(1, Math.floor(4 / Math.max(1, resolved.filter((asset) => asset.public && asset.symbol).length)));
+  const requestedDates = hasMassive ? eligibleDates.slice(-massiveDateBudget) : eligibleDates;
+  const requestedDateSet = new Set(requestedDates);
+  // Yahoo is cheapest as one recent span. With Massive, sparse event windows are
   // cheaper and much safer than loading years of irrelevant bars into a 128 MB
   // Worker merely to measure 24 announcement windows.
-  const ranges = hasLongHistory
-    ? eligibleDates.map((date) => ({ from: shiftDate(date, -1), to: shiftDate(date, 1) }))
-    : eligibleDates.length ? [{ from: maxDate(shiftDate(eligibleDates[0], -1), shiftDate(context.today, -59)), to: shiftDate(eligibleDates.at(-1)!, 1) }] : [];
+  const ranges = hasMassive
+    ? requestedDates.map((date) => ({ from: shiftDate(date, -1), to: shiftDate(date, 1) }))
+    : requestedDates.length ? [{ from: maxDate(shiftDate(requestedDates[0], -1), shiftDate(context.today, -59)), to: shiftDate(requestedDates.at(-1)!, 1) }] : [];
   const series = new Map<string, { points: Awaited<ReturnType<typeof fetchIntradayWindow>>["points"] | null; error: string | null; provider: string | null }>();
   await Promise.all(resolved.map(async (asset) => {
     if (!asset.public || !asset.symbol) return;
@@ -815,8 +765,9 @@ async function intradayEventStudy(input: Input, context: ToolContext): Promise<T
       const base = { ...event, symbol, name: asset.name };
       if (!asset.public || !asset.symbol) { rows.push({ ...base, reaction: null, unavailable: asset.note ?? "거래 가능 종목을 확인하지 못했습니다." }); continue; }
       if (age < 0) { rows.push({ ...base, reaction: null, unavailable: "아직 지나지 않은 이벤트입니다." }); continue; }
-      if (hasLongHistory && event.date < "2016-01-01") { rows.push({ ...base, reaction: null, unavailable: "Alpaca 분봉 보존 시작일(2016년) 이전입니다." }); continue; }
-      if (!hasLongHistory && age > 59) { rows.push({ ...base, reaction: null, unavailable: `${interval} Yahoo 공급 범위(최근 약 60일)를 벗어났습니다. Alpaca 키를 연결하면 2016년 이후를 조회할 수 있습니다.` }); continue; }
+      if (hasMassive && event.date < massiveFloor) { rows.push({ ...base, reaction: null, unavailable: `Massive Basic 제공 범위(${massiveFloor} 이후)를 벗어났습니다.` }); continue; }
+      if (!hasMassive && age > 59) { rows.push({ ...base, reaction: null, unavailable: `${interval} Yahoo 공급 범위(최근 약 60일)를 벗어났습니다. Massive 키를 연결하면 최근 2년을 조회할 수 있습니다.` }); continue; }
+      if (hasMassive && !requestedDateSet.has(event.date)) { rows.push({ ...base, reaction: null, unavailable: `Massive Basic 5회/분 제한으로 이번 실행은 최근 ${massiveDateBudget}개 이벤트 날짜만 조회했습니다.` }); continue; }
       const loaded = series.get(asset.symbol);
       if (!loaded?.points) { rows.push({ ...base, reaction: null, unavailable: loaded?.error ?? "분봉 데이터를 가져오지 못했습니다." }); continue; }
       const calculated = calculateIntradayReaction(loaded.points, event.date, event.timeET, intervalMinutes, preMinutes, postMinutes);
@@ -830,7 +781,7 @@ async function intradayEventStudy(input: Input, context: ToolContext): Promise<T
 
   const summaries = summarizeIntradayStudy(rows.map((row) => ({ symbol: row.symbol, surprise: row.surprise, reaction: row.reaction ? { ...row.reaction, normalizedPath: [] } : null })));
   const available = rows.filter((row) => row.reaction).length;
-  const providerLabel = [...new Set([...series.values()].flatMap((value) => value.provider ? [value.provider] : []))].join(" / ") || (hasLongHistory ? "Alpaca" : "Yahoo Finance");
+  const providerLabel = [...new Set([...series.values()].flatMap((value) => value.provider ? [value.provider] : []))].join(" / ") || (hasMassive ? "Massive" : "Yahoo Finance");
   const artifact: LabArtifact = {
     id: id(), type: "table", title: `분봉 이벤트 스터디 · ${interval}`, subtitle: `${events.length}개 이벤트 · ${available}/${rows.length}개 자산-이벤트 관측 가능`,
     columns: ["발표일·시각 ET", "이벤트", "실제/예상", "Surprise", "자산", `발표 전 ${preMinutes}분 %`, `발표 후 ${postMinutes}분 %`, "정규장 종가까지 %", "상태"],
@@ -840,12 +791,13 @@ async function intradayEventStudy(input: Input, context: ToolContext): Promise<T
     ]),
     notes: [
       `발표 직전 완결 ${interval} 봉을 기준가로 사용 · 미국 동부시각(ET)`,
-      `현재 공급자: ${providerLabel}${hasLongHistory ? " · 2016년 이후 이벤트별 최소 구간 조회" : " · 최근 약 60일 범위"}`,
+      `현재 공급자: ${providerLabel}${hasMassive ? ` · ${massiveFloor} 이후 이벤트별 최소 구간 조회 · Basic 종가 확정 후` : " · 최근 약 60일 범위"}`,
+      hasMassive && eligibleDates.length > requestedDates.length ? `Basic 호출 한도 때문에 ${eligibleDates.length}개 유효 날짜 중 최근 ${requestedDates.length}개만 이번 실행에서 조회` : "",
       "Surprise는 입력된 실제치·컨센서스 분류를 그대로 사용하며 임의 추정하지 않음",
-    ],
+    ].filter(Boolean),
   };
   return {
-    result: { methodology: { timezone: "America/New_York", interval, preMinutes, postMinutes, base: "last completed bar at or before release time", provider: providerLabel, availableSince: hasLongHistory ? "2016" : null, yahooFallbackDays: 59 }, coverage: { events: events.length, symbols: resolved.length, requested: rows.length, available, unavailable: rows.length - available }, rows, summaries },
+    result: { methodology: { timezone: "America/New_York", interval, preMinutes, postMinutes, base: "last completed bar at or before release time", provider: providerLabel, availableSince: hasMassive ? massiveFloor : null, historyYears: hasMassive ? massiveHistoryYears() : null, yahooFallbackDays: 59 }, coverage: { events: events.length, symbols: resolved.length, requested: rows.length, available, unavailable: rows.length - available }, rows, summaries },
     artifacts: [artifact],
     trace: { name: "intraday_event_study", label: "분봉 이벤트 스터디", status: available ? "complete" : "failed", detail: `${available}/${rows.length}개 관측 · ${interval} · 전후 ${preMinutes}/${postMinutes}분` },
   };
@@ -865,11 +817,12 @@ async function intradayFvgBacktest(input: Input, context: ToolContext): Promise<
   const rewardRisk = Math.min(5, Math.max(0.5, Number(input.rewardRisk) || 2));
   const costBps = input.costBps === undefined ? tossCostBps() : Math.max(0, Number(input.costBps) || 0);
   const holdUntil = input.holdUntil === "window" ? "window" : "session_close";
-  const hasLongHistory = alpacaConfigured();
-  // A Worker has 128 MB. Five- and fifteen-minute regular-session bars fit for
-  // the full provider history; one-minute bars are capped at one year per run.
-  const maxLookbackDays = hasLongHistory ? (interval === "1m" ? 365 : 2556) : (interval === "1m" ? 7 : 59);
-  const defaultLookbackDays = hasLongHistory ? (interval === "1m" ? 120 : 365) : (interval === "1m" ? 7 : 55);
+  const hasMassive = massiveConfigured();
+  // Massive Basic allows five calls per minute. The cap keeps one run within
+  // that budget after pagination, including multi-symbol requests.
+  const massiveMaxDays = requested.length === 1 ? 365 : requested.length === 2 ? 120 : 70;
+  const maxLookbackDays = hasMassive ? massiveMaxDays : (interval === "1m" ? 7 : 59);
+  const defaultLookbackDays = hasMassive ? Math.min(interval === "1m" ? 60 : 120, maxLookbackDays) : (interval === "1m" ? 7 : 55);
   const lookbackDays = Math.min(maxLookbackDays, Math.max(7, Math.round(Number(input.lookbackDays) || defaultLookbackDays)));
   const optionalNumber = (value: unknown, min: number, max: number) => {
     if (value === undefined || value === null || value === "") return null;
@@ -878,8 +831,9 @@ async function intradayFvgBacktest(input: Input, context: ToolContext): Promise<
   };
   const minAbsGapPct = optionalNumber(input.minAbsGapPct, 0, 25);
   const minRelativeVolume = optionalNumber(input.minRelativeVolume, 0, 20);
+  const maxRelativeVolume = optionalNumber(input.maxRelativeVolume, 0, 20);
   const dayTargetPct = optionalNumber(input.dayTargetPct, 0.1, 25);
-  const options: FvgOptions = { intervalMinutes, anchorMinutes, windowMinutes, rewardRisk, costBps, holdUntil, minAbsGapPct, minRelativeVolume, dayTargetPct };
+  const options: FvgOptions = { intervalMinutes, anchorMinutes, windowMinutes, rewardRisk, costBps, holdUntil, minAbsGapPct, minRelativeVolume, maxRelativeVolume, dayTargetPct };
 
   const from = shiftDate(context.today, -lookbackDays);
   const resolved = await resolveSymbols(requested);
@@ -928,14 +882,15 @@ async function intradayFvgBacktest(input: Input, context: ToolContext): Promise<
       `기준선 ${anchorMinutes}분 · 매매 창 ${windowMinutes}분 · 손익비 1:${rewardRisk} · 비용 ${costBps}bps 편도`,
       minAbsGapPct === null ? "" : `갭 ${minAbsGapPct}% 이상`,
       minRelativeVolume === null ? "" : `상대거래량 ${minRelativeVolume}배 이상`,
+      maxRelativeVolume === null ? "" : `상대거래량 ${maxRelativeVolume}배 이하`,
       dayTargetPct === null ? "" : `일일 목표 ${dayTargetPct}%`,
     ].filter(Boolean).join(" · "),
     columns: ["종목", "규칙", "표본", "세션", "거래", "승률 %", "손익분기 승률 %", "평균 R", "중앙 R", "누적 R", "최고거래 제외 누적 R", "익절", "손절", "시간청산", `목표 ${dayTargetPct ?? "—"}% 도달률 %`, "중앙 최대유리 %"],
     rows,
     notes: [
       `데이터 ${usable[0]?.from ?? from} ~ ${usable.at(-1)?.to ?? context.today} · ${providerLabel} ${interval} · ${lookbackDays}일 요청`,
-      usable.some((item) => item.history.provider === "Alpaca" && item.history.feed === "sip") ? "Alpaca SIP 과거 데이터는 전체 시장 통합 피드이며 무료 Basic에서는 최근 15분이 제외된다." : "",
-      fallbackNotes.length ? `Alpaca 폴백: ${fallbackNotes.join(" / ")}` : "",
+      usable.some((item) => item.history.provider === "Massive") ? "Massive Basic은 미국 전체 시장의 조정 분봉을 최근 2년까지 종가 확정 후 제공하며 5회/분 제한이 있다." : "",
+      fallbackNotes.length ? `Massive 폴백: ${fallbackNotes.join(" / ")}` : "",
       "FVG는 다음 봉 마감 후 확정 · 진입은 그 이후 봉부터만 허용 (룩어헤드 차단)",
       "한 봉이 손절가와 익절가를 모두 덮으면 손절로 처리 (분봉은 선후를 알려주지 않음)",
       "롱 전용 · 하루 최대 1거래 · 슬리피지와 호가 스프레드는 미반영이므로 실제 승률 기준은 더 높음",
@@ -959,10 +914,10 @@ async function intradayFvgBacktest(input: Input, context: ToolContext): Promise<
   return {
     result: {
       methodology: {
-        timezone: "America/New_York", interval, anchorMinutes, windowMinutes, rewardRisk, costBps, holdUntil, minAbsGapPct, minRelativeVolume, dayTargetPct,
+        timezone: "America/New_York", interval, anchorMinutes, windowMinutes, rewardRisk, costBps, holdUntil, minAbsGapPct, minRelativeVolume, maxRelativeVolume, dayTargetPct,
         sessionFilters: "갭·상대거래량 모두 진입 전 확정 정보이며, 상대거래량 기준선은 직전 세션들의 중앙값만 사용 (룩어헤드 없음)",
         direction: "long_only", entryConfirmation: "FVG는 다음 봉 마감 후 확정, 진입은 그 이후 봉부터",
-        sameBarTie: "손절 우선", provider: providerLabel, availableSince: usable.some((item) => item.history.provider === "Alpaca") ? "2016" : null, requestedLookbackDays: lookbackDays, maxLookbackDays,
+        sameBarTie: "손절 우선", provider: providerLabel, availableSince: usable.find((item) => item.history.provider === "Massive")?.history.availableSince ?? null, requestedLookbackDays: lookbackDays, maxLookbackDays,
       },
       unavailable: results.flatMap((item) => item.error ? [{ symbol: item.symbol, reason: item.error }] : []),
       bySymbol,
@@ -1710,206 +1665,25 @@ function dailyTargetMathTool(input: Input): ToolOutcome {
   return { result, artifacts, trace: { name: "daily_target_math", label: `일일 ${settings.targetDailyPct}% 목표 산술`, status: "complete", detail } };
 }
 
-/** Turns a Finnhub failure into a trace the agent can act on rather than retry blindly. */
-function finnhubFailure(name: string, label: string, error: unknown): ToolOutcome {
-  const kind = error instanceof FinnhubError ? error.kind : "upstream";
-  const reason = error instanceof Error ? error.message : "Finnhub 호출 실패";
-  const suggestions = kind === "forbidden"
-    ? ["이 데이터는 현재 요금제에서 제공되지 않습니다. 다른 도구로 대체하세요.", "가격 이력은 get_price_history를 쓰세요."]
-    : kind === "not_configured" ? ["Settings에서 Finnhub 연결 상태를 확인하세요.", ".dev.vars에 FINNHUB_API_KEY를 설정하세요."]
-      : ["잠시 후 다시 시도하세요.", "무료 티어는 분당 60회로 제한됩니다."];
-  return {
-    result: { available: false, reason, failure: kind, permanent: kind === "forbidden" || kind === "not_configured" },
-    artifacts: [limitation(`${label} 불가`, reason, suggestions)],
-    trace: { name, label, status: "failed", detail: FINNHUB_FAILURE_LABELS[kind as keyof typeof FINNHUB_FAILURE_LABELS] ?? reason },
-  };
-}
-
-async function companyFundamentalsTool(input: Input): Promise<ToolOutcome> {
-  const symbol = String(input.symbol ?? "").trim().toUpperCase();
-  if (!symbol) return finnhubFailure("company_fundamentals", "기업 펀더멘털", new Error("symbol이 필요합니다."));
-  if (!finnhubConfigured()) return finnhubFailure("company_fundamentals", "기업 펀더멘털", new FinnhubError("not_configured", FINNHUB_FAILURE_LABELS.not_configured));
-  const wanted = new Set(Array.isArray(input.include) && input.include.length ? input.include.map(String) : ["profile", "metrics", "recommendations", "peers"]);
-  try {
-    const [profile, metrics, recommendations, peers] = await Promise.all([
-      wanted.has("profile") ? fetchProfile(symbol).catch(() => null) : null,
-      wanted.has("metrics") ? fetchMetrics(symbol).catch(() => null) : null,
-      wanted.has("recommendations") ? fetchRecommendations(symbol).catch(() => []) : [],
-      wanted.has("peers") ? fetchPeers(symbol).catch(() => []) : [],
-    ]);
-    if (!profile && !metrics && !recommendations.length && !peers.length) throw new FinnhubError("empty", `${symbol}에서 가져온 데이터가 없습니다.`);
-
-    const artifacts: LabArtifact[] = [];
-    if (profile || metrics) {
-      artifacts.push({
-        id: id(), type: "table", title: `${symbol} 펀더멘털`,
-        subtitle: profile ? `${profile.name} · ${profile.exchange} · ${profile.industry}` : symbol,
-        columns: ["항목", "값"],
-        rows: [
-          ["시가총액 ($M)", profile?.marketCapUsdMillions ?? null],
-          ["상장일", profile?.ipo || null],
-          ["베타", metrics?.beta ?? null],
-          ["PER (TTM)", metrics?.peRatio ?? null],
-          ["PSR (TTM)", metrics?.psRatio ?? null],
-          ["영업이익률 (TTM, %)", metrics?.operatingMarginTtm ?? null],
-          ["순이익률 (TTM, %)", metrics?.netMarginTtm ?? null],
-          ["매출 성장률 (TTM YoY, %)", metrics?.revenueGrowthTtmYoy ?? null],
-          ["부채비율 (D/E)", metrics?.totalDebtToEquity ?? null],
-          ["52주 고가", metrics?.week52High ?? null],
-          ["52주 저가", metrics?.week52Low ?? null],
-          ["90일 변동성", metrics?.volatility90Day ?? null],
-          ["13주 수익률 (%)", metrics?.return13WeekPct ?? null],
-          ["52주 수익률 (%)", metrics?.return52WeekPct ?? null],
-        ],
-        notes: ["출처 Finnhub. 재무 지표는 최신 보고 분기 기준이라 가격 지표와 기준일이 다를 수 있습니다."],
-      });
-    }
-    if (recommendations.length) {
-      artifacts.push({
-        id: id(), type: "table", title: `${symbol} 애널리스트 컨센서스`,
-        subtitle: `최근 ${recommendations.length}개월 · 순매수 = (적극매수+매수-매도-적극매도)/전체`,
-        columns: ["기준월", "적극매수", "매수", "보유", "매도", "적극매도", "합계", "순매수 (%)"],
-        rows: recommendations.slice(0, 12).map((row) => [row.period, row.strongBuy, row.buy, row.hold, row.sell, row.strongSell, row.total, row.netBullishPct]),
-        notes: ["애널리스트 등급은 후행 지표입니다. 가격이 움직인 뒤에 조정되는 경우가 많으므로 진입 신호로 쓰지 마세요."],
-      });
-    }
-    const detail = [profile ? profile.industry : "", metrics?.beta != null ? `베타 ${metrics.beta}` : "", peers.length ? `유사기업 ${peers.length}개` : ""].filter(Boolean).join(" · ");
-    return {
-      result: { symbol, profile, metrics, recommendations: recommendations.slice(0, 24), peers },
-      artifacts,
-      trace: { name: "company_fundamentals", label: `${symbol} 펀더멘털`, status: "complete", detail: detail || "조회 완료" },
-    };
-  } catch (error) {
-    return finnhubFailure("company_fundamentals", "기업 펀더멘털", error);
-  }
-}
-
-async function earningsScheduleTool(input: Input, context: ToolContext): Promise<ToolOutcome> {
-  if (!finnhubConfigured()) return finnhubFailure("earnings_schedule", "실적 일정", new FinnhubError("not_configured", FINNHUB_FAILURE_LABELS.not_configured));
-  const symbol = input.symbol ? String(input.symbol).trim().toUpperCase() : undefined;
-  const from = isDate(input.from) ? input.from : context.today;
-  const to = isDate(input.to) ? input.to : shiftDate(from, 30);
-  try {
-    const calendar = await fetchEarningsCalendar(from, to, symbol);
-    const surprises = symbol && input.includeSurprises !== false ? await fetchEarningsSurprises(symbol).catch(() => []) : [];
-    const timingLabel = (hour: string | null) => hour === "bmo" ? "장전" : hour === "amc" ? "장후" : hour === "dmh" ? "장중" : "미정";
-    const artifacts: LabArtifact[] = [{
-      id: id(), type: "table", title: symbol ? `${symbol} 실적 일정` : "실적 캘린더",
-      subtitle: `${from} ~ ${to} · ${calendar.length}건`,
-      columns: ["종목", "발표일", "발표 시각", "반응 세션", "분기", "EPS 컨센서스", "EPS 실제", "매출 컨센서스"],
-      rows: calendar.slice(0, 60).map((row) => [
-        row.symbol, row.date, timingLabel(row.hour),
-        // The tradable session is the point of the timing flag, so it is
-        // resolved here rather than left for the reader to work out.
-        row.hour === "amc" ? "다음 거래일" : row.hour === "bmo" ? "당일" : row.hour === "dmh" ? "당일 장중" : "확인 필요",
-        row.quarter ? `${row.year} Q${row.quarter}` : null,
-        row.epsEstimate, row.epsActual, row.revenueEstimate,
-      ]),
-      notes: [
-        "장후(amc) 발표는 다음 거래일이 반응 세션입니다. 발표일 자체를 반응일로 재면 뉴스 이전을 재는 것이 됩니다.",
-        "발표 시각이 '미정'인 항목은 확정 전이므로 반응 세션을 단정하지 마세요.",
-        "출처 Finnhub 실적 캘린더. 과거 확정 발표일은 SEC EDGAR 8-K가 더 정확합니다 (event_day_profile의 includeEarnings).",
-      ],
-    }];
-    if (surprises.length) {
-      artifacts.push({
-        id: id(), type: "table", title: `${symbol} 실적 서프라이즈 이력`,
-        subtitle: `최근 ${Math.min(surprises.length, 12)}분기`,
-        columns: ["분기", "컨센서스 EPS", "실제 EPS", "서프라이즈", "서프라이즈 (%)"],
-        rows: surprises.slice(0, 12).map((row) => [row.period, row.estimate, row.actual, row.surprise, row.surprisePercent]),
-        notes: ["서프라이즈 부호와 주가 반응은 자주 어긋납니다. 가이던스가 실적 자체보다 중요한 경우가 많습니다."],
-      });
-    }
-    const next = calendar.find((row) => row.date >= context.today);
-    return {
-      result: { from, to, symbol: symbol ?? null, calendar, surprises },
-      artifacts,
-      trace: { name: "earnings_schedule", label: symbol ? `${symbol} 실적 일정` : "실적 캘린더", status: "complete", detail: next ? `다음 ${next.symbol} ${next.date} ${timingLabel(next.hour)}` : `${calendar.length}건` },
-    };
-  } catch (error) {
-    return finnhubFailure("earnings_schedule", "실적 일정", error);
-  }
-}
-
-async function insiderActivityTool(input: Input, context: ToolContext): Promise<ToolOutcome> {
-  const symbol = String(input.symbol ?? "").trim().toUpperCase();
-  if (!symbol) return finnhubFailure("insider_activity", "내부자 거래", new Error("symbol이 필요합니다."));
-  if (!finnhubConfigured()) return finnhubFailure("insider_activity", "내부자 거래", new FinnhubError("not_configured", FINNHUB_FAILURE_LABELS.not_configured));
-  const { from, to } = windowFor(input, context.today, 365);
-  try {
-    const [transactions, sentiment] = await Promise.all([
-      fetchInsiderTransactions(symbol, from, to),
-      fetchInsiderSentiment(symbol, from, to).catch(() => []),
-    ]);
-    const buys = transactions.filter((row) => row.change > 0);
-    const sells = transactions.filter((row) => row.change < 0);
-    const shares = (list: typeof transactions) => list.reduce((sum, row) => sum + Math.abs(row.change), 0);
-    const artifacts: LabArtifact[] = [{
-      id: id(), type: "table", title: `${symbol} 내부자 거래`,
-      subtitle: `${from} ~ ${to} · ${transactions.length}건 · 매수 ${buys.length} / 매도 ${sells.length}`,
-      columns: ["제출일", "거래일", "성명", "코드", "주식수 변동", "체결가"],
-      rows: transactions.slice(0, 30).map((row) => [row.filingDate, row.transactionDate, row.name, row.transactionCode, row.change, row.transactionPrice]),
-      notes: [
-        "내부자 매도는 대부분 사전 계획된 분산 매도(10b5-1)라 정보가 거의 없습니다. 매수가 신호에 가깝습니다.",
-        "Form 4는 거래 후 2영업일 이내 제출입니다. 백테스트는 filingDate에 앵커해야 하며 transactionDate를 쓰면 룩어헤드입니다.",
-        `기간 합계 · 매수 ${shares(buys).toLocaleString()}주 / 매도 ${shares(sells).toLocaleString()}주`,
-      ],
-    }];
-    if (sentiment.length) {
-      artifacts.push({
-        id: id(), type: "table", title: `${symbol} 내부자 심리 (MSPR)`,
-        subtitle: "월별 · MSPR은 -100(전량 매도)에서 +100(전량 매수)",
-        columns: ["연", "월", "순주식수 변동", "MSPR"],
-        rows: sentiment.map((row) => [row.year, row.month, row.change, row.mspr]),
-        notes: ["MSPR은 Finnhub 자체 집계치이며 계산식이 공개되지 않았습니다. 방향 참고용으로만 쓰고 임계값 규칙의 근거로 삼지 마세요."],
-      });
-    }
-    return {
-      result: { symbol, period: { from, to }, transactions, sentiment, summary: { buys: buys.length, sells: sells.length, buyShares: shares(buys), sellShares: shares(sells) } },
-      artifacts,
-      trace: { name: "insider_activity", label: `${symbol} 내부자 거래`, status: "complete", detail: `${transactions.length}건 · 매수 ${buys.length} / 매도 ${sells.length}` },
-    };
-  } catch (error) {
-    return finnhubFailure("insider_activity", "내부자 거래", error);
-  }
-}
-
-async function marketStatusTool(input: Input): Promise<ToolOutcome> {
-  if (!finnhubConfigured()) return finnhubFailure("market_status", "거래소 상태", new FinnhubError("not_configured", FINNHUB_FAILURE_LABELS.not_configured));
-  try {
-    const status = await fetchMarketStatus(String(input.exchange ?? "US"));
-    const detail = status.holiday ? `휴장 · ${status.holiday}` : status.isOpen ? `장중 · ${status.session ?? ""}`.trim() : `장외 · ${status.session ?? "closed"}`;
-    return {
-      result: status,
-      artifacts: [{
-        id: id(), type: "table", title: `${status.exchange} 거래소 상태`, subtitle: `확인 ${new Date(status.asOf).toLocaleString("ko-KR")}`,
-        columns: ["항목", "값"],
-        rows: [["개장 여부", status.isOpen ? "장중" : "장외"], ["세션", status.session], ["휴장일", status.holiday ?? "아님"], ["표준시", status.timezone]],
-        notes: ["휴장일과 반휴장일(13:00 조기 마감)에는 인트라데이 규칙의 '장 마감까지 보유'가 다른 시각을 의미합니다."],
-      }],
-      trace: { name: "market_status", label: "거래소 상태", status: "complete", detail },
-    };
-  } catch (error) {
-    return finnhubFailure("market_status", "거래소 상태", error);
-  }
-}
-
 async function directionStudyTool(input: Input, context: ToolContext): Promise<ToolOutcome> {
   const failed = (reason: string): ToolOutcome => ({ result: { available: false, reason }, artifacts: [limitation("방향 검정 불가", reason, ["티커 확인", "종목 수를 늘려 표본 확대"])], trace: { name: "direction_study", label: "방향 예측 검정", status: "failed", detail: reason } });
-  const requested = (Array.isArray(input.symbols) ? input.symbols : []).map(String).filter(Boolean).slice(0, 8);
-  if (!requested.length) return failed("티커가 필요합니다.");
+  const allRequested = (Array.isArray(input.symbols) ? input.symbols : []).map(String).filter(Boolean).slice(0, 8);
+  if (!allRequested.length) return failed("티커가 필요합니다.");
 
   const targetPct = Math.max(0.1, Math.min(20, Number(input.targetPct) || 2));
   const gapThresholdPct = Math.max(0, Math.min(20, Number(input.gapThresholdPct) || 1));
   const volumeThreshold = input.volumeThreshold === null ? null : Math.max(0.1, Math.min(20, Number(input.volumeThreshold) || 1.5));
   const source = input.source === "intraday" ? "intraday" : "daily";
+  const requested = source === "intraday" ? allRequested.slice(0, 4) : allRequested;
 
   const resolved = await resolveSymbols(requested);
   const pooled: DirectionInput[] = [];
   const failures: string[] = [];
   const perSymbol: Array<{ symbol: string; sessions: number; provider?: string }> = [];
-  const hasLongHistory = alpacaConfigured();
-  const intradayLookbackDays = Math.min(hasLongHistory ? 1825 : 55, Math.max(7, Math.round(Number(input.lookbackDays) || (hasLongHistory ? 365 : 55))));
+  const hasMassive = massiveConfigured();
+  const massiveMaxDays = requested.length === 1 ? 365 : requested.length === 2 ? 120 : 45;
+  const intradayMaxDays = hasMassive ? massiveMaxDays : 55;
+  const intradayLookbackDays = Math.min(intradayMaxDays, Math.max(7, Math.round(Number(input.lookbackDays) || (hasMassive ? Math.min(120, massiveMaxDays) : 55))));
 
   for (const asset of resolved) {
     const symbol = asset.symbol ?? asset.input;
@@ -1930,7 +1704,7 @@ async function directionStudyTool(input: Input, context: ToolContext): Promise<T
         perSymbol.push({ symbol: asset.symbol, sessions: rows.length });
       } else {
         // The intraday path exists to test *opening* volume rather than a
-        // previous-day proxy. Alpaca extends the old Yahoo-only 59-day sample.
+        // previous-day proxy. Massive extends the old Yahoo-only 59-day sample.
         const from = shiftDate(context.today, -intradayLookbackDays);
         const history = await fetchIntradayWindow(asset.symbol, from, context.today, "5m", { session: "regular", maxBars: 120_000 });
         const points = history.points;
@@ -2226,10 +2000,6 @@ export async function executeLabTool(name: string, input: unknown, context: Tool
     case "event_day_profile": return eventDayProfileTool(args, context);
     case "tactic_portfolio": return tacticPortfolioTool(args);
     case "direction_study": return directionStudyTool(args, context);
-    case "company_fundamentals": return companyFundamentalsTool(args);
-    case "earnings_schedule": return earningsScheduleTool(args, context);
-    case "insider_activity": return insiderActivityTool(args, context);
-    case "market_status": return marketStatusTool(args);
     default: return { result: { error: `알 수 없는 도구 ${name}` }, artifacts: [], trace: { name, label: name, status: "failed", detail: "알 수 없는 도구" } };
   }
 }
@@ -2239,5 +2009,4 @@ export const TOOL_LABELS: Record<string, string> = {
   screen_universe: "종목 스크리닝", conditional_stats: "조건부 통계", save_finding: "연구 노트 저장", list_findings: "연구 노트",
   sweep_conditions: "그리드 스윕", audit_result: "결론 감사", market_events: "경제 이벤트", event_reaction: "이벤트 반응",
   daily_target_math: "일일 목표 산술", event_day_profile: "이벤트 데이 프로파일", tactic_portfolio: "전술 포트폴리오", direction_study: "방향 예측 검정",
-  company_fundamentals: "기업 펀더멘털", earnings_schedule: "실적 일정", insider_activity: "내부자 거래", market_status: "거래소 상태",
 };

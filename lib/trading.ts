@@ -3,14 +3,16 @@
  *
  * Signals are computed on the latest bars with the same engine used for
  * backtesting, then translated into order intents. Order *submission* goes
- * through a gateway so the Toss order API can be wired in without touching the
- * signal logic. Until that endpoint is integrated, only the dry-run gateway is
- * available and nothing is ever sent to a broker.
+ * through a gateway so the broker can change without touching the signal logic.
+ * Two exist: a dry run that only records, and `lib/toss-orders.ts`, which posts
+ * real orders once the account's order endpoint and trading key are configured
+ * and refuses with the missing-config list until then.
  */
 
 import type { Bar } from "@/lib/quant";
 import { signalSeries, type EventContext, type StrategySpec } from "@/lib/strategy";
 import { fetchTossSnapshot, type BrokerSnapshot } from "@/lib/market-data";
+import { tossOrderGateway as tossOrderGatewayRef } from "@/lib/toss-orders";
 
 export type OrderSide = "buy" | "sell";
 export type OrderIntent = {
@@ -84,18 +86,12 @@ export const dryRunGateway: TradingGateway = {
 };
 
 /**
- * Toss Securities: the existing integration (`lib/market-data.ts`) covers prices,
- * orderbook, trades and the market calendar. Order placement requires the Toss
- * order endpoints and a trading-scoped credential, which are not wired yet.
+ * Toss Securities. `lib/toss-orders.ts` posts real orders to `/api/v1/orders`
+ * with the same client-credentials token the price calls use. Re-exported here
+ * so callers keep one import for gateways.
  */
-export const tossGateway: TradingGateway = {
-  id: "toss",
-  label: "Toss Securities (주문 API 미연결)",
-  async submit() {
-    return { accepted: false, message: "토스증권 주문 API가 아직 연결되지 않았습니다. 주문 엔드포인트와 거래 권한 키가 준비되면 lib/trading.ts의 tossGateway.submit에 연결하세요." };
-  },
-};
+export { tossOrderGateway as tossGateway, tossTradingStatus } from "./toss-orders.ts";
 
 export function gatewayFor(id: string | null | undefined): TradingGateway {
-  return id === "toss" ? tossGateway : dryRunGateway;
+  return id === "toss" ? tossOrderGatewayRef : dryRunGateway;
 }

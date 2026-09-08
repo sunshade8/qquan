@@ -84,6 +84,16 @@ export type FvgOptions = {
   minAbsGapPct?: number | null;
   /** Trade only sessions whose reference-candle volume beat this multiple of its own median. */
   minRelativeVolume?: number | null;
+  /**
+   * Trade only sessions whose reference-candle volume stayed *below* this multiple.
+   *
+   * The mirror of `minRelativeVolume`, and the one the whipsaw result asks for:
+   * high relative volume roughly doubles the rate at which a session reaches both
+   * a long and a short target, so a breakout rule wants the quiet mornings, not
+   * the loud ones. Without this the only expressible filter was "trade the days
+   * the study says are worst".
+   */
+  maxRelativeVolume?: number | null;
   /** Report whether each trade travelled this far from entry, e.g. a 2% daily goal. */
   dayTargetPct?: number | null;
 };
@@ -334,6 +344,7 @@ export function buildSessionContexts(points: IntradayPoint[], options: FvgOption
   const anchorBars = Math.max(1, Math.round(anchorMinutes / intervalMinutes));
   const minAbsGapPct = options.minAbsGapPct ?? null;
   const minRelativeVolume = options.minRelativeVolume ?? null;
+  const maxRelativeVolume = options.maxRelativeVolume ?? null;
   const history: number[] = [];
   let previous: { date: string; close: number } | null = null;
 
@@ -353,6 +364,8 @@ export function buildSessionContexts(points: IntradayPoint[], options: FvgOption
       blockedBy = gapPct === null ? "직전 종가가 없어 갭 계산 불가" : `갭 ${gapPct}% < 기준 ${minAbsGapPct}%`;
     } else if (minRelativeVolume !== null && (relativeVolume === null || relativeVolume < minRelativeVolume)) {
       blockedBy = relativeVolume === null ? `상대거래량 기준선 미확립 (직전 ${RELATIVE_VOLUME_MIN_HISTORY}세션 필요)` : `상대거래량 ${relativeVolume}배 < 기준 ${minRelativeVolume}배`;
+    } else if (maxRelativeVolume !== null && (relativeVolume === null || relativeVolume > maxRelativeVolume)) {
+      blockedBy = relativeVolume === null ? `상대거래량 기준선 미확립 (직전 ${RELATIVE_VOLUME_MIN_HISTORY}세션 필요)` : `상대거래량 ${relativeVolume}배 > 상한 ${maxRelativeVolume}배`;
     }
 
     if (anchorVolume > 0) history.push(anchorVolume);
@@ -371,7 +384,7 @@ export type FvgSymbolResult = {
   summaries: FvgSummary[];
   /** Present only when a filter is active: the same rules over every session. */
   unfilteredSummaries: FvgSummary[] | null;
-  filter: { active: boolean; minAbsGapPct: number | null; minRelativeVolume: number | null; sessionsPassed: number; sessionsBlocked: number; blockReasons: Array<{ reason: string; sessions: number }> };
+  filter: { active: boolean; minAbsGapPct: number | null; minRelativeVolume: number | null; maxRelativeVolume: number | null; sessionsPassed: number; sessionsBlocked: number; blockReasons: Array<{ reason: string; sessions: number }> };
   contexts: FvgSessionContext[];
   trades: FvgTrade[];
 };
@@ -381,7 +394,7 @@ export function runFvgBacktest(symbol: string, name: string, points: IntradayPoi
   const variants: FvgVariant[] = ["fvg_pullback", "breakout_close"];
   const contexts = buildSessionContexts(points, options);
   const contextByDate = new Map(contexts.map((context) => [context.date, context]));
-  const filterActive = (options.minAbsGapPct ?? null) !== null || (options.minRelativeVolume ?? null) !== null;
+  const filterActive = (options.minAbsGapPct ?? null) !== null || (options.minRelativeVolume ?? null) !== null || (options.maxRelativeVolume ?? null) !== null;
   const passing = contexts.filter((context) => context.passes);
 
   const trades: FvgTrade[] = [];
@@ -420,6 +433,7 @@ export function runFvgBacktest(symbol: string, name: string, points: IntradayPoi
       active: filterActive,
       minAbsGapPct: options.minAbsGapPct ?? null,
       minRelativeVolume: options.minRelativeVolume ?? null,
+      maxRelativeVolume: options.maxRelativeVolume ?? null,
       sessionsPassed: passing.length,
       sessionsBlocked: contexts.length - passing.length,
       blockReasons: [...blockCounts.entries()].map(([reason, sessions]) => ({ reason, sessions })).sort((left, right) => right.sessions - left.sessions),

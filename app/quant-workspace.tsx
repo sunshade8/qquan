@@ -6,6 +6,7 @@ import ChevronDown from "lucide-react/dist/esm/icons/chevron-down";
 import Database from "lucide-react/dist/esm/icons/database";
 import FileUp from "lucide-react/dist/esm/icons/file-up";
 import FlaskConical from "lucide-react/dist/esm/icons/flask-conical";
+import Layers from "lucide-react/dist/esm/icons/layers";
 import HistoryIcon from "lucide-react/dist/esm/icons/history";
 import PanelRight from "lucide-react/dist/esm/icons/panel-right";
 import Play from "lucide-react/dist/esm/icons/play";
@@ -21,9 +22,10 @@ import { MarketCalendar } from "./market-calendar";
 import { MarketNews } from "./market-news";
 import { LabWorkspace, newConversationId } from "./lab-workspace";
 import { BacktestWorkspace } from "./backtest-workspace";
+import { StrategyWorkspace } from "./strategy-workspace";
 import type { AgentActivity } from "@/lib/lab-types";
 
-type View = "market" | "backtest" | "calendar" | "news" | "lab" | "settings";
+type View = "market" | "strategy" | "backtest" | "calendar" | "news" | "lab" | "settings";
 type DataTab = "rows" | "study" | "hypothesis";
 type Feature = "return1d" | "gap" | "range" | "volume20";
 type Operator = "gt" | "lt";
@@ -37,22 +39,24 @@ type PriceRow = {
   volume: number;
 };
 
-type ConnectionCapability = {
-  id: string; label: string; description: string; fills: string;
-  status: "connected" | "plan_locked" | "unavailable" | "not_configured";
-  detail: string;
+const MASSIVE_STATUS_LABELS: Record<string, string> = {
+  connected: "연결됨", not_configured: "API key 필요", auth_error: "인증 실패", plan_locked: "요금제 제한", unavailable: "응답 없음",
+};
+const MASSIVE_RECENCY_LABELS: Record<string, string> = {
+  end_of_day: "종가 확정 후", delayed: "지연", real_time: "실시간",
 };
 
 type ConnectionReport = {
-  alpaca: {
+  massive: {
     configured: boolean;
     status: "connected" | "not_configured" | "auth_error" | "plan_locked" | "unavailable";
     detail: string;
-    feed: "sip" | "iex";
-    availableSince: string;
-    historicalDelayMinutes: number;
+    plan: string;
+    historyYears: number;
+    availableFrom: string;
+    dataRecency: "end_of_day" | "delayed" | "real_time";
+    callsPerMinute: number;
   };
-  finnhub: { configured: boolean; capabilities: ConnectionCapability[] };
   fred: { configured: boolean };
   checkedAt: string;
 };
@@ -672,6 +676,7 @@ export function QuantWorkspace() {
 
   const navItems = [
     { id: "market" as View, label: "Market", icon: ChartCandlestick },
+    { id: "strategy" as View, label: "전략", icon: Layers },
     { id: "backtest" as View, label: "Backtest", icon: FlaskConical },
     { id: "calendar" as View, label: "Calendar", icon: CalendarDays },
     { id: "news" as View, label: "News", icon: Newspaper },
@@ -825,6 +830,8 @@ export function QuantWorkspace() {
           </div>
         )}
 
+        {view === "strategy" && <StrategyWorkspace />}
+
         {view === "backtest" && <BacktestWorkspace focusStrategyId={focusStrategyId} onAskLab={askLab} />}
 
         {view === "calendar" && <MarketCalendar />}
@@ -860,45 +867,47 @@ export function QuantWorkspace() {
               <article><div><strong>TradingView Advanced Chart</strong><p>차트, 드로잉, 보조지표</p></div><span className="connected"><i />Connected</span></article>
               <article><div><strong>Toss Securities</strong><p>브로커 현재가·호가·최근 체결·장 시간 · 읽기 전용</p></div><span className={brokerSnapshot?.available ? "connected" : "missing"}><i />{brokerSnapshot?.available ? "Connected" : brokerSnapshot?.code === "ip_allowlist" ? "IP allowlist" : "Fallback"}</span></article>
               <article><div><strong>Yahoo Finance</strong><p>조정 일봉 10년 · 토스 교차검증 및 자동 폴백</p></div><span className={providers?.yahoo.status === "connected" ? "connected" : "missing"}><i />{providers?.yahoo.status === "connected" ? "Connected" : "Unavailable"}</span></article>
-              <article>
-                <div>
-                  <strong>Alpaca Historical</strong>
-                  <p>{connections?.alpaca.status === "connected" ? `${connections.alpaca.availableSince}년 이후 1·5·15분봉 · ${connections.alpaca.feed.toUpperCase()}${connections.alpaca.historicalDelayMinutes ? ` · 최근 ${connections.alpaca.historicalDelayMinutes}분 제외` : ""}` : connections?.alpaca.detail ?? "장기 분봉 연결 확인 중"}</p>
+              <article className="llm-cost-card">
+                <div className="llm-cost-head">
+                  <div>
+                    <span>MASSIVE HISTORICAL</span>
+                    <strong>{connections ? `${connections.massive.plan} · ${MASSIVE_STATUS_LABELS[connections.massive.status]}` : "확인 중"}</strong>
+                    <p>QQuant의 유일한 분봉 소스입니다. 키가 설정됐는지가 아니라 요금제가 실제로 봉을 돌려주는지를 매번 실호출로 확인합니다.</p>
+                  </div>
+                  <a href="https://massive.com/docs" target="_blank" rel="noreferrer">API 문서</a>
                 </div>
-                <span className={connections?.alpaca.status === "connected" ? "connected" : "missing"}><i />{connections?.alpaca.status === "connected" ? "Connected" : connections?.alpaca.status === "not_configured" ? "API key 필요" : connections ? "Unavailable" : "Checking"}</span>
+                {connections ? (
+                  <div className="connection-list">
+                    <div className={`connection-row ${connections.massive.status}`}>
+                      <span><strong>분봉 조회</strong><small>1·5·15·60분봉 집계 (Custom Bars)</small></span>
+                      <b className={connections.massive.status === "connected" ? "connected" : connections.massive.status === "plan_locked" ? "plan_locked" : connections.massive.status === "not_configured" ? "not_configured" : "unavailable"}>
+                        {connections.massive.status === "connected" ? "연결됨" : connections.massive.status === "not_configured" ? "키 없음" : connections.massive.status === "auth_error" ? "인증 실패" : connections.massive.status === "plan_locked" ? "요금제 제한" : "오류"}
+                      </b>
+                      <code>{connections.massive.detail}</code>
+                    </div>
+                    <div className="connection-row">
+                      <span><strong>제공 기간</strong><small>이보다 이른 시작일은 요금제가 거부합니다</small></span>
+                      <b className="connected">{connections.massive.historyYears}년</b>
+                      <code>{connections.massive.availableFrom} 이후</code>
+                    </div>
+                    <div className="connection-row">
+                      <span><strong>데이터 시점</strong><small>{connections.massive.dataRecency === "end_of_day" ? "종가 확정 후 갱신 — 당일 장중 데이터는 없습니다" : connections.massive.dataRecency === "delayed" ? "지연 시세" : "실시간"}</small></span>
+                      <b className="connected">{MASSIVE_RECENCY_LABELS[connections.massive.dataRecency]}</b>
+                      <code>{connections.massive.dataRecency}</code>
+                    </div>
+                    <div className="connection-row">
+                      <span><strong>호출 한도</strong><small>초과하면 429. 종목 수나 기간을 줄여야 합니다</small></span>
+                      <b className="connected">{connections.massive.callsPerMinute}회/분</b>
+                      <code>MASSIVE_CALLS_PER_MINUTE</code>
+                    </div>
+                  </div>
+                ) : <p className="llm-cost-note">{connectionsError || "연결 상태를 확인하는 중"}</p>}
+                {connections?.checkedAt ? <p className="llm-cost-note">확인 시각 {new Date(connections.checkedAt).toLocaleString("ko-KR")}</p> : null}
               </article>
               <article><div><strong>Analysis dataset</strong><p>우선순위 Toss → Yahoo · 자동 갱신 캐시 24시간</p></div><span className={rows.length ? "connected" : "missing"}><i />{rows.length ? dataSource : "Loading"}</span></article>
               <article><div><strong>SEC EDGAR</strong><p>8-K 항목 2.02 실적 발표일과 발표 시각 · 키 불필요</p></div><span className="connected"><i />Connected</span></article>
               <article><div><strong>FRED</strong><p>매크로 지표 원본 실제치와 개정 이력</p></div><span className={connections?.fred.configured ? "connected" : "missing"}><i />{connections?.fred.configured ? "Connected" : "FRED_API_KEY 미설정"}</span></article>
 
-              <article className="llm-cost-card">
-                <div className="llm-cost-head">
-                  <div>
-                    <span>FINNHUB</span>
-                    <strong>{connections ? `${connections.finnhub.capabilities.filter((item) => item.status === "connected").length} / ${connections.finnhub.capabilities.length} 사용 가능` : "확인 중"}</strong>
-                    <p>요금제가 실제로 무엇을 돌려주는지 매번 실호출로 확인합니다. 캔들(OHLCV)은 무료 티어에서 막혀 있으므로 가격 이력은 계속 Yahoo를 씁니다.</p>
-                  </div>
-                  <a href="https://finnhub.io/docs/api" target="_blank" rel="noreferrer">API 문서</a>
-                </div>
-                {connections ? (
-                  <div className="connection-list">
-                    {connections.finnhub.capabilities.map((item) => (
-                      <div key={item.id} className={`connection-row ${item.status}`}>
-                        <span>
-                          <strong>{item.label}</strong>
-                          <small>{item.description}</small>
-                          {item.fills ? <em>+ {item.fills}</em> : null}
-                        </span>
-                        <b className={item.status}>
-                          {item.status === "connected" ? "연결됨" : item.status === "plan_locked" ? "요금제 제한" : item.status === "not_configured" ? "키 없음" : "오류"}
-                        </b>
-                        <code>{item.detail}</code>
-                      </div>
-                    ))}
-                  </div>
-                ) : <p className="llm-cost-note">{connectionsError || "연결 상태를 확인하는 중"}</p>}
-                {connections?.checkedAt ? <p className="llm-cost-note">확인 시각 {new Date(connections.checkedAt).toLocaleString("ko-KR")} · 무료 티어 분당 60회 제한</p> : null}
-              </article>
               <article className="llm-cost-card">
                 <div className="llm-cost-head"><div><span>MODEL ALLOCATION</span><strong>역할별 LLM 배분과 실제 호출</strong><p>각 역할이 <em>쓰도록 설정된</em> 모델과, 그 역할로 <em>실제 기록된</em> 호출 수를 함께 보여줍니다. 호출 0회는 그 역할에 도달하는 코드 경로가 없다는 뜻입니다. frontier는 LLM_FRONTIER_PROVIDER=openai로 GPT-5.5 Thinking에 연결하며, balanced/fast는 항상 Anthropic(ANTHROPIC_MODEL_BALANCED / ANTHROPIC_MODEL_FAST)입니다.</p></div></div>
                 {llmUsage?.allocation ? <><div className="model-allocation">{llmUsage.allocation.map((item) => <div key={item.role}><span><strong>{item.role}</strong><small>{item.purpose}</small></span><code>{item.provider ? `${item.provider} · ` : ""}{item.model}{item.price ? ` · $${item.price.input}/$${item.price.output}` : ""}</code><b className={item.calls ? "used" : "unused"}>{item.calls ? `${item.calls}회 · $${(item.costUsd ?? 0).toFixed(4)}` : "호출 없음"}</b><em className={item.tier}>{item.tier}</em></div>)}</div>

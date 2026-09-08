@@ -169,6 +169,23 @@ test("a filter blocks sessions before the baseline exists rather than admitting 
   assert.ok(contexts.at(-1).blockedBy.includes("기준선 미확립"));
 });
 
+test("maxRelativeVolume keeps the quiet mornings and blocks the loud one", () => {
+  // Six 1000-volume sessions establish the baseline, then one at 4x. The mirror
+  // of the min filter: the loud session is the one that must be excluded.
+  const days = ["2026-08-03", "2026-08-04", "2026-08-05", "2026-08-06", "2026-08-07", "2026-08-10"]
+    .map((date) => volumeSession(quietDay, date, 1000));
+  const points = [...days.flat(), ...volumeSession(quietDay, "2026-08-11", 4000)];
+
+  const contexts = buildSessionContexts(points, { ...options, maxRelativeVolume: 1.2 });
+  assert.equal(contexts[5].relativeVolume, 1);
+  assert.equal(contexts[5].passes, true);
+  assert.equal(contexts.at(-1).relativeVolume, 4);
+  assert.equal(contexts.at(-1).passes, false);
+  assert.ok(contexts.at(-1).blockedBy.includes("상한"));
+  // A session with no baseline yet is blocked, not admitted, exactly as with min.
+  assert.equal(contexts[0].passes, false);
+});
+
 test("a gap across a data hole is not treated as a gap", () => {
   const points = [
     ...volumeSession(quietDay, "2026-08-03", 1000),

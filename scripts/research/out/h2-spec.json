@@ -1,0 +1,184 @@
+{
+  "spec": {
+    "version": 1,
+    "name": "H2 3일 급락 단기 반전",
+    "hypothesis": {
+      "thesis": "대형주의 3일 급락은 정보보다 유동성·리밸런싱·마진 압력이 만든다.",
+      "mechanism": "강제 매도가 끝나면 호가가 되돌아오고, 5거래일 안에 낙폭의 일부가 회복된다.",
+      "prediction": "3일 −6% 이하 종목의 5일 순수익이 같은 기간 무조건 5일 보유보다 +0.3%p 이상 높다.",
+      "falsification": "초과분이 +0.3%p 미만이거나 임계값 이웃 칸에서 부호가 뒤집히면 기각."
+    },
+    "universe": [
+      "AAPL",
+      "MSFT",
+      "NVDA",
+      "AMZN",
+      "GOOGL",
+      "META",
+      "AVGO",
+      "TSLA",
+      "BRK-B",
+      "JPM",
+      "LLY",
+      "V",
+      "XOM",
+      "UNH",
+      "MA",
+      "COST",
+      "HD",
+      "PG",
+      "JNJ",
+      "WMT",
+      "NFLX",
+      "ABBV",
+      "BAC",
+      "CRM",
+      "ORCL",
+      "CVX",
+      "KO",
+      "AMD",
+      "PEP",
+      "MRK",
+      "ADBE",
+      "CSCO",
+      "INTC",
+      "QCOM",
+      "TXN",
+      "AMAT",
+      "MU",
+      "INTU",
+      "BKNG",
+      "PANW",
+      "LRCX",
+      "KLAC",
+      "SNPS",
+      "CDNS",
+      "MRVL",
+      "ADI",
+      "CRWD",
+      "ABNB",
+      "WDAY",
+      "TEAM",
+      "DDOG",
+      "ZS",
+      "MDB",
+      "NET",
+      "SNOW",
+      "PLTR",
+      "SHOP",
+      "UBER",
+      "MELI",
+      "ASML"
+    ],
+    "benchmark": "SPY",
+    "entry": [
+      {
+        "left": {
+          "kind": "return",
+          "period": 3
+        },
+        "op": "<=",
+        "right": {
+          "kind": "value",
+          "value": -6
+        }
+      }
+    ],
+    "exit": [],
+    "holding": {
+      "maxSessions": 5,
+      "stopLossPct": 6,
+      "takeProfitPct": null
+    },
+    "sizing": {
+      "mode": "equal_weight",
+      "positionPct": null
+    },
+    "costBps": 11.540000000000001,
+    "period": {
+      "from": "2015-09-07",
+      "to": "2026-09-04"
+    },
+    "successCriteria": {
+      "minSharpe": 0.5,
+      "minExcessCagrPct": 0,
+      "maxDrawdownPct": 40,
+      "minTrades": 100
+    },
+    "notes": [
+      "엔진에 하루 종목 수 상한이 없어 용량 제한 없는 버전이다. 실제 채택 규칙은 하루 3종목 상한."
+    ]
+  },
+  "period": {
+    "from": "2015-09-09",
+    "to": "2026-09-04",
+    "sessions": 2764
+  },
+  "metrics": {
+    "totalReturnPct": 73.235,
+    "benchmarkReturnPct": 1661.237,
+    "marketReturnPct": 374.245,
+    "cagrPct": 5.137,
+    "benchmarkCagrPct": 29.892,
+    "excessCagrPct": -24.755,
+    "sharpe": 0.58,
+    "benchmarkSharpe": 1.27,
+    "sortino": 0.89,
+    "maxDrawdownPct": -14.775,
+    "benchmarkMaxDrawdownPct": -33.623,
+    "annualizedVolatilityPct": 9.401,
+    "trades": 3966,
+    "winRatePct": 54.6,
+    "averageTradePct": 1.088,
+    "exposurePct": 12.6,
+    "profitFactor": 1.46
+  },
+  "robustness": {
+    "inSample": {
+      "from": "2015-09-09",
+      "to": "2023-05-15",
+      "cagrPct": 4.48,
+      "sharpe": 0.51,
+      "maxDrawdownPct": -14.775
+    },
+    "outOfSample": {
+      "from": "2023-05-16",
+      "to": "2026-09-04",
+      "cagrPct": 6.685,
+      "sharpe": 0.75,
+      "maxDrawdownPct": -10.56
+    },
+    "perturbations": [
+      {
+        "label": "지표 기간 ×0.8",
+        "cagrPct": 4.621,
+        "sharpe": 0.58,
+        "maxDrawdownPct": -13.3
+      },
+      {
+        "label": "지표 기간 ×1.2",
+        "cagrPct": 6.489,
+        "sharpe": 0.69,
+        "maxDrawdownPct": -12.104
+      },
+      {
+        "label": "비용 23.080000000000002bps",
+        "cagrPct": 3.636,
+        "sharpe": 0.43,
+        "maxDrawdownPct": -15.247
+      }
+    ],
+    "stabilityScore": 0
+  },
+  "verdict": {
+    "status": "inconclusive",
+    "reasons": [
+      "✓ 샤프 ≥ 0.5 (실제 0.58)",
+      "✗ 벤치마크 대비 초과 CAGR ≥ 0%p (실제 -24.755)",
+      "✓ 최대낙폭 ≥ -40% (실제 -14.775)",
+      "✓ 거래 수 ≥ 100 (실제 3966)",
+      "✓ 아웃오브샘플 CAGR > 0 (실제 6.685)"
+    ]
+  },
+  "missingSymbols": []
+}

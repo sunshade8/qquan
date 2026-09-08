@@ -1,0 +1,117 @@
+{
+  "costs": "Toss 미국주식 편도 수수료 0.1% + 매도 SEC 수수료 0.0008% + 가정 슬리피지 0.03% = 왕복 0.2308%. 손절폭 1%면 거래당 0.231R, 0.5%면 0.462R, 0.25%면 0.923R.",
+  "roundTripPct": 0.2308,
+  "feeFloor": {
+    "model": {
+      "feePerSidePct": 0.1,
+      "slippagePct": 0.03,
+      "stopDistancePct": 6
+    },
+    "roundTripCostPct": 0.23,
+    "costPerTradeR": 0.0383,
+    "breakevenMovePct": 0.23,
+    "breakevenWinRatePct": 43.44,
+    "frictionlessWinRatePct": 41.84,
+    "winRatePenaltyPts": 1.6,
+    "notes": [
+      "왕복 비용 0.23%를 손절폭 6%로 나누면 거래당 0.0383R이다.",
+      "손익분기 승률이 41.84%에서 43.44%로 올라간다. 이 차이가 수수료가 실제로 요구하는 실력이다."
+    ]
+  },
+  "targetDailyPct": 2,
+  "results": [
+    {
+      "slotFraction": 0.1667,
+      "capitalAtRiskPerTradePct": 1,
+      "targetDailyPct": 2,
+      "fee": {
+        "model": {
+          "feePerSidePct": 0.1,
+          "slippagePct": 0.03,
+          "stopDistancePct": 6
+        },
+        "roundTripCostPct": 0.23,
+        "costPerTradeR": 0.0383,
+        "breakevenMovePct": 0.23,
+        "breakevenWinRatePct": 43.44,
+        "frictionlessWinRatePct": 41.84,
+        "winRatePenaltyPts": 1.6,
+        "notes": [
+          "왕복 비용 0.23%를 손절폭 6%로 나누면 거래당 0.0383R이다.",
+          "손익분기 승률이 41.84%에서 43.44%로 올라간다. 이 차이가 수수료가 실제로 요구하는 실력이다."
+        ]
+      },
+      "tactics": [
+        {
+          "name": "H2 3일 급락 반전 (슬롯당 자본 6분의 1)",
+          "expectedRPerTrade": 0.1438,
+          "expectedDailyPct": 0.1634,
+          "breakevenWinRatePct": 43.44,
+          "edgeOverBreakevenPts": 6.02,
+          "effectiveTradesPerDay": 1.136,
+          "keep": true,
+          "reason": "비용 반영 후 거래당 0.144R — 규모는 작아도 책에 넣을 값어치가 있다"
+        }
+      ],
+      "kept": 1,
+      "combinedExpectedDailyPct": 0.1634,
+      "shortfallPct": 1.8366,
+      "additionalTacticsNeeded": 12,
+      "totalTradesPerDay": 1.136,
+      "totalDailyCostPct": 0.2613,
+      "notes": [
+        "채택 1개 / 검토 1개 · 합산 기대 일수익 0.1634% · 목표 2%",
+        "기대값은 상관과 무관하게 더해지지만 변동성과 낙폭은 더해지지 않는다. 같은 방향 돌파를 보는 두 전술은 이름만 둘이고 실제로는 하나이므로, 이 합계는 체감 성적의 상한이다.",
+        "전술별 상관은 가정하지 말고 페이퍼 원장의 전략 태그별 손익으로 측정한다. 상관이 낮은 조합만 이 합계에 근접한다.",
+        "부족분 1.8366%를 메우려면 채택 전술의 중앙값(0.1634%/일) 기준으로 약 12개가 더 필요하다. 그만큼 서로 상관 낮은 규칙을 실제로 찾을 수 있는지가 이 계획의 진짜 난이도다."
+      ]
+    },
+    {
+      "slotFraction": 0.0833,
+      "capitalAtRiskPerTradePct": 0.5,
+      "targetDailyPct": 2,
+      "fee": {
+        "model": {
+          "feePerSidePct": 0.1,
+          "slippagePct": 0.03,
+          "stopDistancePct": 6
+        },
+        "roundTripCostPct": 0.23,
+        "costPerTradeR": 0.0383,
+        "breakevenMovePct": 0.23,
+        "breakevenWinRatePct": 43.44,
+        "frictionlessWinRatePct": 41.84,
+        "winRatePenaltyPts": 1.6,
+        "notes": [
+          "왕복 비용 0.23%를 손절폭 6%로 나누면 거래당 0.0383R이다.",
+          "손익분기 승률이 41.84%에서 43.44%로 올라간다. 이 차이가 수수료가 실제로 요구하는 실력이다."
+        ]
+      },
+      "tactics": [
+        {
+          "name": "H2 3일 급락 반전 (슬롯당 자본 12분의 1)",
+          "expectedRPerTrade": 0.1438,
+          "expectedDailyPct": 0.0817,
+          "breakevenWinRatePct": 43.44,
+          "edgeOverBreakevenPts": 6.02,
+          "effectiveTradesPerDay": 1.136,
+          "keep": true,
+          "reason": "비용 반영 후 거래당 0.144R — 규모는 작아도 책에 넣을 값어치가 있다"
+        }
+      ],
+      "kept": 1,
+      "combinedExpectedDailyPct": 0.0817,
+      "shortfallPct": 1.9183,
+      "additionalTacticsNeeded": 24,
+      "totalTradesPerDay": 1.136,
+      "totalDailyCostPct": 0.2613,
+      "notes": [
+        "채택 1개 / 검토 1개 · 합산 기대 일수익 0.0817% · 목표 2%",
+        "기대값은 상관과 무관하게 더해지지만 변동성과 낙폭은 더해지지 않는다. 같은 방향 돌파를 보는 두 전술은 이름만 둘이고 실제로는 하나이므로, 이 합계는 체감 성적의 상한이다.",
+        "전술별 상관은 가정하지 말고 페이퍼 원장의 전략 태그별 손익으로 측정한다. 상관이 낮은 조합만 이 합계에 근접한다.",
+        "부족분 1.9183%를 메우려면 채택 전술의 중앙값(0.0817%/일) 기준으로 약 24개가 더 필요하다. 그만큼 서로 상관 낮은 규칙을 실제로 찾을 수 있는지가 이 계획의 진짜 난이도다."
+      ]
+    }
+  ],
+  "caveat": "상관은 더하지 않았다. 채택 전술이 1개뿐이라 분산 효과가 없고, 이 수치는 같은 규칙을 하루 여러 종목에 나눠 실행했을 때의 기대값일 뿐이다."
+}

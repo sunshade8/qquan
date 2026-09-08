@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { alpacaConfigured, fetchAlpacaIntradayWindow } from "./alpaca.ts";
+import { fetchMassiveIntradayWindow, massiveConfigured } from "./massive.ts";
 
 export type PriceRow = {
   date: string;
@@ -61,10 +61,11 @@ export type IntradayPoint = { timestamp: number; date: string; time: string; clo
 
 export type IntradayHistory = {
   points: IntradayPoint[];
-  provider: "Alpaca" | "Yahoo Finance";
+  provider: "Massive" | "Yahoo Finance";
   feed: "sip" | "iex" | null;
   availableSince: string | null;
   historicalDelayMinutes: number | null;
+  dataRecency: "end_of_day" | "delayed" | "real_time" | null;
   fallbackReason: string | null;
 };
 
@@ -159,6 +160,22 @@ async function getTossToken() {
   if (tokenCache && tokenCache.expiresAt > Date.now()) return tokenCache.value;
   if (!tokenRequest) tokenRequest = issueTossToken().finally(() => { tokenRequest = null; });
   return tokenRequest;
+}
+
+/**
+ * The same client-credentials token the price calls use, for the order adapter
+ * in `lib/toss-orders.ts`. Exported rather than duplicated so one token cache
+ * serves both and a 401 invalidates it once.
+ */
+export async function tossAccessToken() {
+  return getTossToken();
+}
+
+export const TOSS_API_BASE = TOSS_BASE_URL;
+
+/** Clears the cached token after an auth failure on a non-price endpoint. */
+export function invalidateTossToken() {
+  tokenCache = null;
 }
 
 async function tossGet<T>(path: string, params: Record<string, string>) {
@@ -356,7 +373,7 @@ function calendarDays(from: string, to: string) {
 }
 
 /**
- * Preferred intraday source. Alpaca removes Yahoo's 59-day ceiling when keys
+ * Preferred intraday source. Massive removes Yahoo's 59-day ceiling when a key
  * are configured; recent, bounded requests still degrade to Yahoo so a provider
  * outage does not erase the working research path that existed before it.
  */
@@ -368,25 +385,26 @@ export async function fetchIntradayWindow(
   options: { session?: "all" | "regular"; maxBars?: number } = {},
 ): Promise<IntradayHistory> {
   let fallbackReason: string | null = null;
-  if (alpacaConfigured()) {
+  if (massiveConfigured()) {
     try {
-      const history = await fetchAlpacaIntradayWindow(symbol, from, to, interval, options);
+      const history = await fetchMassiveIntradayWindow(symbol, from, to, interval, options);
       return {
         points: history.points,
         provider: history.provider,
-        feed: history.feed,
-        availableSince: history.availableSince,
-        historicalDelayMinutes: history.delayedByMinutes,
+        feed: null,
+        availableSince: history.availableFrom,
+        historicalDelayMinutes: null,
+        dataRecency: history.dataRecency,
         fallbackReason: null,
       };
     } catch (error) {
-      fallbackReason = error instanceof Error ? error.message : "Alpaca 분봉 조회 실패";
+      fallbackReason = error instanceof Error ? error.message : "Massive 분봉 조회 실패";
     }
   }
 
   const yahooLimitDays = interval === "1m" ? 7 : 59;
   if (calendarDays(from, to) > yahooLimitDays) {
-    throw new Error(fallbackReason ?? `Alpaca API 키가 없어 ${interval} 분봉은 최근 ${yahooLimitDays}일만 조회할 수 있습니다.`);
+    throw new Error(fallbackReason ?? `Massive API 키가 없어 ${interval} 분봉은 최근 ${yahooLimitDays}일만 조회할 수 있습니다.`);
   }
   const points = await fetchYahooIntradayWindow(symbol, from, to, interval);
   return {
@@ -395,6 +413,7 @@ export async function fetchIntradayWindow(
     feed: null,
     availableSince: null,
     historicalDelayMinutes: null,
+    dataRecency: null,
     fallbackReason,
   };
 }

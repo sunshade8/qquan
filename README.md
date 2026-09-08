@@ -208,20 +208,20 @@ sitting at 0 calls means no code path reaches it — the balanced (Sonnet) roles
 into the News routes, so a session that used the Lab alone will show `analyst`, `auditor` and
 `planner` at zero, and `summarizer` has no call site at all.
 
-### Alpaca long-history intraday bars
+### Massive intraday bars
 
-Set `APCA_API_KEY_ID` and `APCA_API_SECRET_KEY` to make Alpaca the preferred source for the
-Lab's 1-, 5-, and 15-minute studies. Historical requests default to the consolidated `sip`
-feed with split adjustment. Alpaca Basic exposes history from 2016, but SIP requests must end
-at least 15 minutes before now; the client enforces a 16-minute safety cutoff. Set
-`ALPACA_DATA_FEED=iex` only when the single-exchange IEX sample is intentional.
+Set `MASSIVE_API_KEY` to make Massive Custom Bars the preferred source for the Lab's 1-, 5-,
+and 15-minute studies. Requests use split-adjusted full-US-market aggregates. The current Basic
+plan exposes the latest two years only after end-of-day and allows five API calls per minute;
+`MASSIVE_PLAN`, `MASSIVE_HISTORY_YEARS`, `MASSIVE_DATA_RECENCY`, and
+`MASSIVE_CALLS_PER_MINUTE` make those entitlements explicit if the account is upgraded later.
 
-Without Alpaca credentials, or when a bounded recent Alpaca request fails, the existing Yahoo
+Without Massive credentials, or when a bounded recent Massive request fails, the existing Yahoo
 path remains available (about 59 days for 5-/15-minute bars and 7 days for 1-minute bars).
-Long event studies fetch only the small windows around the supplied events, while FVG backtests
-load symbols sequentially and cap one-minute runs to one year to stay inside the hosted Worker's
-memory limit. Settings reports the live provider, feed, and credential state instead of treating
-"a key exists" as proof that the account can read the data.
+Event studies fetch only the small windows around supplied events. FVG and intraday-direction
+runs cap their period according to symbol count so Basic pagination stays within its call budget.
+Settings makes a live aggregate request instead of treating "a key exists" as proof that the
+account can read the data.
 
 ### Lab JARVIS (`/api/lab/agent`)
 
@@ -284,8 +284,45 @@ proposes them in Lab (`propose_strategy`), asks before saving (`save_strategy`),
 engine runs them on real daily bars with next-close execution, costs, equal-weight universes,
 a 70/30 in/out-of-sample split, parameter perturbation, and a deterministic pass/fail verdict.
 Passing strategies become "signal candidates"; `lib/trading.ts` computes live signals and sized
-order intents from the same rule, and `/api/strategies/signals` exposes them behind a gateway
-(dry run today; `tossGateway` is the hook for the Toss order API).
+order intents from the same rule, and `/api/strategies/signals` exposes them behind a gateway.
+
+### 전략 (`/api/trade-strategies/*`, `lib/trade-strategies.ts`)
+
+The Backtest tab above is for rules JARVIS *proposes*; this tab is for rules that have already
+been validated and are meant to place orders. The difference that matters is architectural:
+a strategy here is **code**, not a database row, and its `plan()` function is the only place it
+decides anything. The 60-session backtest replays that exact function over historical bars
+(`lib/trade-strategy-engine.ts`), and the 매매 button feeds it today's bars and the ledger's real
+positions. A rule cannot backtest as one thing and trade as another, because there is only one
+implementation.
+
+The engine adds what a broker does rather than what a rule decides: a plan made on one close
+fills at the *next* close, and the protective stop each entry carries fills intrabar as a resting
+order would. Every run writes a markdown record — stored in D1, downloadable as `.md` — so a
+month-old run can still be compared against.
+
+Order submission goes through `lib/toss-orders.ts`, which is a real client for the Toss account,
+asset and order APIs — `/api/v1/accounts`, `/holdings`, `/buying-power`, `/sellable-quantity`,
+`/commissions`, `/orders` — using the same client-credentials token as the price calls plus the
+`X-Tossinvest-Account` header. The default order is `LIMIT` + `timeInForce: "CLS"`, a limit-on-close
+order, because that is the fill the backtest models; `TOSS_ORDER_MODE=market` switches to a day
+market order. `clientOrderId` carries the intent's UUID as Toss's idempotency key, so a re-submitted
+plan returns the original order instead of doubling the position.
+
+Two safety properties are worth stating explicitly. **The rule can only sell what it bought**: when
+the gateway is Toss, positions are the intersection of the account's holdings, the strategy's
+universe, and this strategy's own ledger entries — anything else in the account is listed as
+untouched and never ordered. And submitting requires an explicit confirmation separate from the
+button, so a stray or replayed request cannot become an order. `TOSS_TRADING_DISABLED=true` is a
+kill switch that refuses every live order without unlinking the keys.
+
+Costs still come from `lib/broker-costs.ts`, but the tab reads the account's live
+`commissionRate` and flags it when the rate's `endDate` has arrived — a promotional rate expiring
+raises the breakeven win rate of every adopted rule.
+
+`h2-3day-reversal` is the first rule in the registry: the three-session −6% plunge from
+`docs/research/results-2026-09.md`, ranked by depth, capped at three names a day, held five
+sessions with a −6% stop.
 
 ### News JARVIS (`/api/news/*`)
 

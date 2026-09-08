@@ -1,0 +1,324 @@
+{
+  "hypothesis": "H2 three-day plunge reversal",
+  "period": {
+    "from": "2022-09-07",
+    "oosStart": "2025-09-07"
+  },
+  "costPct": 0.2308,
+  "stopPct": 6,
+  "feeInR": 0.038,
+  "symbols": 60,
+  "sweep": [
+    {
+      "trendFilter": true,
+      "dropPct": 4,
+      "horizon": 3,
+      "trades": 2769,
+      "winRate": 52.727,
+      "avgNetPct": 0.444,
+      "t": 4.605,
+      "isAvg": 0.371,
+      "oosAvg": 0.574,
+      "oosTrades": 996
+    },
+    {
+      "trendFilter": true,
+      "dropPct": 4,
+      "horizon": 5,
+      "trades": 2769,
+      "winRate": 50.126,
+      "avgNetPct": 0.682,
+      "t": 5.474,
+      "isAvg": 0.606,
+      "oosAvg": 0.817,
+      "oosTrades": 996
+    },
+    {
+      "trendFilter": true,
+      "dropPct": 4,
+      "horizon": 10,
+      "trades": 2769,
+      "winRate": 47.598,
+      "avgNetPct": 1.377,
+      "t": 8.031,
+      "isAvg": 1.42,
+      "oosAvg": 1.3,
+      "oosTrades": 996
+    },
+    {
+      "trendFilter": true,
+      "dropPct": 6,
+      "horizon": 3,
+      "trades": 1253,
+      "winRate": 52.115,
+      "avgNetPct": 0.533,
+      "t": 3.446,
+      "isAvg": 0.437,
+      "oosAvg": 0.683,
+      "oosTrades": 491
+    },
+    {
+      "trendFilter": true,
+      "dropPct": 6,
+      "horizon": 5,
+      "trades": 1253,
+      "winRate": 49.082,
+      "avgNetPct": 0.783,
+      "t": 3.943,
+      "isAvg": 0.703,
+      "oosAvg": 0.907,
+      "oosTrades": 491
+    },
+    {
+      "trendFilter": true,
+      "dropPct": 6,
+      "horizon": 10,
+      "trades": 1253,
+      "winRate": 45.491,
+      "avgNetPct": 1.458,
+      "t": 5.374,
+      "isAvg": 1.521,
+      "oosAvg": 1.361,
+      "oosTrades": 491
+    },
+    {
+      "trendFilter": true,
+      "dropPct": 8,
+      "horizon": 3,
+      "trades": 624,
+      "winRate": 51.442,
+      "avgNetPct": 0.672,
+      "t": 2.868,
+      "isAvg": 0.197,
+      "oosAvg": 1.393,
+      "oosTrades": 248
+    },
+    {
+      "trendFilter": true,
+      "dropPct": 8,
+      "horizon": 5,
+      "trades": 624,
+      "winRate": 48.718,
+      "avgNetPct": 0.995,
+      "t": 3.328,
+      "isAvg": 0.448,
+      "oosAvg": 1.823,
+      "oosTrades": 248
+    },
+    {
+      "trendFilter": true,
+      "dropPct": 8,
+      "horizon": 10,
+      "trades": 624,
+      "winRate": 44.872,
+      "avgNetPct": 1.263,
+      "t": 3.228,
+      "isAvg": 0.829,
+      "oosAvg": 1.921,
+      "oosTrades": 248
+    },
+    {
+      "trendFilter": false,
+      "dropPct": 4,
+      "horizon": 3,
+      "trades": 5175,
+      "winRate": 52.85,
+      "avgNetPct": 0.635,
+      "t": 8.408,
+      "isAvg": 0.633,
+      "oosAvg": 0.639,
+      "oosTrades": 1959
+    },
+    {
+      "trendFilter": false,
+      "dropPct": 4,
+      "horizon": 5,
+      "trades": 5175,
+      "winRate": 51.42,
+      "avgNetPct": 0.914,
+      "t": 9.776,
+      "isAvg": 0.902,
+      "oosAvg": 0.932,
+      "oosTrades": 1959
+    },
+    {
+      "trendFilter": false,
+      "dropPct": 4,
+      "horizon": 10,
+      "trades": 5175,
+      "winRate": 48.464,
+      "avgNetPct": 1.585,
+      "t": 12.632,
+      "isAvg": 1.818,
+      "oosAvg": 1.201,
+      "oosTrades": 1959
+    },
+    {
+      "trendFilter": false,
+      "dropPct": 6,
+      "horizon": 3,
+      "trades": 2597,
+      "winRate": 52.561,
+      "avgNetPct": 0.828,
+      "t": 7.049,
+      "isAvg": 0.862,
+      "oosAvg": 0.776,
+      "oosTrades": 1027
+    },
+    {
+      "trendFilter": false,
+      "dropPct": 6,
+      "horizon": 5,
+      "trades": 2597,
+      "winRate": 51.405,
+      "avgNetPct": 1.131,
+      "t": 7.988,
+      "isAvg": 1.141,
+      "oosAvg": 1.116,
+      "oosTrades": 1027
+    },
+    {
+      "trendFilter": false,
+      "dropPct": 6,
+      "horizon": 10,
+      "trades": 2597,
+      "winRate": 47.786,
+      "avgNetPct": 1.779,
+      "t": 9.487,
+      "isAvg": 2.047,
+      "oosAvg": 1.368,
+      "oosTrades": 1027
+    },
+    {
+      "trendFilter": false,
+      "dropPct": 8,
+      "horizon": 3,
+      "trades": 1369,
+      "winRate": 52.52,
+      "avgNetPct": 1.046,
+      "t": 6.118,
+      "isAvg": 0.897,
+      "oosAvg": 1.272,
+      "oosTrades": 543
+    },
+    {
+      "trendFilter": false,
+      "dropPct": 8,
+      "horizon": 5,
+      "trades": 1369,
+      "winRate": 52.228,
+      "avgNetPct": 1.423,
+      "t": 6.984,
+      "isAvg": 1.163,
+      "oosAvg": 1.818,
+      "oosTrades": 543
+    },
+    {
+      "trendFilter": false,
+      "dropPct": 8,
+      "horizon": 10,
+      "trades": 1369,
+      "winRate": 47.334,
+      "avgNetPct": 1.809,
+      "t": 6.824,
+      "isAvg": 1.732,
+      "oosAvg": 1.928,
+      "oosTrades": 543
+    }
+  ],
+  "baselines": {
+    "h3": {
+      "all": 0.131,
+      "is": 0.113,
+      "oos": 0.183,
+      "trades": 59940
+    },
+    "h5": {
+      "all": 0.376,
+      "is": 0.349,
+      "oos": 0.46,
+      "trades": 59820
+    },
+    "h10": {
+      "all": 1.003,
+      "is": 0.962,
+      "oos": 1.131,
+      "trades": 59520
+    }
+  },
+  "tpVariants": [
+    {
+      "takeProfitPct": 3,
+      "trades": 1253,
+      "winRate": 65.842,
+      "avgNetPct": 0.153,
+      "t": 1.464
+    },
+    {
+      "takeProfitPct": 4,
+      "trades": 1253,
+      "winRate": 59.697,
+      "avgNetPct": 0.203,
+      "t": 1.704
+    },
+    {
+      "takeProfitPct": 6,
+      "trades": 1253,
+      "winRate": 53.392,
+      "avgNetPct": 0.276,
+      "t": 1.977
+    }
+  ],
+  "detail": {
+    "base": {
+      "all": {
+        "trades": 1253,
+        "winRate": 49.082,
+        "avgNetPct": 0.783,
+        "medianNetPct": -0.173,
+        "tStat": 3.943,
+        "avgWinPct": 6.32,
+        "avgLossPct": -4.555,
+        "payoff": 1.388,
+        "totalNetPct": 980.684,
+        "worstLossStreak": 26,
+        "avgStopPct": 6,
+        "feeInR": 0.038,
+        "activeDayPct": null,
+        "sessionsCovered": null
+      },
+      "is": {
+        "trades": 762,
+        "winRate": 50.394,
+        "avgNetPct": 0.703,
+        "medianNetPct": 0.11,
+        "tStat": 2.938,
+        "avgWinPct": 5.636,
+        "avgLossPct": -4.31,
+        "payoff": 1.308,
+        "totalNetPct": 535.346,
+        "worstLossStreak": 26,
+        "avgStopPct": 6,
+        "feeInR": 0.038,
+        "activeDayPct": null,
+        "sessionsCovered": null
+      },
+      "oos": {
+        "trades": 491,
+        "winRate": 47.047,
+        "avgNetPct": 0.907,
+        "medianNetPct": -0.679,
+        "tStat": 2.63,
+        "avgWinPct": 7.455,
+        "avgLossPct": -4.911,
+        "payoff": 1.518,
+        "totalNetPct": 445.337,
+        "worstLossStreak": 20,
+        "avgStopPct": 6,
+        "feeInR": 0.038,
+        "activeDayPct": null,
+        "sessionsCovered": null
+      }
+    }
+  }
+}
