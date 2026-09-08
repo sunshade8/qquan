@@ -316,6 +316,19 @@ untouched and never ordered. And submitting requires an explicit confirmation se
 button, so a stray or replayed request cannot become an order. `TOSS_TRADING_DISABLED=true` is a
 kill switch that refuses every live order without unlinking the keys.
 
+**Deployment caveat, and it is a real one.** Toss enforces an allowed-IP list per app (WTS >
+설정 > Open API > 허용 IP 관리); a call from an unregistered address is refused with 403. A
+developer machine is one stable address and is easy to register. A Cloudflare Worker is not — its
+egress address comes from Cloudflare's shared ranges and can differ between requests — so the same
+keys that work under `npm run dev` can fail on the deployed site. The 전략 tab diagnoses this
+explicitly: when the account probe is refused it names the cause and prints the egress address it
+was refused from. The durable fixes are to route Toss calls through a host with a static IP, or to
+run order execution locally where the registered address lives, leaving the deployment read-only.
+
+Note also that `.dev.vars` is gitignored, so `TOSS_CLIENT_ID` / `TOSS_CLIENT_SECRET` have to be set
+as secrets in the deployment environment separately — the tab reports that case as its own cause
+rather than as a generic failure.
+
 Costs still come from `lib/broker-costs.ts`, but the tab reads the account's live
 `commissionRate` and flags it when the rate's `endDate` has arrived — a promotional rate expiring
 raises the breakeven win rate of every adopted rule.

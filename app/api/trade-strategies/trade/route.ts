@@ -18,7 +18,7 @@ import { researchOwnerCookie, researchOwnerFrom } from "@/lib/research-owner";
 import { tradeStrategyById } from "@/lib/trade-strategies";
 import { planLive } from "@/lib/trade-strategy-runner";
 import { renderTradeMarkdown, tradeFilename } from "@/lib/trade-strategy-report";
-import { getInstance, saveReport, updateInstance } from "@/lib/trade-strategy-store";
+import { ensureInstance, saveReport, updateInstance } from "@/lib/trade-strategy-store";
 import { gatewayFor, type OrderIntent } from "@/lib/trading";
 import { tossTradingStatus } from "@/lib/toss-orders";
 
@@ -27,13 +27,17 @@ const CONFIRM_PHRASE = "매매";
 export async function POST(request: Request) {
   const ownerId = researchOwnerFrom(request);
   const headers = { "set-cookie": researchOwnerCookie(ownerId) };
-  const payload = await request.json().catch(() => ({})) as { id?: string; submit?: boolean; confirm?: string };
-  if (!payload.id) return Response.json({ error: "id가 필요합니다." }, { status: 400 });
+  const payload = await request.json().catch(() => ({})) as { strategyKey?: string; capitalUsd?: number; gateway?: string; submit?: boolean; confirm?: string };
+  const strategy = tradeStrategyById(String(payload.strategyKey ?? ""));
+  if (!strategy) return Response.json({ error: "등록되지 않은 전략입니다." }, { status: 400 });
 
-  const instance = await getInstance(ownerId, payload.id).catch(() => null);
-  if (!instance) return Response.json({ error: "전략을 찾지 못했습니다." }, { status: 404 });
-  const strategy = tradeStrategyById(instance.strategyKey);
-  if (!strategy) return Response.json({ error: `코드에 없는 전략입니다: ${instance.strategyKey}` }, { status: 400 });
+  const capitalUsd = Number(payload.capitalUsd);
+  const instance = await ensureInstance(ownerId, {
+    strategyKey: strategy.id, name: strategy.name,
+    capitalUsd: Number.isFinite(capitalUsd) && capitalUsd >= 100 ? capitalUsd : 10_000,
+    gateway: payload.gateway === "toss" ? "toss" : "dry_run",
+  }).catch(() => null);
+  if (!instance) return Response.json({ error: "전략 저장소에 연결하지 못했습니다." }, { status: 503 });
 
   const submit = payload.submit === true;
   if (submit && payload.confirm !== CONFIRM_PHRASE) {
@@ -116,6 +120,8 @@ export async function POST(request: Request) {
       id: gateway.id, label: gateway.label,
       tossReady: toss?.ready ?? false,
       tossReason: toss?.reason ?? null,
+      tossCause: toss?.cause ?? null,
+      tossEgressIp: toss?.egressIp ?? null,
       accountNo: toss?.account?.accountNo ?? null,
       buyingPowerUsd: toss?.buyingPowerUsd ?? null,
       usCommissionRate: toss?.usCommissionRate ?? null,

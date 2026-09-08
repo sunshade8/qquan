@@ -77,6 +77,30 @@ export async function getInstance(ownerId: string, id: string): Promise<TradeStr
   return row ? toInstance(row) : null;
 }
 
+export async function getInstanceByKey(ownerId: string, strategyKey: string): Promise<TradeStrategyInstance | null> {
+  await ensureSchema();
+  const [row] = await getDb().select().from(tradeStrategyInstances)
+    .where(and(eq(tradeStrategyInstances.ownerId, ownerId), eq(tradeStrategyInstances.strategyKey, strategyKey)))
+    .limit(1);
+  return row ? toInstance(row) : null;
+}
+
+/**
+ * The settings row for a coded strategy, created on first use.
+ *
+ * The board is the code registry, not this table — a strategy exists because
+ * `lib/trade-strategies.ts` defines it, and a row here only remembers what the
+ * owner chose for it. Making the row a precondition is what left a freshly
+ * deployed board empty: the rule was in the bundle, the row was in some other
+ * database, and the page had nothing to draw.
+ */
+export async function ensureInstance(ownerId: string, input: { strategyKey: string; name: string; capitalUsd: number; gateway: "dry_run" | "toss" }): Promise<TradeStrategyInstance> {
+  const existing = await getInstanceByKey(ownerId, input.strategyKey);
+  if (existing) return existing;
+  const id = await createInstance(ownerId, input);
+  return (await getInstance(ownerId, id))!;
+}
+
 export async function createInstance(ownerId: string, input: { strategyKey: string; name: string; capitalUsd: number; gateway: "dry_run" | "toss" }) {
   await ensureSchema();
   const now = new Date();

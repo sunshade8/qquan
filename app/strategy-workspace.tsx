@@ -4,7 +4,6 @@ import Download from "lucide-react/dist/esm/icons/download";
 import FileText from "lucide-react/dist/esm/icons/file-text";
 import Layers from "lucide-react/dist/esm/icons/layers";
 import Play from "lucide-react/dist/esm/icons/play";
-import Plus from "lucide-react/dist/esm/icons/plus";
 import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw";
 import Trash2 from "lucide-react/dist/esm/icons/trash-2";
 import TriangleAlert from "lucide-react/dist/esm/icons/triangle-alert";
@@ -17,19 +16,40 @@ type CatalogEntry = {
   benchmark: string; rules: string[]; evidence: string; cautions: string[]; params: Record<string, number>;
 };
 type ReportSummary = { id: string; kind: "backtest" | "trade"; title: string; filename: string; createdAt: string; summary: Record<string, unknown> };
-type Instance = {
-  id: string; strategyKey: string; name: string; capitalUsd: number; gateway: "dry_run" | "toss";
-  createdAt: string; updatedAt: string; lastBacktestAt: string | null; lastTradeAt: string | null; reports: ReportSummary[];
+/** One coded strategy plus whatever settings and history exist for it. */
+type Card = {
+  key: string; id: string | null; name: string;
+  capitalUsd: number; gateway: "dry_run" | "toss";
+  lastBacktestAt: string | null; lastTradeAt: string | null;
+  configured: boolean; reports: ReportSummary[];
 };
+type TossCause = "disabled" | "no_credentials" | "ip_allowlist" | "auth" | "permission" | "no_account" | "unknown";
 type TossStatus = {
-  ready: boolean; reason: string | null;
+  ready: boolean; reason: string | null; cause: TossCause | null; egressIp: string | null;
   account: { accountNo: string; accountSeq: number; accountType: string } | null;
   buyingPowerUsd: number | null;
   usCommissionRate: number | null;
   usCommissionEndDate: string | null;
   orderMode: "loc" | "market";
 };
-type BoardResponse = { catalog: CatalogEntry[]; instances: Instance[]; toss: TossStatus; persistence?: string };
+type BoardResponse = { catalog: CatalogEntry[]; cards: Card[]; toss: TossStatus; defaultCapitalUsd: number; persistence?: string };
+
+/** What to actually do about each way the broker connection can be unavailable. */
+const TOSS_FIX: Record<TossCause, { title: string; how: string }> = {
+  no_credentials: {
+    title: "이 배포 환경에 토스 키가 없습니다.",
+    how: "`.dev.vars` 는 로컬 전용이라 커밋되지 않습니다. 배포 환경의 시크릿에 TOSS_CLIENT_ID 와 TOSS_CLIENT_SECRET 을 같은 이름으로 넣어야 합니다.",
+  },
+  ip_allowlist: {
+    title: "토스가 이 서버의 IP를 차단했습니다 (403).",
+    how: "토스 WTS > 설정 > Open API > 허용 IP 관리에 등록된 IP에서만 호출이 됩니다. 로컬에서 되고 배포에서 안 되는 이유가 이것입니다 — 등록된 건 개발 PC 주소이고, 배포된 Worker는 Cloudflare 대역에서 나갑니다. 그 주소는 요청마다 바뀔 수 있어서 하나만 등록해도 다음 호출에서 또 막힐 수 있습니다. 확실한 방법은 고정 IP를 가진 서버를 거쳐 호출하거나, 주문 실행만 허용 IP가 등록된 로컬에서 돌리는 것입니다.",
+  },
+  auth: { title: "토스 인증에 실패했습니다.", how: "키가 만료됐거나 잘못 복사됐을 수 있습니다. 콘솔에서 Client ID/Secret 을 다시 확인하세요." },
+  permission: { title: "이 앱에 필요한 권한이 없습니다.", how: "토스증권 콘솔에서 계좌·자산·주문 스코프가 켜져 있는지 확인하세요." },
+  no_account: { title: "주문 가능한 계좌를 찾지 못했습니다.", how: "종합매매(BROKERAGE) 계좌가 이 앱에 연결돼 있는지 확인하세요." },
+  disabled: { title: "실주문이 잠겨 있습니다.", how: "환경변수 TOSS_TRADING_DISABLED 를 지우면 풀립니다." },
+  unknown: { title: "토스 연결을 확인하지 못했습니다.", how: "아래 원문 메시지를 확인하세요." },
+};
 
 type BacktestMetrics = {
   trades: number; winRatePct: number | null; avgNetPct: number | null; medianNetPct: number | null;
@@ -110,67 +130,65 @@ export function StrategyWorkspace() {
   const [board, setBoard] = useState<BoardResponse | null>(null);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [newKey, setNewKey] = useState("");
-  const [newCapital, setNewCapital] = useState(10000);
-  const [newGateway, setNewGateway] = useState<"dry_run" | "toss">("dry_run");
   const [busy, setBusy] = useState<string | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [confirmClear, setConfirmClear] = useState<string | null>(null);
+  /** Unsaved capital edits, keyed by strategy, so typing does not fight a reload. */
+  const [capitalDraft, setCapitalDraft] = useState<Record<string, number>>({});
 
-  const [backtest, setBacktest] = useState<(BacktestResponse & { instanceId: string }) | null>(null);
-  const [trade, setTrade] = useState<(TradeResponse & { instanceId: string; strategyName: string }) | null>(null);
+  const [backtest, setBacktest] = useState<(BacktestResponse & { strategyKey: string }) | null>(null);
+  const [trade, setTrade] = useState<(TradeResponse & { strategyKey: string; strategyName: string }) | null>(null);
   const [tradeConfirming, setTradeConfirming] = useState(false);
   const [viewer, setViewer] = useState<{ title: string; filename: string; markdown: string } | null>(null);
 
   const load = useCallback(async () => {
     try {
       const response = await fetch("/api/trade-strategies", { cache: "no-store" });
-      const data = await response.json() as BoardResponse;
-      setBoard(data);
-      if (!newKey && data.catalog.length) setNewKey(data.catalog[0].key);
+      setBoard(await response.json() as BoardResponse);
     } catch {
       setBoard(null);
     } finally {
       setReady(true);
     }
-  }, [newKey]);
+  }, []);
 
-  useEffect(() => { queueMicrotask(() => { void load(); }); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { queueMicrotask(() => { void load(); }); }, [load]);
 
-  async function addStrategy() {
-    if (!newKey) return;
-    setBusy("add");
+  const capitalOf = (card: Card) => capitalDraft[card.key] ?? card.capitalUsd;
+
+  async function saveSettings(card: Card, patch: { capitalUsd?: number; gateway?: "dry_run" | "toss" }) {
     setError("");
     try {
-      const response = await fetch("/api/trade-strategies", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ strategyKey: newKey, capitalUsd: newCapital, gateway: newGateway }) });
-      const data = await response.json() as { error?: string };
-      if (!response.ok) throw new Error(data.error || "전략을 추가하지 못했습니다.");
-      setAdding(false);
+      const response = await fetch("/api/trade-strategies", {
+        method: "PATCH", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ strategyKey: card.key, ...patch }),
+      });
+      if (!response.ok) throw new Error(((await response.json()) as { error?: string }).error || "설정을 저장하지 못했습니다.");
       await load();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "전략을 추가하지 못했습니다.");
-    } finally {
-      setBusy(null);
+      setError(reason instanceof Error ? reason.message : "설정을 저장하지 못했습니다.");
     }
   }
 
-  async function removeStrategy(id: string) {
-    if (confirmDelete !== id) { setConfirmDelete(id); window.setTimeout(() => setConfirmDelete((current) => current === id ? null : current), 4000); return; }
-    setConfirmDelete(null);
-    setBusy(id);
-    await fetch(`/api/trade-strategies?id=${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => undefined);
+  async function clearHistory(card: Card) {
+    if (confirmClear !== card.key) { setConfirmClear(card.key); window.setTimeout(() => setConfirmClear((current) => current === card.key ? null : current), 4000); return; }
+    setConfirmClear(null);
+    setBusy(`clear-${card.key}`);
+    await fetch(`/api/trade-strategies?strategyKey=${encodeURIComponent(card.key)}`, { method: "DELETE" }).catch(() => undefined);
     setBusy(null);
     await load();
   }
 
-  async function runBacktest(instance: Instance) {
-    setBusy(`bt-${instance.id}`);
+  async function runBacktest(card: Card) {
+    setBusy(`bt-${card.key}`);
     setError("");
     try {
-      const response = await fetch("/api/trade-strategies/backtest", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: instance.id, sessions: 60 }) });
+      const response = await fetch("/api/trade-strategies/backtest", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ strategyKey: card.key, capitalUsd: capitalOf(card), sessions: 60 }),
+      });
       const data = await response.json() as BacktestResponse & { error?: string };
       if (!response.ok) throw new Error(data.error || "백테스트에 실패했습니다.");
-      setBacktest({ ...data, instanceId: instance.id });
+      setBacktest({ ...data, strategyKey: card.key });
       await load();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "백테스트에 실패했습니다.");
@@ -179,17 +197,17 @@ export function StrategyWorkspace() {
     }
   }
 
-  async function planTrade(instance: Instance, submit: boolean) {
-    setBusy(`tr-${instance.id}`);
+  async function planTrade(card: Card, submit: boolean) {
+    setBusy(`tr-${card.key}`);
     setError("");
     try {
       const response = await fetch("/api/trade-strategies/trade", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ id: instance.id, submit, confirm: submit ? "매매" : undefined }),
+        body: JSON.stringify({ strategyKey: card.key, capitalUsd: capitalOf(card), gateway: card.gateway, submit, confirm: submit ? "매매" : undefined }),
       });
       const data = await response.json() as TradeResponse & { error?: string };
       if (!response.ok) throw new Error(data.error || "주문 계획에 실패했습니다.");
-      setTrade({ ...data, instanceId: instance.id, strategyName: instance.name });
+      setTrade({ ...data, strategyKey: card.key, strategyName: card.name });
       setTradeConfirming(false);
       if (submit) await load();
     } catch (reason) {
@@ -211,20 +229,23 @@ export function StrategyWorkspace() {
   }
 
   const catalog = board?.catalog ?? [];
-  const instances = board?.instances ?? [];
-  const selectedCatalog = catalog.find((entry) => entry.key === newKey) ?? null;
+  const cards = board?.cards ?? [];
+  const tossFix = board?.toss && !board.toss.ready ? TOSS_FIX[board.toss.cause ?? "unknown"] : null;
 
   return <section className="strategy-board">
     <header className="lab-page-head">
-      <div><span>RULE → BACKTEST → ORDER</span><h1>전략</h1><p>코드로 구현된 매매 규칙을 카드로 올려두고, 같은 함수로 백테스트하거나 실제 주문을 냅니다.</p></div>
+      <div><span>RULE → BACKTEST → ORDER</span><h1>전략</h1><p>코드로 구현된 매매 규칙마다 카드가 하나씩 있고, 같은 함수로 백테스트하거나 실제 주문을 냅니다.</p></div>
       <div className="lab-capabilities"><span><Layers size={13} />규칙 = 코드</span><span><Play size={13} />최근 60거래일</span><span><Zap size={13} />Toss 주문</span></div>
     </header>
 
-    {board?.toss && !board.toss.ready && <div className="strategy-warning">
+    {tossFix && <div className="strategy-warning">
       <TriangleAlert size={15} />
       <div>
-        <strong>토스 실주문을 지금 보낼 수 없습니다.</strong>
-        <p>{board.toss.reason ?? "계좌 상태를 확인하지 못했습니다."} 이 상태에서 “매매”를 누르면 주문 계획만 만들어 페이퍼 원장에 기록합니다.</p>
+        <strong>{tossFix.title}</strong>
+        <p>{tossFix.how}</p>
+        {board?.toss.egressIp && <p className="strategy-egress">이 서버가 토스에 접속하는 IP: <code>{board.toss.egressIp}</code></p>}
+        {board?.toss.reason && <p className="strategy-raw">토스 응답: {board.toss.reason}</p>}
+        <p>이 상태에서 “매매”를 누르면 주문 계획만 만들어 페이퍼 원장에 기록하고, 실제 주문은 나가지 않습니다.</p>
       </div>
     </div>}
 
@@ -254,42 +275,36 @@ export function StrategyWorkspace() {
     {error && <div className="strategy-warning error"><TriangleAlert size={15} /><div><strong>{error}</strong></div></div>}
 
     <div className="strategy-board-head">
-      <strong>등록된 전략 {instances.length}</strong>
-      <button className="run-button" onClick={() => setAdding((value) => !value)}><Plus size={13} />전략 추가</button>
+      <strong>전략 {cards.length}</strong>
+      <span className="strategy-board-note">코드에 등록된 규칙이 곧 카드입니다. 추가 절차 없이 바로 실행할 수 있습니다.</span>
     </div>
 
-    {adding && <section className="strategy-add">
-      <div className="strategy-add-fields">
-        <label>전략<select value={newKey} onChange={(event) => setNewKey(event.target.value)}>{catalog.map((entry) => <option key={entry.key} value={entry.key}>{entry.name}</option>)}</select></label>
-        <label>자본 USD<input type="number" min={100} step={500} value={newCapital} onChange={(event) => setNewCapital(Number(event.target.value))} /></label>
-        <label>주문 경로<select value={newGateway} onChange={(event) => setNewGateway(event.target.value === "toss" ? "toss" : "dry_run")}><option value="dry_run">Dry run (원장 기록만)</option><option value="toss">Toss 실주문</option></select></label>
-        <button className="run-button" disabled={busy === "add"} onClick={addStrategy}>{busy === "add" ? "추가 중…" : "보드에 올리기"}</button>
-      </div>
-      {selectedCatalog && <div className="strategy-add-preview">
-        <p>{selectedCatalog.summary}</p>
-        <ul>{selectedCatalog.rules.map((rule) => <li key={rule}>{rule}</li>)}</ul>
-        <small>{selectedCatalog.evidence}</small>
-      </div>}
-    </section>}
-
     {!ready && <div className="research-empty"><RefreshCw size={16} className="spin" /><strong>불러오는 중</strong></div>}
-    {ready && !instances.length && <div className="lab-canvas-empty"><Layers size={28} /><strong>아직 올린 전략이 없습니다.</strong><p>“전략 추가”를 눌러 코드로 구현된 규칙을 보드에 올리세요. 카드마다 백테스트와 매매를 각각 실행할 수 있습니다.</p></div>}
+    {ready && !cards.length && <div className="lab-canvas-empty"><Layers size={28} /><strong>코드에 등록된 전략이 없습니다.</strong><p><code>lib/trade-strategies.ts</code>의 <code>TRADE_STRATEGIES</code>에 규칙을 추가하면 여기에 카드가 생깁니다.</p></div>}
 
     <div className="strategy-cards">
-      {instances.map((instance) => {
-        const entry = catalog.find((item) => item.key === instance.strategyKey);
-        const lastBacktest = instance.reports.find((report) => report.kind === "backtest");
-        return <article key={instance.id} className="strategy-card">
+      {cards.map((card) => {
+        const entry = catalog.find((item) => item.key === card.key);
+        const lastBacktest = card.reports.find((report) => report.kind === "backtest");
+        return <article key={card.key} className="strategy-card">
           <header>
-            <div><strong>{instance.name}</strong><small>{entry ? `${entry.universeCount}종목 · 벤치마크 ${entry.benchmark}` : instance.strategyKey}</small></div>
-            <button className={confirmDelete === instance.id ? "danger" : "ghost"} onClick={() => removeStrategy(instance.id)} aria-label="전략 삭제"><Trash2 size={13} />{confirmDelete === instance.id ? "한 번 더" : ""}</button>
+            <div><strong>{card.name}</strong><small>{entry ? `${entry.universeCount}종목 · 벤치마크 ${entry.benchmark}` : card.key}</small></div>
+            {card.configured && <button className={confirmClear === card.key ? "danger" : "ghost"} disabled={busy === `clear-${card.key}`} onClick={() => clearHistory(card)} aria-label="기록 지우기"><Trash2 size={13} />{confirmClear === card.key ? "한 번 더" : ""}</button>}
           </header>
           {entry && <p className="strategy-card-summary">{entry.summary}</p>}
+          {entry && <ul className="strategy-card-rules">{entry.rules.map((rule) => <li key={rule}>{rule}</li>)}</ul>}
+          <div className="strategy-card-settings">
+            <label>자본 USD<input type="number" min={100} step={500} value={capitalOf(card)}
+              onChange={(event) => setCapitalDraft((draft) => ({ ...draft, [card.key]: Number(event.target.value) }))}
+              onBlur={() => { if (capitalOf(card) !== card.capitalUsd && capitalOf(card) >= 100) void saveSettings(card, { capitalUsd: capitalOf(card) }); }} /></label>
+            <label>주문 경로<select value={card.gateway} onChange={(event) => void saveSettings(card, { gateway: event.target.value === "toss" ? "toss" : "dry_run" })}>
+              <option value="dry_run">Dry run (원장 기록만)</option>
+              <option value="toss">토스 실주문</option>
+            </select></label>
+          </div>
           <dl className="strategy-card-meta">
-            <div><dt>자본</dt><dd>{usd(instance.capitalUsd)}</dd></div>
-            <div><dt>주문 경로</dt><dd>{instance.gateway === "toss" ? "Toss 실주문" : "Dry run"}</dd></div>
-            <div><dt>최근 백테스트</dt><dd>{when(instance.lastBacktestAt)}</dd></div>
-            <div><dt>최근 매매</dt><dd>{when(instance.lastTradeAt)}</dd></div>
+            <div><dt>최근 백테스트</dt><dd>{when(card.lastBacktestAt)}</dd></div>
+            <div><dt>최근 매매</dt><dd>{when(card.lastTradeAt)}</dd></div>
           </dl>
           {lastBacktest && <div className="strategy-card-last">
             <span>지난 백테스트</span>
@@ -297,12 +312,12 @@ export function StrategyWorkspace() {
             <small>{String(lastBacktest.summary.trades ?? "—")}거래 · 승률 {lastBacktest.summary.winRatePct === null ? "—" : `${lastBacktest.summary.winRatePct}%`} · 거래당 {pct(Number(lastBacktest.summary.avgNetPct))}</small>
           </div>}
           <div className="strategy-card-actions">
-            <button className="run-button" disabled={busy === `bt-${instance.id}`} onClick={() => runBacktest(instance)}><Play size={13} fill="currentColor" />{busy === `bt-${instance.id}` ? "실행 중…" : "백테스트"}</button>
-            <button className="trade-button" disabled={busy === `tr-${instance.id}`} onClick={() => planTrade(instance, false)}><Zap size={13} />{busy === `tr-${instance.id}` ? "계산 중…" : "매매"}</button>
+            <button className="run-button" disabled={busy === `bt-${card.key}`} onClick={() => runBacktest(card)}><Play size={13} fill="currentColor" />{busy === `bt-${card.key}` ? "실행 중…" : "백테스트"}</button>
+            <button className="trade-button" disabled={busy === `tr-${card.key}`} onClick={() => planTrade(card, false)}><Zap size={13} />{busy === `tr-${card.key}` ? "계산 중…" : "매매"}</button>
           </div>
-          {instance.reports.length > 0 && <details className="strategy-card-reports">
-            <summary><FileText size={12} />기록 {instance.reports.length}건</summary>
-            <ul>{instance.reports.map((report) => <li key={report.id}>
+          {card.reports.length > 0 && <details className="strategy-card-reports">
+            <summary><FileText size={12} />기록 {card.reports.length}건</summary>
+            <ul>{card.reports.map((report) => <li key={report.id}>
               <button onClick={() => openReport(report.id)}><em className={report.kind}>{report.kind === "backtest" ? "BT" : "TR"}</em><span>{report.title}</span><small>{when(report.createdAt)}</small></button>
               <a href={`/api/trade-strategies/reports?id=${encodeURIComponent(report.id)}&download=1`} download={report.filename} aria-label="마크다운 내려받기"><Download size={12} /></a>
             </li>)}</ul>
@@ -408,7 +423,7 @@ export function StrategyWorkspace() {
             : <>
               <span>{tradeConfirming ? "확인을 누르면 위 주문이 그대로 실행됩니다." : `주문 ${trade.orders.length}건 · 아직 아무것도 전송하지 않았습니다.`}</span>
               {tradeConfirming
-                ? <><button className="ghost" onClick={() => setTradeConfirming(false)}>취소</button><button className="danger" disabled={busy === `tr-${trade.instanceId}`} onClick={() => { const instance = instances.find((item) => item.id === trade.instanceId); if (instance) void planTrade(instance, true); }}>{busy === `tr-${trade.instanceId}` ? "전송 중…" : `${trade.orders.length}건 실행`}</button></>
+                ? <><button className="ghost" onClick={() => setTradeConfirming(false)}>취소</button><button className="danger" disabled={busy === `tr-${trade.strategyKey}`} onClick={() => { const card = cards.find((item) => item.key === trade.strategyKey); if (card) void planTrade(card, true); }}>{busy === `tr-${trade.strategyKey}` ? "전송 중…" : `${trade.orders.length}건 실행`}</button></>
                 : <button className="trade-button" disabled={!trade.orders.length} onClick={() => setTradeConfirming(true)}><Zap size={13} />이 주문 실행</button>}
             </>}
         </footer>

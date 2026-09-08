@@ -2,19 +2,25 @@ import { researchOwnerCookie, researchOwnerFrom } from "@/lib/research-owner";
 import { tradeStrategyById } from "@/lib/trade-strategies";
 import { backtestRecent } from "@/lib/trade-strategy-runner";
 import { backtestFilename, renderBacktestMarkdown } from "@/lib/trade-strategy-report";
-import { getInstance, saveReport, updateInstance } from "@/lib/trade-strategy-store";
+import { ensureInstance, saveReport, updateInstance } from "@/lib/trade-strategy-store";
 
 const DEFAULT_SESSIONS = 60;
 
 export async function POST(request: Request) {
   const ownerId = researchOwnerFrom(request);
-  const payload = await request.json().catch(() => ({})) as { id?: string; sessions?: number };
-  if (!payload.id) return Response.json({ error: "id가 필요합니다." }, { status: 400 });
+  const payload = await request.json().catch(() => ({})) as { strategyKey?: string; capitalUsd?: number; sessions?: number };
+  const strategy = tradeStrategyById(String(payload.strategyKey ?? ""));
+  if (!strategy) return Response.json({ error: "등록되지 않은 전략입니다." }, { status: 400 });
 
-  const instance = await getInstance(ownerId, payload.id).catch(() => null);
-  if (!instance) return Response.json({ error: "전략을 찾지 못했습니다." }, { status: 404 });
-  const strategy = tradeStrategyById(instance.strategyKey);
-  if (!strategy) return Response.json({ error: `코드에 없는 전략입니다: ${instance.strategyKey}` }, { status: 400 });
+  // The settings row is created here rather than being a precondition, so the
+  // first backtest on a fresh deployment works without any setup step.
+  const capitalUsd = Number(payload.capitalUsd);
+  const instance = await ensureInstance(ownerId, {
+    strategyKey: strategy.id, name: strategy.name,
+    capitalUsd: Number.isFinite(capitalUsd) && capitalUsd >= 100 ? capitalUsd : 10_000,
+    gateway: "dry_run",
+  }).catch(() => null);
+  if (!instance) return Response.json({ error: "전략 저장소에 연결하지 못했습니다." }, { status: 503 });
 
   const requested = Number(payload.sessions);
   const sessions = Number.isFinite(requested) ? Math.min(500, Math.max(10, Math.round(requested))) : DEFAULT_SESSIONS;

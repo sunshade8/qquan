@@ -209,9 +209,34 @@ export function tossOrderMode(): TossOrderMode {
   return setting("TOSS_ORDER_MODE") === "market" ? "market" : "loc";
 }
 
+/**
+ * The public IP this deployment calls Toss from.
+ *
+ * Toss enforces an allowed-IP list per app, and a Cloudflare Worker's egress
+ * address is not the one the developer registered from their laptop — which is
+ * why the same keys can work locally and be rejected in production. Reporting
+ * the address turns "주문이 안 됩니다" into a value that can be pasted into the
+ * Toss console.
+ */
+async function egressIp(): Promise<string | null> {
+  try {
+    const response = await fetch("https://www.cloudflare.com/cdn-cgi/trace", { signal: AbortSignal.timeout(4_000) });
+    if (!response.ok) return null;
+    return (await response.text()).match(/^ip=(.+)$/m)?.[1]?.trim() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export type TossBlockCause = "disabled" | "no_credentials" | "ip_allowlist" | "auth" | "permission" | "no_account" | "unknown";
+
 export type TossTradingStatus = {
   ready: boolean;
   reason: string | null;
+  /** Which failure this is, so the UI can give the matching instruction. */
+  cause: TossBlockCause | null;
+  /** Populated only when the cause is something the egress address explains. */
+  egressIp: string | null;
   account: TossAccount | null;
   buyingPowerUsd: number | null;
   usCommissionRate: number | null;
@@ -219,27 +244,43 @@ export type TossTradingStatus = {
   orderMode: TossOrderMode;
 };
 
-/** Everything the UI needs to say whether a real order can be placed right now. */
+/**
+ * Everything the UI needs to say whether a real order can be placed right now,
+ * and when it cannot, which of the four ordinary causes it is. A generic
+ * "주문이 안 됩니다" is what made this look broken when it was configuration.
+ */
 export async function tossTradingStatus(): Promise<TossTradingStatus> {
-  const base = { account: null, buyingPowerUsd: null, usCommissionRate: null, usCommissionEndDate: null, orderMode: tossOrderMode() };
-  if (setting("TOSS_TRADING_DISABLED") === "true") return { ...base, ready: false, reason: "TOSS_TRADING_DISABLED=true 로 실주문이 잠겨 있습니다." };
-  if (!setting("TOSS_CLIENT_ID") || !setting("TOSS_CLIENT_SECRET")) return { ...base, ready: false, reason: "TOSS_CLIENT_ID / TOSS_CLIENT_SECRET 가 없습니다." };
+  const base = { cause: null as TossBlockCause | null, egressIp: null as string | null, account: null, buyingPowerUsd: null, usCommissionRate: null, usCommissionEndDate: null, orderMode: tossOrderMode() };
+  if (setting("TOSS_TRADING_DISABLED") === "true") {
+    return { ...base, ready: false, cause: "disabled", reason: "TOSS_TRADING_DISABLED=true 로 실주문이 잠겨 있습니다." };
+  }
+  if (!setting("TOSS_CLIENT_ID") || !setting("TOSS_CLIENT_SECRET")) {
+    return { ...base, ready: false, cause: "no_credentials", reason: "이 배포 환경에 TOSS_CLIENT_ID / TOSS_CLIENT_SECRET 가 없습니다. .dev.vars 는 로컬 전용이라 배포에는 따로 넣어야 합니다." };
+  }
   try {
     const account = await tossPrimaryAccount();
-    if (!account) return { ...base, ready: false, reason: "주문 가능한 계좌를 찾지 못했습니다." };
+    if (!account) return { ...base, ready: false, cause: "no_account", reason: "주문 가능한 BROKERAGE 계좌를 찾지 못했습니다." };
     const [buyingPowerUsd, commissions] = await Promise.all([
       tossBuyingPower(account.accountSeq, "USD").catch(() => null),
       tossCommissions(account.accountSeq).catch(() => [] as TossCommission[]),
     ]);
     const us = commissions.find((row) => row.marketCountry === "US");
     return {
-      ready: true, reason: null, account, buyingPowerUsd,
+      ready: true, reason: null, cause: null, egressIp: null, account, buyingPowerUsd,
       usCommissionRate: us ? Number(us.commissionRate) : null,
       usCommissionEndDate: us?.endDate ?? null,
       orderMode: tossOrderMode(),
     };
   } catch (error) {
-    return { ...base, ready: false, reason: error instanceof Error ? error.message : "토스 계좌 상태를 확인하지 못했습니다." };
+    const code = error instanceof TossOrderError ? error.code : "";
+    const status = error instanceof TossOrderError ? error.status : 0;
+    const blocked = code === "edge-blocked" || code === "forbidden" || status === 403;
+    const cause: TossBlockCause = blocked ? "ip_allowlist" : status === 401 || code.includes("token") || code === "invalid_client" ? "auth" : code === "forbidden" ? "permission" : "unknown";
+    return {
+      ...base, ready: false, cause,
+      egressIp: blocked ? await egressIp() : null,
+      reason: error instanceof Error ? error.message : "토스 계좌 상태를 확인하지 못했습니다.",
+    };
   }
 }
 

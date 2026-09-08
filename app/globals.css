@@ -1354,3 +1354,13 @@ em.verdict.inconclusive { color: #b56b00; background: rgba(216,135,0,.12); }
 .strategy-account strong.warn { color: #d88700; }
 .strategy-account i { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
 .strategy-source { margin-left: 6px; font-size: 9.5px; font-weight: 500; color: var(--tertiary); }
+
+.strategy-board-note { font-size: 10.5px; color: var(--tertiary); }
+.strategy-card-rules { margin: 0; padding-left: 15px; display: grid; gap: 2px; }
+.strategy-card-rules li { font-size: 10.5px; line-height: 1.5; color: var(--tertiary); }
+.strategy-card-settings { display: flex; flex-wrap: wrap; gap: 8px; }
+.strategy-card-settings label { display: grid; gap: 3px; font-size: 9.5px; color: var(--tertiary); }
+.strategy-card-settings input, .strategy-card-settings select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel-alt); font-size: 11.5px; }
+.strategy-card-settings input { width: 108px; }
+.strategy-egress code { padding: 2px 6px; border-radius: 5px; background: rgba(0,0,0,.08); font-size: 11px; font-weight: 600; }
+.strategy-raw { opacity: .72; font-size: 10px !important; }
