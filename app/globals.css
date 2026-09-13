@@ -1364,3 +1364,50 @@ em.verdict.inconclusive { color: #b56b00; background: rgba(216,135,0,.12); }
 .strategy-card-settings input { width: 108px; }
 .strategy-egress code { padding: 2px 6px; border-radius: 5px; background: rgba(0,0,0,.08); font-size: 11px; font-weight: 600; }
 .strategy-raw { opacity: .72; font-size: 10px !important; }
+
+/* ------------------------------------------------------------ 슬롯 릴레이 */
+
+.relay-intro { display: grid; gap: 8px; padding: 13px 15px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.relay-intro p { margin: 0; font-size: 11.5px; line-height: 1.7; color: var(--secondary); }
+.relay-intro strong { color: var(--text); }
+.relay-intro em { font-style: normal; text-decoration: underline; text-underline-offset: 2px; }
+
+.relay-timeline { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.relay-timeline li { display: grid; grid-template-columns: 122px minmax(0, 1fr); gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.relay-timeline li.empty { background: color-mix(in srgb, var(--panel) 60%, transparent); border-style: dashed; }
+.relay-clock { display: grid; gap: 1px; align-content: start; padding-right: 12px; border-right: 1px solid var(--line); }
+.relay-clock strong { font-size: 13px; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.relay-clock small { font-size: 8.5px; font-weight: 700; letter-spacing: .08em; color: var(--blue); }
+.relay-clock em { margin-top: 3px; font-style: normal; font-size: 9.5px; color: var(--tertiary); font-variant-numeric: tabular-nums; }
+.relay-body { display: grid; gap: 5px; min-width: 0; }
+.relay-body > header { display: flex; align-items: center; gap: 7px; }
+.relay-body > header b { font-size: 13px; }
+.relay-tag { font-size: 8.5px; font-weight: 700; padding: 2px 6px; border-radius: 5px; background: var(--panel-alt); color: var(--tertiary); }
+.relay-tag.on { background: color-mix(in srgb, var(--green) 14%, transparent); color: var(--green); }
+.relay-rationale { margin: 0; font-size: 11px; line-height: 1.6; color: var(--secondary); }
+.relay-vacant { margin: 2px 0 0; font-size: 10.5px; color: var(--tertiary); }
+.relay-strategy { margin-top: 3px; padding: 8px 10px; border-radius: 9px; background: var(--panel-alt); }
+.relay-strategy strong { font-size: 12px; }
+.relay-strategy p { margin: 2px 0 0; font-size: 11px; color: var(--secondary); line-height: 1.55; }
+.relay-strategy small { display: block; margin-top: 4px; font-size: 9.5px; color: var(--tertiary); }
+
+.relay-liquidity, .relay-next { padding: 13px 15px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.relay-liquidity > header, .relay-next > header { display: grid; gap: 1px; margin-bottom: 8px; }
+.relay-liquidity > header span, .relay-next > header span { color: var(--blue); font-size: 8px; font-weight: 760; letter-spacing: .09em; }
+.relay-liquidity > header strong, .relay-next > header strong { font-size: 13px; }
+.relay-next ol { margin: 0; padding-left: 17px; display: grid; gap: 5px; }
+.relay-next li { font-size: 11px; line-height: 1.65; color: var(--secondary); }
+.relay-next code, .relay-intro code { padding: 1px 4px; border-radius: 4px; background: var(--panel-alt); font-size: 10.5px; }
+
+.relay-targets, .relay-sessions { padding: 13px 15px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.relay-targets > header, .relay-sessions > header { display: grid; gap: 1px; margin-bottom: 8px; }
+.relay-targets > header span, .relay-sessions > header span { color: var(--blue); font-size: 8px; font-weight: 760; letter-spacing: .09em; }
+.relay-targets > header strong, .relay-sessions > header strong { font-size: 13px; }
+.relay-sessions ul { margin: 0; padding-left: 17px; display: grid; gap: 5px; }
+.relay-sessions li { font-size: 11px; line-height: 1.65; color: var(--secondary); }
+.relay-session, .relay-depth { font-size: 8.5px; font-weight: 700; padding: 2px 6px; border-radius: 5px; }
+.relay-session.premarket { background: color-mix(in srgb, #7a5af8 15%, transparent); color: #6845e0; }
+.relay-session.regular { background: var(--blue-soft); color: var(--blue); }
+.relay-session.aftermarket { background: color-mix(in srgb, #d88700 16%, transparent); color: #a86a00; }
+.relay-depth { background: var(--panel-alt); color: var(--tertiary); }
+.relay-depth.low { color: var(--red); background: color-mix(in srgb, var(--red) 10%, transparent); }

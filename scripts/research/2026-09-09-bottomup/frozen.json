@@ -1,0 +1,19 @@
+{
+  "note": "Frozen using training and inner validation only; no holdout return inspection in train mode",
+  "selected": [
+    {
+      "family": "continuation",
+      "window": "afternoon",
+      "threshold": 0.3,
+      "rv": 1.3,
+      "id": "continuation_afternoon_t0.3_rv1.3"
+    },
+    {
+      "family": "dip_rebound",
+      "window": "afternoon",
+      "threshold": 0.3,
+      "rv": 0.8,
+      "id": "dip_rebound_afternoon_t0.3_rv0.8"
+    }
+  ]
+}

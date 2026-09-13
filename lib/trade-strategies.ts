@@ -250,7 +250,21 @@ export const h2Reversal: TradeStrategy = {
   },
 };
 
-export const TRADE_STRATEGIES: TradeStrategy[] = [h2Reversal];
+/**
+ * Strategies on the board.
+ *
+ * Empty on purpose. `h2Reversal` above is retired: it is a five-session swing
+ * rule, and the account's goal is stated per day, so it cannot answer the
+ * question being asked no matter how its parameters are set — and sizing it at
+ * one twelfth of the balance divided its edge by twelve on top of that. It stays
+ * in the file as a worked reference for the daily-bar engine and its tests, not
+ * as something the board offers.
+ *
+ * Intraday rules live in the relay (`lib/relay-engine.ts`) and are registered as
+ * `SlotStrategy`, not here. Nothing goes back on the board until it has cleared
+ * an account-level backtest.
+ */
+export const TRADE_STRATEGIES: TradeStrategy[] = [];
 
 export function tradeStrategyById(id: string) {
   return TRADE_STRATEGIES.find((strategy) => strategy.id === id) ?? null;

@@ -1,0 +1,1490 @@
+{
+  "audit": {
+    "NVDA": {
+      "rawRowsInFile": 95645,
+      "fullSessions": 366,
+      "incompleteSessionsExcluded": 5,
+      "invalidSessionsExcluded": 0,
+      "first": "2024-09-09",
+      "last": "2026-03-03"
+    },
+    "AMD": {
+      "rawRowsInFile": 93931,
+      "fullSessions": 366,
+      "incompleteSessionsExcluded": 5,
+      "invalidSessionsExcluded": 0,
+      "first": "2024-09-09",
+      "last": "2026-03-03"
+    },
+    "TSLA": {
+      "rawRowsInFile": 95627,
+      "fullSessions": 366,
+      "incompleteSessionsExcluded": 5,
+      "invalidSessionsExcluded": 0,
+      "first": "2024-09-09",
+      "last": "2026-03-03"
+    },
+    "PLTR": {
+      "rawRowsInFile": 95135,
+      "fullSessions": 366,
+      "incompleteSessionsExcluded": 5,
+      "invalidSessionsExcluded": 0,
+      "first": "2024-09-09",
+      "last": "2026-03-03"
+    },
+    "COIN": {
+      "rawRowsInFile": 89284,
+      "fullSessions": 366,
+      "incompleteSessionsExcluded": 5,
+      "invalidSessionsExcluded": 0,
+      "first": "2024-09-09",
+      "last": "2026-03-03"
+    },
+    "QQQ": {
+      "rawRowsInFile": 95333,
+      "fullSessions": 366,
+      "incompleteSessionsExcluded": 5,
+      "invalidSessionsExcluded": 0,
+      "first": "2024-09-09",
+      "last": "2026-03-03"
+    }
+  },
+  "grid": [
+    {
+      "config": {
+        "family": "continuation",
+        "window": "morning",
+        "threshold": 0.3,
+        "rv": 0.8,
+        "id": "continuation_morning_t0.3_rv0.8"
+      },
+      "eligible": true,
+      "development": {
+        "trades": 314,
+        "signalDays": 137,
+        "sessionDays": 222,
+        "noSignalDays": 85,
+        "meanGrossPct": 0.04422475023649667,
+        "meanNetPct": -0.3850424916195356,
+        "meanStressNetPct": -0.45474893929085397,
+        "grossWinRatePct": 42.99363057324841,
+        "netWinRatePct": 30.89171974522293,
+        "medianNetPct": -0.6466558890647012,
+        "meanDateClusterNetPct": -0.4308716455918001,
+        "symbolCounts": {
+          "NVDA": 62,
+          "AMD": 58,
+          "TSLA": 67,
+          "PLTR": 67,
+          "COIN": 60
+        },
+        "exitReasons": {
+          "stop": 134,
+          "stop_both_touched": 1,
+          "target": 23,
+          "time": 156
+        }
+      },
+      "innerValidation": {
+        "trades": 155,
+        "signalDays": 73,
+        "sessionDays": 124,
+        "noSignalDays": 51,
+        "meanGrossPct": 0.11821250027394088,
+        "meanNetPct": -0.31137220635798474,
+        "meanStressNetPct": -0.3811302054630742,
+        "grossWinRatePct": 46.45161290322581,
+        "netWinRatePct": 30.967741935483872,
+        "medianNetPct": -0.5036359892755526,
+        "meanDateClusterNetPct": -0.3654447404480023,
+        "symbolCounts": {
+          "NVDA": 28,
+          "AMD": 31,
+          "TSLA": 32,
+          "PLTR": 34,
+          "COIN": 30
+        },
+        "exitReasons": {
+          "stop": 55,
+          "target": 8,
+          "time": 92
+        }
+      },
+      "training": {
+        "trades": 469,
+        "signalDays": 210,
+        "sessionDays": 346,
+        "noSignalDays": 136,
+        "meanGrossPct": 0.06867699172008697,
+        "meanNetPct": -0.36069516919834077,
+        "meanStressNetPct": -0.4304186541238905,
+        "grossWinRatePct": 44.136460554371006,
+        "netWinRatePct": 30.916844349680172,
+        "medianNetPct": -0.5783992032148966,
+        "meanDateClusterNetPct": -0.40812800713705133,
+        "symbolCounts": {
+          "NVDA": 90,
+          "AMD": 89,
+          "TSLA": 99,
+          "PLTR": 101,
+          "COIN": 90
+        },
+        "exitReasons": {
+          "stop": 189,
+          "stop_both_touched": 1,
+          "target": 31,
+          "time": 248
+        }
+      }
+    },
+    {
+      "config": {
+        "family": "continuation",
+        "window": "morning",
+        "threshold": 0.3,
+        "rv": 1.3,
+        "id": "continuation_morning_t0.3_rv1.3"
+      },
+      "eligible": true,
+      "development": {
+        "trades": 115,
+        "signalDays": 75,
+        "sessionDays": 222,
+        "noSignalDays": 147,
+        "meanGrossPct": 0.06389870537146222,
+        "meanNetPct": -0.36545295299615044,
+        "meanStressNetPct": -0.4351731086204012,
+        "grossWinRatePct": 43.47826086956522,
+        "netWinRatePct": 32.17391304347826,
+        "medianNetPct": -0.9825888526966864,
+        "meanDateClusterNetPct": -0.4711692787216999,
+        "symbolCounts": {
+          "NVDA": 14,
+          "AMD": 26,
+          "TSLA": 21,
+          "PLTR": 20,
+          "COIN": 34
+        },
+        "exitReasons": {
+          "stop": 52,
+          "stop_both_touched": 1,
+          "target": 11,
+          "time": 51
+        }
+      },
+      "innerValidation": {
+        "trades": 48,
+        "signalDays": 33,
+        "sessionDays": 124,
+        "noSignalDays": 91,
+        "meanGrossPct": 0.09732030117776819,
+        "meanNetPct": -0.33217476173204585,
+        "meanStressNetPct": -0.40191820406500095,
+        "grossWinRatePct": 41.666666666666664,
+        "netWinRatePct": 27.083333333333332,
+        "medianNetPct": -0.8671819624957111,
+        "meanDateClusterNetPct": -0.3981641452955262,
+        "symbolCounts": {
+          "NVDA": 6,
+          "AMD": 13,
+          "TSLA": 6,
+          "PLTR": 12,
+          "COIN": 11
+        },
+        "exitReasons": {
+          "stop": 22,
+          "target": 4,
+          "time": 22
+        }
+      },
+      "training": {
+        "trades": 163,
+        "signalDays": 108,
+        "sessionDays": 346,
+        "noSignalDays": 238,
+        "meanGrossPct": 0.07374064769479158,
+        "meanNetPct": -0.3556532402312607,
+        "meanStressNetPct": -0.42538025329120355,
+        "grossWinRatePct": 42.94478527607362,
+        "netWinRatePct": 30.67484662576687,
+        "medianNetPct": -0.9333148474369835,
+        "meanDateClusterNetPct": -0.44886215461925794,
+        "symbolCounts": {
+          "NVDA": 20,
+          "AMD": 39,
+          "TSLA": 27,
+          "PLTR": 32,
+          "COIN": 45
+        },
+        "exitReasons": {
+          "stop": 74,
+          "stop_both_touched": 1,
+          "target": 15,
+          "time": 73
+        }
+      }
+    },
+    {
+      "config": {
+        "family": "continuation",
+        "window": "morning",
+        "threshold": 0.8,
+        "rv": 0.8,
+        "id": "continuation_morning_t0.8_rv0.8"
+      },
+      "eligible": true,
+      "development": {
+        "trades": 300,
+        "signalDays": 134,
+        "sessionDays": 222,
+        "noSignalDays": 88,
+        "meanGrossPct": 0.052947567342426116,
+        "meanNetPct": -0.3763571021577269,
+        "meanStressNetPct": -0.4460696275071487,
+        "grossWinRatePct": 43.333333333333336,
+        "netWinRatePct": 31.333333333333332,
+        "medianNetPct": -0.6830473318434394,
+        "meanDateClusterNetPct": -0.4181620158846187,
+        "symbolCounts": {
+          "NVDA": 57,
+          "AMD": 53,
+          "TSLA": 64,
+          "PLTR": 66,
+          "COIN": 60
+        },
+        "exitReasons": {
+          "stop": 132,
+          "stop_both_touched": 1,
+          "target": 23,
+          "time": 144
+        }
+      },
+      "innerValidation": {
+        "trades": 146,
+        "signalDays": 70,
+        "sessionDays": 124,
+        "noSignalDays": 54,
+        "meanGrossPct": 0.06743510099143364,
+        "meanNetPct": -0.36193173125350914,
+        "meanStressNetPct": -0.4316543508838232,
+        "grossWinRatePct": 43.83561643835616,
+        "netWinRatePct": 28.767123287671232,
+        "medianNetPct": -0.5639020986171805,
+        "meanDateClusterNetPct": -0.44161982722523435,
+        "symbolCounts": {
+          "NVDA": 23,
+          "AMD": 31,
+          "TSLA": 31,
+          "PLTR": 32,
+          "COIN": 29
+        },
+        "exitReasons": {
+          "stop": 57,
+          "target": 8,
+          "time": 81
+        }
+      },
+      "training": {
+        "trades": 446,
+        "signalDays": 204,
+        "sessionDays": 346,
+        "noSignalDays": 142,
+        "meanGrossPct": 0.057690123200621404,
+        "meanNetPct": -0.3716348955388574,
+        "meanStressNetPct": -0.44135072529413183,
+        "grossWinRatePct": 43.497757847533634,
+        "netWinRatePct": 30.493273542600896,
+        "medianNetPct": -0.6189022988736026,
+        "meanDateClusterNetPct": -0.42621126487404565,
+        "symbolCounts": {
+          "NVDA": 80,
+          "AMD": 84,
+          "TSLA": 95,
+          "PLTR": 98,
+          "COIN": 89
+        },
+        "exitReasons": {
+          "stop": 189,
+          "stop_both_touched": 1,
+          "target": 31,
+          "time": 225
+        }
+      }
+    },
+    {
+      "config": {
+        "family": "continuation",
+        "window": "morning",
+        "threshold": 0.8,
+        "rv": 1.3,
+        "id": "continuation_morning_t0.8_rv1.3"
+      },
+      "eligible": true,
+      "development": {
+        "trades": 112,
+        "signalDays": 73,
+        "sessionDays": 222,
+        "noSignalDays": 149,
+        "meanGrossPct": 0.06609659020811057,
+        "meanNetPct": -0.3632644987884476,
+        "meanStressNetPct": -0.43298618580288833,
+        "grossWinRatePct": 42.857142857142854,
+        "netWinRatePct": 32.142857142857146,
+        "medianNetPct": -1.011428157592409,
+        "meanDateClusterNetPct": -0.47656710091257043,
+        "symbolCounts": {
+          "NVDA": 13,
+          "AMD": 24,
+          "TSLA": 21,
+          "PLTR": 20,
+          "COIN": 34
+        },
+        "exitReasons": {
+          "stop": 51,
+          "stop_both_touched": 1,
+          "target": 11,
+          "time": 49
+        }
+      },
+      "innerValidation": {
+        "trades": 47,
+        "signalDays": 32,
+        "sessionDays": 124,
+        "noSignalDays": 92,
+        "meanGrossPct": 0.05316154441431732,
+        "meanNetPct": -0.37614404321327033,
+        "meanStressNetPct": -0.4458567176525743,
+        "grossWinRatePct": 38.297872340425535,
+        "netWinRatePct": 25.53191489361702,
+        "medianNetPct": -1.1288099736854074,
+        "meanDateClusterNetPct": -0.4648061957074334,
+        "symbolCounts": {
+          "NVDA": 6,
+          "AMD": 13,
+          "TSLA": 6,
+          "PLTR": 12,
+          "COIN": 10
+        },
+        "exitReasons": {
+          "stop": 23,
+          "target": 4,
+          "time": 20
+        }
+      },
+      "training": {
+        "trades": 159,
+        "signalDays": 105,
+        "sessionDays": 346,
+        "noSignalDays": 241,
+        "meanGrossPct": 0.062273023212461,
+        "meanNetPct": -0.3670716597190556,
+        "meanStressNetPct": -0.43679068263895904,
+        "grossWinRatePct": 41.509433962264154,
+        "netWinRatePct": 30.18867924528302,
+        "medianNetPct": -1.0402674624881314,
+        "meanDateClusterNetPct": -0.4729828250405287,
+        "symbolCounts": {
+          "NVDA": 19,
+          "AMD": 37,
+          "TSLA": 27,
+          "PLTR": 32,
+          "COIN": 44
+        },
+        "exitReasons": {
+          "stop": 74,
+          "stop_both_touched": 1,
+          "target": 15,
+          "time": 69
+        }
+      }
+    },
+    {
+      "config": {
+        "family": "continuation",
+        "window": "afternoon",
+        "threshold": 0.3,
+        "rv": 0.8,
+        "id": "continuation_afternoon_t0.3_rv0.8"
+      },
+      "eligible": true,
+      "development": {
+        "trades": 240,
+        "signalDays": 112,
+        "sessionDays": 222,
+        "noSignalDays": 110,
+        "meanGrossPct": 0.13641410703665696,
+        "meanNetPct": -0.29324869859150665,
+        "meanStressNetPct": -0.36301937978146964,
+        "grossWinRatePct": 54.583333333333336,
+        "netWinRatePct": 30.833333333333332,
+        "medianNetPct": -0.3505101157086854,
+        "meanDateClusterNetPct": -0.33232293312648825,
+        "symbolCounts": {
+          "NVDA": 46,
+          "AMD": 38,
+          "TSLA": 51,
+          "PLTR": 59,
+          "COIN": 46
+        },
+        "exitReasons": {
+          "stop": 60,
+          "target": 7,
+          "time": 173
+        }
+      },
+      "innerValidation": {
+        "trades": 107,
+        "signalDays": 54,
+        "sessionDays": 124,
+        "noSignalDays": 70,
+        "meanGrossPct": 0.1013330297948585,
+        "meanNetPct": -0.32817925082992266,
+        "meanStressNetPct": -0.39792548905697417,
+        "grossWinRatePct": 55.14018691588785,
+        "netWinRatePct": 26.16822429906542,
+        "medianNetPct": -0.3842722241247487,
+        "meanDateClusterNetPct": -0.3571932351039302,
+        "symbolCounts": {
+          "NVDA": 14,
+          "AMD": 19,
+          "TSLA": 26,
+          "PLTR": 22,
+          "COIN": 26
+        },
+        "exitReasons": {
+          "stop": 20,
+          "target": 2,
+          "time": 85
+        }
+      },
+      "training": {
+        "trades": 347,
+        "signalDays": 166,
+        "sessionDays": 346,
+        "noSignalDays": 180,
+        "meanGrossPct": 0.1255965990687249,
+        "meanNetPct": -0.3040197910684822,
+        "meanStressNetPct": -0.37378293509120736,
+        "grossWinRatePct": 54.75504322766571,
+        "netWinRatePct": 29.394812680115272,
+        "medianNetPct": -0.36492344845892033,
+        "meanDateClusterNetPct": -0.34041327232396934,
+        "symbolCounts": {
+          "NVDA": 60,
+          "AMD": 57,
+          "TSLA": 77,
+          "PLTR": 81,
+          "COIN": 72
+        },
+        "exitReasons": {
+          "stop": 80,
+          "target": 9,
+          "time": 258
+        }
+      }
+    },
+    {
+      "config": {
+        "family": "continuation",
+        "window": "afternoon",
+        "threshold": 0.3,
+        "rv": 1.3,
+        "id": "continuation_afternoon_t0.3_rv1.3"
+      },
+      "eligible": true,
+      "development": {
+        "trades": 93,
+        "signalDays": 63,
+        "sessionDays": 222,
+        "noSignalDays": 159,
+        "meanGrossPct": 0.2297385425411801,
+        "meanNetPct": -0.2003246972262539,
+        "meanStressNetPct": -0.27016040280814124,
+        "grossWinRatePct": 54.83870967741935,
+        "netWinRatePct": 37.634408602150536,
+        "medianNetPct": -0.33777764954704415,
+        "meanDateClusterNetPct": -0.24510028232801365,
+        "symbolCounts": {
+          "NVDA": 12,
+          "AMD": 20,
+          "TSLA": 16,
+          "PLTR": 18,
+          "COIN": 27
+        },
+        "exitReasons": {
+          "stop": 22,
+          "target": 3,
+          "time": 68
+        }
+      },
+      "innerValidation": {
+        "trades": 30,
+        "signalDays": 23,
+        "sessionDays": 124,
+        "noSignalDays": 101,
+        "meanGrossPct": 0.19179228603454926,
+        "meanNetPct": -0.23810813489041682,
+        "meanStressNetPct": -0.30791740117758165,
+        "grossWinRatePct": 56.666666666666664,
+        "netWinRatePct": 36.666666666666664,
+        "medianNetPct": -0.2858138642384156,
+        "meanDateClusterNetPct": -0.2571276538644175,
+        "symbolCounts": {
+          "NVDA": 3,
+          "AMD": 6,
+          "TSLA": 5,
+          "PLTR": 8,
+          "COIN": 8
+        },
+        "exitReasons": {
+          "stop": 4,
+          "time": 26
+        }
+      },
+      "training": {
+        "trades": 123,
+        "signalDays": 86,
+        "sessionDays": 346,
+        "noSignalDays": 260,
+        "meanGrossPct": 0.22048335802736768,
+        "meanNetPct": -0.20954016982726925,
+        "meanStressNetPct": -0.2793694268006877,
+        "grossWinRatePct": 55.28455284552845,
+        "netWinRatePct": 37.39837398373984,
+        "medianNetPct": -0.33070414930923553,
+        "meanDateClusterNetPct": -0.24831690494821468,
+        "symbolCounts": {
+          "NVDA": 15,
+          "AMD": 26,
+          "TSLA": 21,
+          "PLTR": 26,
+          "COIN": 35
+        },
+        "exitReasons": {
+          "stop": 26,
+          "target": 3,
+          "time": 94
+        }
+      }
+    },
+    {
+      "config": {
+        "family": "continuation",
+        "window": "afternoon",
+        "threshold": 0.8,
+        "rv": 0.8,
+        "id": "continuation_afternoon_t0.8_rv0.8"
+      },
+      "eligible": true,
+      "development": {
+        "trades": 233,
+        "signalDays": 111,
+        "sessionDays": 222,
+        "noSignalDays": 111,
+        "meanGrossPct": 0.12320745386238778,
+        "meanNetPct": -0.30639868499069284,
+        "meanStressNetPct": -0.3761601643613535,
+        "grossWinRatePct": 53.21888412017167,
+        "netWinRatePct": 30.901287553648068,
+        "medianNetPct": -0.3892962625176688,
+        "meanDateClusterNetPct": -0.3698641485423901,
+        "symbolCounts": {
+          "NVDA": 42,
+          "AMD": 37,
+          "TSLA": 51,
+          "PLTR": 57,
+          "COIN": 46
+        },
+        "exitReasons": {
+          "stop": 63,
+          "target": 7,
+          "time": 163
+        }
+      },
+      "innerValidation": {
+        "trades": 102,
+        "signalDays": 51,
+        "sessionDays": 124,
+        "noSignalDays": 73,
+        "meanGrossPct": 0.12097057022918672,
+        "meanNetPct": -0.30862597065989383,
+        "meanStressNetPct": -0.378385891467705,
+        "grossWinRatePct": 55.88235294117647,
+        "netWinRatePct": 27.45098039215686,
+        "medianNetPct": -0.37763148389739487,
+        "meanDateClusterNetPct": -0.32588595253810515,
+        "symbolCounts": {
+          "NVDA": 11,
+          "AMD": 19,
+          "TSLA": 26,
+          "PLTR": 22,
+          "COIN": 24
+        },
+        "exitReasons": {
+          "stop": 18,
+          "target": 2,
+          "time": 82
+        }
+      },
+      "training": {
+        "trades": 335,
+        "signalDays": 162,
+        "sessionDays": 346,
+        "noSignalDays": 184,
+        "meanGrossPct": 0.12252637287556238,
+        "meanNetPct": -0.30707684361236,
+        "meanStressNetPct": -0.3768378484355262,
+        "grossWinRatePct": 54.02985074626866,
+        "netWinRatePct": 29.850746268656717,
+        "medianNetPct": -0.3842722241247487,
+        "meanDateClusterNetPct": -0.3560191609114115,
+        "symbolCounts": {
+          "NVDA": 53,
+          "AMD": 56,
+          "TSLA": 77,
+          "PLTR": 79,
+          "COIN": 70
+        },
+        "exitReasons": {
+          "stop": 81,
+          "target": 9,
+          "time": 245
+        }
+      }
+    },
+    {
+      "config": {
+        "family": "continuation",
+        "window": "afternoon",
+        "threshold": 0.8,
+        "rv": 1.3,
+        "id": "continuation_afternoon_t0.8_rv1.3"
+      },
+      "eligible": true,
+      "development": {
+        "trades": 92,
+        "signalDays": 62,
+        "sessionDays": 222,
+        "noSignalDays": 160,
+        "meanGrossPct": 0.22157298218607227,
+        "meanNetPct": -0.20845522100048353,
+        "meanStressNetPct": -0.27828523717644055,
+        "grossWinRatePct": 54.34782608695652,
+        "netWinRatePct": 38.04347826086956,
+        "medianNetPct": -0.35135054900298224,
+        "meanDateClusterNetPct": -0.25788711736560854,
+        "symbolCounts": {
+          "NVDA": 12,
+          "AMD": 19,
+          "TSLA": 16,
+          "PLTR": 18,
+          "COIN": 27
+        },
+        "exitReasons": {
+          "stop": 23,
+          "target": 3,
+          "time": 66
+        }
+      },
+      "innerValidation": {
+        "trades": 30,
+        "signalDays": 23,
+        "sessionDays": 124,
+        "noSignalDays": 101,
+        "meanGrossPct": 0.19179228603454926,
+        "meanNetPct": -0.23810813489041682,
+        "meanStressNetPct": -0.30791740117758165,
+        "grossWinRatePct": 56.666666666666664,
+        "netWinRatePct": 36.666666666666664,
+        "medianNetPct": -0.2858138642384156,
+        "meanDateClusterNetPct": -0.2571276538644175,
+        "symbolCounts": {
+          "NVDA": 3,
+          "AMD": 6,
+          "TSLA": 5,
+          "PLTR": 8,
+          "COIN": 8
+        },
+        "exitReasons": {
+          "stop": 4,
+          "time": 26
+        }
+      },
+      "training": {
+        "trades": 122,
+        "signalDays": 85,
+        "sessionDays": 346,
+        "noSignalDays": 261,
+        "meanGrossPct": 0.21424986018159942,
+        "meanNetPct": -0.21574692113735236,
+        "meanStressNetPct": -0.2855718348816392,
+        "grossWinRatePct": 54.91803278688525,
+        "netWinRatePct": 37.704918032786885,
+        "medianNetPct": -0.33424089942813984,
+        "meanDateClusterNetPct": -0.257681615477051,
+        "symbolCounts": {
+          "NVDA": 15,
+          "AMD": 25,
+          "TSLA": 21,
+          "PLTR": 26,
+          "COIN": 35
+        },
+        "exitReasons": {
+          "stop": 27,
+          "target": 3,
+          "time": 92
+        }
+      }
+    },
+    {
+      "config": {
+        "family": "dip_rebound",
+        "window": "morning",
+        "threshold": 0.3,
+        "rv": 0.8,
+        "id": "dip_rebound_morning_t0.3_rv0.8"
+      },
+      "eligible": true,
+      "development": {
+        "trades": 174,
+        "signalDays": 118,
+        "sessionDays": 222,
+        "noSignalDays": 104,
+        "meanGrossPct": -0.05501725341612033,
+        "meanNetPct": -0.48385867018039364,
+        "meanStressNetPct": -0.5534959703566754,
+        "grossWinRatePct": 40.229885057471265,
+        "netWinRatePct": 26.436781609195403,
+        "medianNetPct": -0.8393845465609284,
+        "meanDateClusterNetPct": -0.4655779459034442,
+        "symbolCounts": {
+          "NVDA": 14,
+          "AMD": 27,
+          "TSLA": 40,
+          "PLTR": 54,
+          "COIN": 39
+        },
+        "exitReasons": {
+          "stop": 79,
+          "target": 9,
+          "time": 86
+        }
+      },
+      "innerValidation": {
+        "trades": 77,
+        "signalDays": 54,
+        "sessionDays": 124,
+        "noSignalDays": 70,
+        "meanGrossPct": 0.01145132315932641,
+        "meanNetPct": -0.41767529530057595,
+        "meanStressNetPct": -0.4873589078788622,
+        "grossWinRatePct": 41.55844155844156,
+        "netWinRatePct": 35.064935064935064,
+        "medianNetPct": -0.6913938544752307,
+        "meanDateClusterNetPct": -0.4547313866461578,
+        "symbolCounts": {
+          "NVDA": 7,
+          "AMD": 16,
+          "TSLA": 18,
+          "PLTR": 14,
+          "COIN": 22
+        },
+        "exitReasons": {
+          "stop": 31,
+          "target": 3,
+          "time": 43
+        }
+      },
+      "training": {
+        "trades": 251,
+        "signalDays": 172,
+        "sessionDays": 346,
+        "noSignalDays": 174,
+        "meanGrossPct": -0.034626494865086864,
+        "meanNetPct": -0.46355540378299936,
+        "meanStressNetPct": -0.5332069113495375,
+        "grossWinRatePct": 40.63745019920319,
+        "netWinRatePct": 29.083665338645417,
+        "medianNetPct": -0.8033094134772489,
+        "meanDateClusterNetPct": -0.46217263078778453,
+        "symbolCounts": {
+          "NVDA": 21,
+          "AMD": 43,
+          "TSLA": 58,
+          "PLTR": 68,
+          "COIN": 61
+        },
+        "exitReasons": {
+          "stop": 110,
+          "target": 12,
+          "time": 129
+        }
+      }
+    },
+    {
+      "config": {
+        "family": "dip_rebound",
+        "window": "morning",
+        "threshold": 0.3,
+        "rv": 1.3,
+        "id": "dip_rebound_morning_t0.3_rv1.3"
+      },
+      "eligible": false,
+      "development": {
+        "trades": 80,
+        "signalDays": 65,
+        "sessionDays": 222,
+        "noSignalDays": 157,
+        "meanGrossPct": -0.004597980765456422,
+        "meanNetPct": -0.4336557352759726,
+        "meanStressNetPct": -0.5033281654000294,
+        "grossWinRatePct": 41.25,
+        "netWinRatePct": 30.0,
+        "medianNetPct": -1.159965946365421,
+        "meanDateClusterNetPct": -0.38765426026383,
+        "symbolCounts": {
+          "NVDA": 3,
+          "AMD": 17,
+          "TSLA": 17,
+          "PLTR": 20,
+          "COIN": 23
+        },
+        "exitReasons": {
+          "stop": 40,
+          "target": 5,
+          "time": 35
+        }
+      },
+      "innerValidation": {
+        "trades": 29,
+        "signalDays": 26,
+        "sessionDays": 124,
+        "noSignalDays": 98,
+        "meanGrossPct": -0.13677941669519894,
+        "meanNetPct": -0.5652700104268901,
+        "meanStressNetPct": -0.6348503422977023,
+        "grossWinRatePct": 27.586206896551722,
+        "netWinRatePct": 24.137931034482758,
+        "medianNetPct": -1.2256448635433848,
+        "meanDateClusterNetPct": -0.5807424341951214,
+        "symbolCounts": {
+          "NVDA": 2,
+          "AMD": 9,
+          "TSLA": 5,
+          "PLTR": 4,
+          "COIN": 9
+        },
+        "exitReasons": {
+          "stop": 18,
+          "target": 2,
+          "time": 9
+        }
+      },
+      "training": {
+        "trades": 109,
+        "signalDays": 91,
+        "sessionDays": 346,
+        "noSignalDays": 255,
+        "meanGrossPct": -0.03976551876511269,
+        "meanNetPct": -0.46867237728860206,
+        "meanStressNetPct": -0.5383203042076672,
+        "grossWinRatePct": 37.61467889908257,
+        "netWinRatePct": 28.440366972477065,
+        "medianNetPct": -1.2256448635433737,
+        "meanDateClusterNetPct": -0.44282230995848465,
+        "symbolCounts": {
+          "NVDA": 5,
+          "AMD": 26,
+          "TSLA": 22,
+          "PLTR": 24,
+          "COIN": 32
+        },
+        "exitReasons": {
+          "stop": 58,
+          "target": 7,
+          "time": 44
+        }
+      }
+    },
+    {
+      "config": {
+        "family": "dip_rebound",
+        "window": "morning",
+        "threshold": 0.8,
+        "rv": 0.8,
+        "id": "dip_rebound_morning_t0.8_rv0.8"
+      },
+      "eligible": false,
+      "development": {
+        "trades": 82,
+        "signalDays": 70,
+        "sessionDays": 222,
+        "noSignalDays": 152,
+        "meanGrossPct": 0.06201567861055808,
+        "meanNetPct": -0.3673279001132168,
+        "meanStressNetPct": -0.4370467437266379,
+        "grossWinRatePct": 42.68292682926829,
+        "netWinRatePct": 32.926829268292686,
+        "medianNetPct": -0.8801566801049931,
+        "meanDateClusterNetPct": -0.36998539341748754,
+        "symbolCounts": {
+          "NVDA": 4,
+          "AMD": 8,
+          "TSLA": 18,
+          "PLTR": 28,
+          "COIN": 24
+        },
+        "exitReasons": {
+          "stop": 38,
+          "target": 6,
+          "time": 38
+        }
+      },
+      "innerValidation": {
+        "trades": 25,
+        "signalDays": 21,
+        "sessionDays": 124,
+        "noSignalDays": 103,
+        "meanGrossPct": 0.1271904631923788,
+        "meanNetPct": -0.3024327658568988,
+        "meanStressNetPct": -0.37219702041455305,
+        "grossWinRatePct": 44.0,
+        "netWinRatePct": 40.0,
+        "medianNetPct": -0.6793883889737229,
+        "meanDateClusterNetPct": -0.3405223002519298,
+        "symbolCounts": {
+          "NVDA": 1,
+          "AMD": 5,
+          "TSLA": 5,
+          "PLTR": 4,
+          "COIN": 10
+        },
+        "exitReasons": {
+          "stop": 10,
+          "target": 2,
+          "time": 13
+        }
+      },
+      "training": {
+        "trades": 107,
+        "signalDays": 91,
+        "sessionDays": 346,
+        "noSignalDays": 255,
+        "meanGrossPct": 0.07724343201752554,
+        "meanNetPct": -0.35216548556734817,
+        "meanStressNetPct": -0.4218949392144685,
+        "grossWinRatePct": 42.99065420560748,
+        "netWinRatePct": 34.57943925233645,
+        "medianNetPct": -0.7498063076489148,
+        "meanDateClusterNetPct": -0.36318621807158963,
+        "symbolCounts": {
+          "NVDA": 5,
+          "AMD": 13,
+          "TSLA": 23,
+          "PLTR": 32,
+          "COIN": 34
+        },
+        "exitReasons": {
+          "stop": 48,
+          "target": 8,
+          "time": 51
+        }
+      }
+    },
+    {
+      "config": {
+        "family": "dip_rebound",
+        "window": "morning",
+        "threshold": 0.8,
+        "rv": 1.3,
+        "id": "dip_rebound_morning_t0.8_rv1.3"
+      },
+      "eligible": false,
+      "development": {
+        "trades": 39,
+        "signalDays": 35,
+        "sessionDays": 222,
+        "noSignalDays": 187,
+        "meanGrossPct": 0.20689976295711826,
+        "meanNetPct": -0.22306548074963192,
+        "meanStressNetPct": -0.2928852732670921,
+        "grossWinRatePct": 46.15384615384615,
+        "netWinRatePct": 38.46153846153846,
+        "medianNetPct": -1.2256448635433737,
+        "meanDateClusterNetPct": -0.20285565318076793,
+        "symbolCounts": {
+          "NVDA": 2,
+          "AMD": 5,
+          "TSLA": 5,
+          "PLTR": 14,
+          "COIN": 13
+        },
+        "exitReasons": {
+          "stop": 20,
+          "target": 5,
+          "time": 14
+        }
+      },
+      "innerValidation": {
+        "trades": 10,
+        "signalDays": 9,
+        "sessionDays": 124,
+        "noSignalDays": 115,
+        "meanGrossPct": -0.15467619125656307,
+        "meanNetPct": -0.5830899939583545,
+        "meanStressNetPct": -0.6526578561380614,
+        "grossWinRatePct": 20.0,
+        "netWinRatePct": 20.0,
+        "medianNetPct": -1.2256448635433848,
+        "meanDateClusterNetPct": -0.6887099818117323,
+        "symbolCounts": {
+          "NVDA": 0,
+          "AMD": 4,
+          "TSLA": 1,
+          "PLTR": 2,
+          "COIN": 3
+        },
+        "exitReasons": {
+          "stop": 7,
+          "target": 1,
+          "time": 2
+        }
+      },
+      "training": {
+        "trades": 49,
+        "signalDays": 44,
+        "sessionDays": 346,
+        "noSignalDays": 302,
+        "meanGrossPct": 0.13310875189310167,
+        "meanNetPct": -0.2965398712003916,
+        "meanStressNetPct": -0.3663082493632083,
+        "grossWinRatePct": 40.816326530612244,
+        "netWinRatePct": 34.69387755102041,
+        "medianNetPct": -1.2256448635433737,
+        "meanDateClusterNetPct": -0.30223494767346515,
+        "symbolCounts": {
+          "NVDA": 2,
+          "AMD": 9,
+          "TSLA": 6,
+          "PLTR": 16,
+          "COIN": 16
+        },
+        "exitReasons": {
+          "stop": 27,
+          "target": 6,
+          "time": 16
+        }
+      }
+    },
+    {
+      "config": {
+        "family": "dip_rebound",
+        "window": "afternoon",
+        "threshold": 0.3,
+        "rv": 0.8,
+        "id": "dip_rebound_afternoon_t0.3_rv0.8"
+      },
+      "eligible": true,
+      "development": {
+        "trades": 92,
+        "signalDays": 78,
+        "sessionDays": 222,
+        "noSignalDays": 144,
+        "meanGrossPct": 0.09040915355380046,
+        "meanNetPct": -0.33905625517771415,
+        "meanStressNetPct": -0.40879488212475973,
+        "grossWinRatePct": 48.91304347826087,
+        "netWinRatePct": 29.347826086956523,
+        "medianNetPct": -0.5227028136225831,
+        "meanDateClusterNetPct": -0.3508348014652984,
+        "symbolCounts": {
+          "NVDA": 5,
+          "AMD": 10,
+          "TSLA": 25,
+          "PLTR": 20,
+          "COIN": 32
+        },
+        "exitReasons": {
+          "stop": 32,
+          "target": 3,
+          "time": 57
+        }
+      },
+      "innerValidation": {
+        "trades": 35,
+        "signalDays": 32,
+        "sessionDays": 124,
+        "noSignalDays": 92,
+        "meanGrossPct": 0.023878972408142296,
+        "meanNetPct": -0.405300970296405,
+        "meanStressNetPct": -0.4749932419180704,
+        "grossWinRatePct": 48.57142857142857,
+        "netWinRatePct": 25.714285714285715,
+        "medianNetPct": -0.4432559895597987,
+        "meanDateClusterNetPct": -0.4230764679377148,
+        "symbolCounts": {
+          "NVDA": 3,
+          "AMD": 10,
+          "TSLA": 5,
+          "PLTR": 7,
+          "COIN": 10
+        },
+        "exitReasons": {
+          "stop": 11,
+          "time": 24
+        }
+      },
+      "training": {
+        "trades": 127,
+        "signalDays": 110,
+        "sessionDays": 346,
+        "noSignalDays": 236,
+        "meanGrossPct": 0.07207406426168994,
+        "meanNetPct": -0.35731267273010925,
+        "meanStressNetPct": -0.42703852458748315,
+        "grossWinRatePct": 48.818897637795274,
+        "netWinRatePct": 28.346456692913385,
+        "medianNetPct": -0.4636087553082424,
+        "meanDateClusterNetPct": -0.37185055898454683,
+        "symbolCounts": {
+          "NVDA": 8,
+          "AMD": 20,
+          "TSLA": 30,
+          "PLTR": 27,
+          "COIN": 42
+        },
+        "exitReasons": {
+          "stop": 43,
+          "target": 3,
+          "time": 81
+        }
+      }
+    },
+    {
+      "config": {
+        "family": "dip_rebound",
+        "window": "afternoon",
+        "threshold": 0.3,
+        "rv": 1.3,
+        "id": "dip_rebound_afternoon_t0.3_rv1.3"
+      },
+      "eligible": false,
+      "development": {
+        "trades": 46,
+        "signalDays": 40,
+        "sessionDays": 222,
+        "noSignalDays": 182,
+        "meanGrossPct": 0.0856153276392423,
+        "meanNetPct": -0.34382951186467875,
+        "meanStressNetPct": -0.4135647986831354,
+        "grossWinRatePct": 47.82608695652174,
+        "netWinRatePct": 34.78260869565217,
+        "medianNetPct": -0.5710061219653451,
+        "meanDateClusterNetPct": -0.3095804716313162,
+        "symbolCounts": {
+          "NVDA": 2,
+          "AMD": 7,
+          "TSLA": 10,
+          "PLTR": 6,
+          "COIN": 21
+        },
+        "exitReasons": {
+          "stop": 19,
+          "target": 2,
+          "time": 25
+        }
+      },
+      "innerValidation": {
+        "trades": 17,
+        "signalDays": 17,
+        "sessionDays": 124,
+        "noSignalDays": 107,
+        "meanGrossPct": -0.008690336012637408,
+        "meanNetPct": -0.4377305311482491,
+        "meanStressNetPct": -0.5074001098978493,
+        "grossWinRatePct": 52.94117647058823,
+        "netWinRatePct": 23.529411764705884,
+        "medianNetPct": -0.39785967867824734,
+        "meanDateClusterNetPct": -0.4377305311482491,
+        "symbolCounts": {
+          "NVDA": 1,
+          "AMD": 7,
+          "TSLA": 2,
+          "PLTR": 3,
+          "COIN": 4
+        },
+        "exitReasons": {
+          "stop": 5,
+          "time": 12
+        }
+      },
+      "training": {
+        "trades": 63,
+        "signalDays": 57,
+        "sessionDays": 346,
+        "noSignalDays": 289,
+        "meanGrossPct": 0.060167767606195396,
+        "meanNetPct": -0.3691678821475469,
+        "meanStressNetPct": -0.43888543821726456,
+        "grossWinRatePct": 49.20634920634921,
+        "netWinRatePct": 31.746031746031747,
+        "medianNetPct": -0.4432559895597987,
+        "meanDateClusterNetPct": -0.34780066482057687,
+        "symbolCounts": {
+          "NVDA": 3,
+          "AMD": 14,
+          "TSLA": 12,
+          "PLTR": 9,
+          "COIN": 25
+        },
+        "exitReasons": {
+          "stop": 24,
+          "target": 2,
+          "time": 37
+        }
+      }
+    },
+    {
+      "config": {
+        "family": "dip_rebound",
+        "window": "afternoon",
+        "threshold": 0.8,
+        "rv": 0.8,
+        "id": "dip_rebound_afternoon_t0.8_rv0.8"
+      },
+      "eligible": false,
+      "development": {
+        "trades": 20,
+        "signalDays": 19,
+        "sessionDays": 222,
+        "noSignalDays": 203,
+        "meanGrossPct": -0.21198051092051196,
+        "meanNetPct": -0.6401484336896057,
+        "meanStressNetPct": -0.7096763687213936,
+        "grossWinRatePct": 35.0,
+        "netWinRatePct": 20.0,
+        "medianNetPct": -0.9591972381331415,
+        "meanDateClusterNetPct": -0.7128095014563965,
+        "symbolCounts": {
+          "NVDA": 2,
+          "AMD": 2,
+          "TSLA": 3,
+          "PLTR": 4,
+          "COIN": 9
+        },
+        "exitReasons": {
+          "stop": 10,
+          "time": 10
+        }
+      },
+      "innerValidation": {
+        "trades": 3,
+        "signalDays": 3,
+        "sessionDays": 124,
+        "noSignalDays": 121,
+        "meanGrossPct": -0.4302899960742179,
+        "meanNetPct": -0.8575212019983643,
+        "meanStressNetPct": -0.9268970285127373,
+        "grossWinRatePct": 33.333333333333336,
+        "netWinRatePct": 0.0,
+        "medianNetPct": -1.2256448635433848,
+        "meanDateClusterNetPct": -0.8575212019983643,
+        "symbolCounts": {
+          "NVDA": 0,
+          "AMD": 0,
+          "TSLA": 1,
+          "PLTR": 0,
+          "COIN": 2
+        },
+        "exitReasons": {
+          "stop": 2,
+          "time": 1
+        }
+      },
+      "training": {
+        "trades": 23,
+        "signalDays": 22,
+        "sessionDays": 346,
+        "noSignalDays": 324,
+        "meanGrossPct": -0.24045566115795186,
+        "meanNetPct": -0.668501403469009,
+        "meanStressNetPct": -0.738009498259395,
+        "grossWinRatePct": 34.78260869565217,
+        "netWinRatePct": 17.391304347826086,
+        "medianNetPct": -1.2256448635433848,
+        "meanDateClusterNetPct": -0.7325429151666648,
+        "symbolCounts": {
+          "NVDA": 2,
+          "AMD": 2,
+          "TSLA": 4,
+          "PLTR": 4,
+          "COIN": 11
+        },
+        "exitReasons": {
+          "stop": 12,
+          "time": 11
+        }
+      }
+    },
+    {
+      "config": {
+        "family": "dip_rebound",
+        "window": "afternoon",
+        "threshold": 0.8,
+        "rv": 1.3,
+        "id": "dip_rebound_afternoon_t0.8_rv1.3"
+      },
+      "eligible": false,
+      "development": {
+        "trades": 10,
+        "signalDays": 10,
+        "sessionDays": 222,
+        "noSignalDays": 212,
+        "meanGrossPct": -0.4047473894566622,
+        "meanNetPct": -0.832088192954481,
+        "meanStressNetPct": -0.9014818164419025,
+        "grossWinRatePct": 20.0,
+        "netWinRatePct": 20.0,
+        "medianNetPct": -1.2256448635433848,
+        "meanDateClusterNetPct": -0.832088192954481,
+        "symbolCounts": {
+          "NVDA": 1,
+          "AMD": 1,
+          "TSLA": 1,
+          "PLTR": 0,
+          "COIN": 7
+        },
+        "exitReasons": {
+          "stop": 7,
+          "time": 3
+        }
+      },
+      "innerValidation": {
+        "trades": 3,
+        "signalDays": 3,
+        "sessionDays": 124,
+        "noSignalDays": 121,
+        "meanGrossPct": -0.4302899960742179,
+        "meanNetPct": -0.8575212019983643,
+        "meanStressNetPct": -0.9268970285127373,
+        "grossWinRatePct": 33.333333333333336,
+        "netWinRatePct": 0.0,
+        "medianNetPct": -1.2256448635433848,
+        "meanDateClusterNetPct": -0.8575212019983643,
+        "symbolCounts": {
+          "NVDA": 0,
+          "AMD": 0,
+          "TSLA": 1,
+          "PLTR": 0,
+          "COIN": 2
+        },
+        "exitReasons": {
+          "stop": 2,
+          "time": 1
+        }
+      },
+      "training": {
+        "trades": 13,
+        "signalDays": 13,
+        "sessionDays": 346,
+        "noSignalDays": 333,
+        "meanGrossPct": -0.41064183713763663,
+        "meanNetPct": -0.8379573488876848,
+        "meanStressNetPct": -0.9073468653813259,
+        "grossWinRatePct": 23.076923076923077,
+        "netWinRatePct": 15.384615384615385,
+        "medianNetPct": -1.2256448635433848,
+        "meanDateClusterNetPct": -0.8379573488876848,
+        "symbolCounts": {
+          "NVDA": 1,
+          "AMD": 1,
+          "TSLA": 2,
+          "PLTR": 0,
+          "COIN": 9
+        },
+        "exitReasons": {
+          "stop": 9,
+          "time": 4
+        }
+      }
+    }
+  ],
+  "selected": [
+    {
+      "config": {
+        "family": "continuation",
+        "window": "afternoon",
+        "threshold": 0.3,
+        "rv": 1.3,
+        "id": "continuation_afternoon_t0.3_rv1.3"
+      },
+      "training": {
+        "trades": 123,
+        "signalDays": 86,
+        "sessionDays": 346,
+        "noSignalDays": 260,
+        "meanGrossPct": 0.22048335802736768,
+        "meanNetPct": -0.20954016982726925,
+        "meanStressNetPct": -0.2793694268006877,
+        "grossWinRatePct": 55.28455284552845,
+        "netWinRatePct": 37.39837398373984,
+        "medianNetPct": -0.33070414930923553,
+        "meanDateClusterNetPct": -0.24831690494821468,
+        "symbolCounts": {
+          "NVDA": 15,
+          "AMD": 26,
+          "TSLA": 21,
+          "PLTR": 26,
+          "COIN": 35
+        },
+        "exitReasons": {
+          "stop": 26,
+          "target": 3,
+          "time": 94
+        },
+        "dateClusterBootstrapMeanNet95Pct": [
+          -0.3843163938742036,
+          -0.10456756598852522
+        ]
+      }
+    },
+    {
+      "config": {
+        "family": "dip_rebound",
+        "window": "afternoon",
+        "threshold": 0.3,
+        "rv": 0.8,
+        "id": "dip_rebound_afternoon_t0.3_rv0.8"
+      },
+      "training": {
+        "trades": 127,
+        "signalDays": 110,
+        "sessionDays": 346,
+        "noSignalDays": 236,
+        "meanGrossPct": 0.07207406426168994,
+        "meanNetPct": -0.35731267273010925,
+        "meanStressNetPct": -0.42703852458748315,
+        "grossWinRatePct": 48.818897637795274,
+        "netWinRatePct": 28.346456692913385,
+        "medianNetPct": -0.4636087553082424,
+        "meanDateClusterNetPct": -0.37185055898454683,
+        "symbolCounts": {
+          "NVDA": 8,
+          "AMD": 20,
+          "TSLA": 30,
+          "PLTR": 27,
+          "COIN": 42
+        },
+        "exitReasons": {
+          "stop": 43,
+          "target": 3,
+          "time": 81
+        },
+        "dateClusterBootstrapMeanNet95Pct": [
+          -0.5209679726523834,
+          -0.20775175337563792
+        ]
+      }
+    }
+  ]
+}
