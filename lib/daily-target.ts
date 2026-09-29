@@ -339,6 +339,8 @@ function simulate(input: TargetMathInput, probability: number, netWinR: number, 
  * fee, it multiplies its weight against the edge — which is why "it beats
  * commission" is not the same test as "it is worth trading".
  */
+import { feePerSidePct, assumedSlippagePct } from "./broker-costs.ts";
+
 export type FeeModel = {
   /** Broker commission per side, percent of notional. */
   feePerSidePct: number;
@@ -364,8 +366,8 @@ export type FeeFloor = {
 
 export function feeFloor(model: Partial<FeeModel>, rewardRisk = 2): FeeFloor {
   const resolved: FeeModel = {
-    feePerSidePct: Math.max(0, Number(model.feePerSidePct ?? 0.1)),
-    slippagePct: Math.max(0, Number(model.slippagePct ?? 0.03)),
+    feePerSidePct: Math.max(0, Number(model.feePerSidePct ?? feePerSidePct())),
+    slippagePct: Math.max(0, Number(model.slippagePct ?? assumedSlippagePct())),
     stopDistancePct: Math.max(0.01, Number(model.stopDistancePct ?? 1)),
   };
   const roundTripCostPct = resolved.feePerSidePct * 2 + resolved.slippagePct;

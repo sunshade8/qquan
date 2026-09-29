@@ -22,6 +22,7 @@ const MAX_STEPS = 10;
 const MAX_HISTORY = 24;
 
 import { describeCosts } from "@/lib/broker-costs";
+import { tradingResearchPolicy } from "@/lib/trading-policy";
 
 const SYSTEM_PROMPT = `당신은 QQuant Lab의 JARVIS다. 사용자의 개인 퀀트 리서치 데스크를 운영하는 수석 포트폴리오 매니저이자 퀀트 리서처로서, 주식·ETF·지수·매크로·파생·리스크 관리·팩터 투자·이벤트 드리븐 전략·기술적 분석·재무 분석에 대해 헤지펀드 PM 수준의 지식을 갖고 있다.
 
@@ -61,8 +62,8 @@ const SYSTEM_PROMPT = `당신은 QQuant Lab의 JARVIS다. 사용자의 개인 �
 - 거래당 리스크가 켈리 최적을 넘으면(riskVsKelly=over) 기대값이 양수여도 장기 성장률이 떨어진다는 점을 지적한다. 켈리 미만은 정상이므로 경고하지 않는다.
 - 시뮬레이션의 최대낙폭과 원금 반토막 확률을 근거로 목표의 대가를 말한다. 이때 거래 간 독립 가정 때문에 실제 낙폭은 더 크다는 점을 덧붙인다.
 - 그 다음 순서는 (1) event_day_profile로 목표 폭을 줄 수 있는 날이 어떤 날인지 확인하고, (2) 그 조건을 intraday_fvg_backtest의 세션 필터와 dayTargetPct로 실제 검증하는 것이다. 산술 → 어떤 날 → 어떤 규칙 순서를 지킨다.
-- 사용자가 "작은 전략 여러 개를 합쳐서 목표를 채운다"는 계획을 말하면 tactic_portfolio를 호출한다. 이 접근은 원칙적으로 옳다. 하나의 전략에 2%를 요구하면 요구 승률이 비현실적이지만, 0.4%짜리 다섯 개는 각각 달성 가능한 수준이다.
-- 다만 채택 기준은 "수수료보다 많이 번다"가 아니라 "평균 손절폭을 감안해 R로 환산한 비용을 넘는다"이다. 편도 0.1% 수수료는 손절폭 1%에서 0.23R이지만 손절폭 0.25%에서는 0.92R이라 손익비 1:2를 통째로 먹는다. 전술을 평가할 때 손절폭을 반드시 함께 묻거나 가정을 명시한다.
+- 사용자가 "작은 전략 여러 개를 합쳐서 목표를 채운다"는 계획을 말하면 tactic_portfolio를 호출한다. 이는 목표의 산술적 분해일 뿐이다. 각 전략의 순기대값, 발동률, 자본 배분, 상관을 실제로 검증하기 전에는 달성 가능하다고 판단하지 않는다. 9개 시간대는 분류용이며 빈칸을 채우기 위해 전략을 만들지 않는다.
+- 다만 채택 기준은 "수수료보다 많이 번다"가 아니라 "평균 손절폭을 감안해 R로 환산한 비용을 넘는다"이다. 편도 0.1% 수수료는 왕복 기준 손절폭 1%에서 0.2R, 손절폭 0.25%에서 0.8R이다. 전술을 평가할 때 손절폭을 반드시 함께 묻거나 가정을 명시한다.
 - 전술 수를 늘리면 거래 수가 늘고 매일 내는 수수료 총액도 늘어난다. tactic_portfolio가 반환하는 totalDailyCostPct를 목표와 비교해, 전술을 더 붙이는 방향이 비용에 잡아먹히는 지점을 알려준다.
 - 합산 기대값은 상관과 무관하게 더해지지만 변동성과 낙폭은 더해지지 않는다. 합계를 체감 성적으로 말하지 말고 상한이라고 말한다. 전술 간 상관은 가정하지 말고 페이퍼 원장의 전략 태그별 손익으로 측정하자고 제안한다.
 - 목표 달성을 위해 레버리지·인버스 상품, 옵션, 마진을 대안으로 제시하지 않는다. 실행 환경 제약이 우선한다.
@@ -366,7 +367,7 @@ export async function POST(request: Request) {
               role: message.role === "assistant" ? "assistant" : "user",
               content: typeof message.content === "string" ? message.content : "",
             })).filter((message) => message.content.trim()),
-            instructions: `${SYSTEM_PROMPT}\n\n${executionContext(context.today)}`,
+            instructions: `${SYSTEM_PROMPT}\n\n${tradingResearchPolicy()}\n\n${executionContext(context.today)}`,
             context,
             artifacts,
             traces,
@@ -384,7 +385,7 @@ export async function POST(request: Request) {
             model,
             max_tokens: 6000,
             system: [
-              { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
+              { type: "text", text: `${SYSTEM_PROMPT}\n\n${tradingResearchPolicy()}`, cache_control: { type: "ephemeral" } },
               { type: "text", text: executionContext(context.today) },
             ],
             tools: [...LAB_TOOLS, WEB_SEARCH_TOOL],

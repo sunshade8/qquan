@@ -2,7 +2,7 @@ import { researchOwnerCookie, researchOwnerFrom } from "@/lib/research-owner";
 import { ORDER_TYPE_NOTES, SLOTS, UNBACKTESTABLE_SESSION, slotWindowKst } from "@/lib/trade-slots";
 import { liquidityTable } from "@/lib/symbol-liquidity";
 import { slotTargetGrid } from "@/lib/relay-targets";
-import { RELAY_STRATEGIES } from "@/lib/relay-strategies";
+import { registeredRelayStrategies } from "@/lib/strategy-generation-store";
 import { tossTradingStatus } from "@/lib/toss-orders";
 
 export const dynamic = "force-dynamic";
@@ -14,6 +14,7 @@ export const dynamic = "force-dynamic";
 export async function GET(request: Request) {
   const ownerId = researchOwnerFrom(request);
   const headers = { "set-cookie": researchOwnerCookie(ownerId) };
+  const RELAY_STRATEGIES = await registeredRelayStrategies();
   const today = new Date().toISOString().slice(0, 10);
   const toss = await tossTradingStatus().catch((error) => ({
     ready: false, reason: error instanceof Error ? error.message : "토스 상태 확인 실패",

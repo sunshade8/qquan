@@ -7,6 +7,11 @@ import { env } from "cloudflare:workers";
  */
 
 const STATEMENTS = [
+  "CREATE TABLE IF NOT EXISTS strategy_generation_runs (id text PRIMARY KEY, owner_id text NOT NULL, slot text NOT NULL, status text NOT NULL, payload text NOT NULL, created_at integer NOT NULL, updated_at integer NOT NULL, lease_owner text, lease_until integer)",
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_generation_active ON strategy_generation_runs(status) WHERE status='running'",
+  "CREATE INDEX IF NOT EXISTS idx_generation_owner ON strategy_generation_runs(owner_id,created_at)",
+  "CREATE TABLE IF NOT EXISTS strategy_generation_data (run_id text NOT NULL, part integer NOT NULL, payload text NOT NULL, PRIMARY KEY(run_id,part))",
+  "CREATE TABLE IF NOT EXISTS generated_relay_strategies (id text PRIMARY KEY, slot text NOT NULL UNIQUE, run_id text NOT NULL UNIQUE, owner_id text NOT NULL, spec_payload text NOT NULL, evidence_payload text NOT NULL, created_at integer NOT NULL)",
   "CREATE TABLE IF NOT EXISTS lab_messages (id text PRIMARY KEY NOT NULL, owner_id text NOT NULL, role text NOT NULL, content text NOT NULL, tools_payload text DEFAULT '[]' NOT NULL, artifacts_payload text DEFAULT '[]' NOT NULL, created_at integer NOT NULL)",
   "CREATE INDEX IF NOT EXISTS idx_lab_messages_owner_created ON lab_messages (owner_id, created_at)",
   "CREATE TABLE IF NOT EXISTS lab_agent_runs (id text PRIMARY KEY NOT NULL, owner_id text NOT NULL, conversation_id text NOT NULL, phase text NOT NULL, label text NOT NULL, detail text DEFAULT '' NOT NULL, status text DEFAULT 'running' NOT NULL, updated_at integer NOT NULL)",
@@ -47,6 +52,27 @@ const STATEMENTS = [
   "CREATE TABLE IF NOT EXISTS trade_strategy_reports (id text PRIMARY KEY NOT NULL, owner_id text NOT NULL, instance_id text NOT NULL, strategy_key text NOT NULL, kind text NOT NULL, title text NOT NULL, filename text NOT NULL, markdown text NOT NULL, summary_payload text DEFAULT '{}' NOT NULL, created_at integer NOT NULL)",
   "CREATE INDEX IF NOT EXISTS idx_trade_reports_instance ON trade_strategy_reports (instance_id, created_at)",
   "CREATE INDEX IF NOT EXISTS idx_trade_reports_owner ON trade_strategy_reports (owner_id, created_at)",
+  // Relay backtest bar cache: one row per symbol-session, plus which ranges were fetched.
+  "CREATE TABLE IF NOT EXISTS intraday_bar_days (id text PRIMARY KEY NOT NULL, symbol text NOT NULL, interval text NOT NULL, trading_date text NOT NULL, payload text NOT NULL, provider text NOT NULL)",
+  "CREATE INDEX IF NOT EXISTS idx_intraday_bar_days_symbol_date ON intraday_bar_days (symbol, interval, trading_date)",
+  "CREATE TABLE IF NOT EXISTS intraday_bar_coverage (id text PRIMARY KEY NOT NULL, symbol text NOT NULL, interval text NOT NULL, month text NOT NULL, from_date text NOT NULL, to_date text NOT NULL, complete integer DEFAULT false NOT NULL, fetched_at integer NOT NULL)",
+  // 급등주: the shared ranking history (one row per session, every liquid ticker's
+  // close) plus the per-run research job and what it published.
+  "CREATE TABLE IF NOT EXISTS surge_intraday_observations (trading_date text NOT NULL, pool text NOT NULL, symbol text NOT NULL, payload text NOT NULL, PRIMARY KEY (trading_date,pool,symbol))",
+  "CREATE TABLE IF NOT EXISTS surge_observation_status (trading_date text PRIMARY KEY NOT NULL, checked_at text NOT NULL, error text, cursor integer DEFAULT 0 NOT NULL, lease_owner text, lease_until integer)",
+  "CREATE TABLE IF NOT EXISTS surge_market_days (trading_date text PRIMARY KEY NOT NULL, payload text NOT NULL, tickers integer DEFAULT 0 NOT NULL, created_at integer NOT NULL)",
+  "CREATE TABLE IF NOT EXISTS surge_rank_days (id text PRIMARY KEY NOT NULL, ranked_on text NOT NULL, pool text NOT NULL, payload text NOT NULL, created_at integer NOT NULL)",
+  "CREATE INDEX IF NOT EXISTS idx_surge_rank_pool_date ON surge_rank_days (pool, ranked_on)",
+  "CREATE TABLE IF NOT EXISTS surge_generation_runs (id text PRIMARY KEY NOT NULL, owner_id text NOT NULL, pool text NOT NULL, status text NOT NULL, payload text NOT NULL, created_at integer NOT NULL, updated_at integer NOT NULL, lease_owner text, lease_until integer)",
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_surge_generation_active ON surge_generation_runs(status) WHERE status='running'",
+  "CREATE INDEX IF NOT EXISTS idx_surge_generation_owner ON surge_generation_runs(owner_id,created_at)",
+  "CREATE TABLE IF NOT EXISTS generated_surge_strategies (id text PRIMARY KEY NOT NULL, run_id text NOT NULL UNIQUE, owner_id text NOT NULL, pool text NOT NULL, spec_payload text NOT NULL, evidence_payload text NOT NULL, created_at integer NOT NULL)",
+  // Corporate actions. A 1:10 reverse split reads as +900% in raw prices, so the
+  // ranking has to know which moves were splits before it calls one a surge.
+  "CREATE TABLE IF NOT EXISTS surge_splits (id text PRIMARY KEY NOT NULL, ticker text NOT NULL, execution_date text NOT NULL, split_from real NOT NULL, split_to real NOT NULL, created_at integer NOT NULL)",
+  "CREATE INDEX IF NOT EXISTS idx_surge_splits_date ON surge_splits (execution_date)",
+  // The live and paper trading dashboards. The lease serialises ticks from the page and the runner.
+  "CREATE TABLE IF NOT EXISTS trading_dashboards (id text PRIMARY KEY NOT NULL, state_payload text NOT NULL, lease_owner text, lease_until integer, last_tick_at integer, runner_heartbeat_at integer, updated_at integer NOT NULL)",
 ];
 
 // SQLite has no ADD COLUMN IF NOT EXISTS; a duplicate-column error just means the column is already there.
@@ -62,6 +88,11 @@ const COLUMN_ADDITIONS = [
   "ALTER TABLE strategies ADD COLUMN source_finding_id text",
   // Findings join the event spine the same way strategy operands do.
   "ALTER TABLE research_findings ADD COLUMN event_roots text DEFAULT '' NOT NULL",
+  // Rows written before the ranking moved to raw prices hold split-adjusted closes,
+  // which put a later reverse split into a past session. They are ignored on read
+  // and re-downloaded, rather than silently mixed with correct ones.
+  "ALTER TABLE surge_market_days ADD COLUMN basis text DEFAULT 'adjusted' NOT NULL",
+  "ALTER TABLE surge_rank_days ADD COLUMN basis text DEFAULT 'adjusted' NOT NULL",
 ];
 
 let ready: Promise<void> | undefined;

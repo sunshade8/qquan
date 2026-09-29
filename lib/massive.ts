@@ -16,8 +16,14 @@ const DEFAULT_MAX_PAGES = 5;
 export type MassiveFailure = "not_configured" | "auth" | "plan_locked" | "rate_limit" | "not_found" | "too_large" | "upstream";
 
 export class MassiveError extends Error {
-  constructor(public readonly kind: MassiveFailure, message: string, public readonly status = 502) {
+  // Plain fields rather than parameter properties so Node's type stripping can load this in tests.
+  readonly kind: MassiveFailure;
+  readonly status: number;
+
+  constructor(kind: MassiveFailure, message: string, status = 502) {
     super(message);
+    this.kind = kind;
+    this.status = status;
   }
 }
 

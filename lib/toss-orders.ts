@@ -23,7 +23,7 @@
  */
 
 import { env } from "cloudflare:workers";
-import { invalidateTossToken, tossAccessToken, TOSS_API_BASE } from "./market-data.ts";
+import { invalidateTossToken, tossAccessToken, TOSS_API_BASE, MarketProviderError } from "./market-data.ts";
 import { buildOrderBody, type TossOrderMode, type TossOrderRequest } from "./toss-order-shapes.ts";
 import type { TradingGateway } from "./trading.ts";
 
@@ -153,12 +153,16 @@ export async function tossHoldings(accountSeq: number) {
 
 export async function tossBuyingPower(accountSeq: number, currency: "USD" | "KRW" = "USD") {
   const result = await call<{ currency: string; cashBuyingPower: string }>("/api/v1/buying-power", { accountSeq, query: { currency } });
-  return Number(result.cashBuyingPower) || 0;
+  const amount = Number(result.cashBuyingPower);
+  if (result.currency !== currency || result.cashBuyingPower == null || !Number.isFinite(amount) || amount < 0) throw new TossOrderError("invalid-balance", "유효한 주문 가능 금액을 받지 못했습니다.", 502);
+  return amount;
 }
 
 export async function tossSellableQuantity(accountSeq: number, symbol: string) {
   const result = await call<{ sellableQuantity: string }>("/api/v1/sellable-quantity", { accountSeq, query: { symbol } });
-  return Number(result.sellableQuantity) || 0;
+  const quantity = Number(result.sellableQuantity);
+  if (result.sellableQuantity == null || !Number.isFinite(quantity) || quantity < 0) throw new TossOrderError("invalid-quantity", "유효한 매도 가능 수량을 받지 못했습니다.", 502);
+  return quantity;
 }
 
 export type TossCommission = { marketCountry: string; commissionRate: string; startDate: string | null; endDate: string | null };
@@ -185,6 +189,10 @@ export async function tossCreateOrder(accountSeq: number, body: TossOrderRequest
 export async function tossListOrders(accountSeq: number, status: "OPEN" | "CLOSED" = "OPEN", limit = 50) {
   const result = await call<{ orders?: TossOrder[]; nextCursor?: string | null; hasNext?: boolean }>("/api/v1/orders", { accountSeq, query: { status, limit: String(limit) } });
   return result.orders ?? [];
+}
+
+export async function tossGetOrder(accountSeq: number, orderId: string) {
+  return call<TossOrder & { execution?: { filledQuantity?: string; averageFilledPrice?: string | null; commission?: string | null; tax?: string | null } }>(`/api/v1/orders/${encodeURIComponent(orderId)}`, { accountSeq });
 }
 
 export async function tossCancelOrder(accountSeq: number, orderId: string) {
@@ -261,7 +269,7 @@ export async function tossTradingStatus(): Promise<TossTradingStatus> {
     const account = await tossPrimaryAccount();
     if (!account) return { ...base, ready: false, cause: "no_account", reason: "주문 가능한 BROKERAGE 계좌를 찾지 못했습니다." };
     const [buyingPowerUsd, commissions] = await Promise.all([
-      tossBuyingPower(account.accountSeq, "USD").catch(() => null),
+      tossBuyingPower(account.accountSeq, "USD"),
       tossCommissions(account.accountSeq).catch(() => [] as TossCommission[]),
     ]);
     const us = commissions.find((row) => row.marketCountry === "US");
@@ -272,9 +280,9 @@ export async function tossTradingStatus(): Promise<TossTradingStatus> {
       orderMode: tossOrderMode(),
     };
   } catch (error) {
-    const code = error instanceof TossOrderError ? error.code : "";
-    const status = error instanceof TossOrderError ? error.status : 0;
-    const blocked = code === "edge-blocked" || code === "forbidden" || status === 403;
+    const code = error instanceof TossOrderError || error instanceof MarketProviderError ? error.code : "";
+    const status = error instanceof TossOrderError || error instanceof MarketProviderError ? error.status : 0;
+    const blocked = code === "edge-blocked" || code === "ip_allowlist" || (status === 403 && code !== "forbidden");
     const cause: TossBlockCause = blocked ? "ip_allowlist" : status === 401 || code.includes("token") || code === "invalid_client" ? "auth" : code === "forbidden" ? "permission" : "unknown";
     return {
       ...base, ready: false, cause,

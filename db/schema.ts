@@ -1,4 +1,5 @@
-import { index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
+import { index, integer, real, sqliteTable, text, uniqueIndex, primaryKey } from "drizzle-orm/sqlite-core";
 
 export const securities = sqliteTable("securities", {
   symbol: text("symbol").primaryKey(),
@@ -312,3 +313,81 @@ export const tradeStrategyReports = sqliteTable("trade_strategy_reports", {
   index("idx_trade_reports_instance").on(table.instanceId, table.createdAt),
   index("idx_trade_reports_owner").on(table.ownerId, table.createdAt),
 ]);
+
+/**
+ * Five-minute bars for the relay backtest, one row per symbol per session.
+ *
+ * Massive allows five calls a minute, so an uncached two-year backtest on three
+ * symbols spends most of its time waiting. Rows are keyed by day rather than by
+ * bar because a backtest always reads whole sessions, and a day's payload
+ * (≈190 bars, 04:00–19:55 ET) stays far below D1's row limit.
+ */
+export const intradayBarDays = sqliteTable("intraday_bar_days", {
+  id: text("id").primaryKey(),
+  symbol: text("symbol").notNull(),
+  interval: text("interval").notNull(),
+  tradingDate: text("trading_date").notNull(),
+  /** JSON array of [time, open, high, low, close, volume]. */
+  payload: text("payload").notNull(),
+  provider: text("provider").notNull(),
+}, (table) => [
+  index("idx_intraday_bar_days_symbol_date").on(table.symbol, table.interval, table.tradingDate),
+]);
+
+/**
+ * Which date ranges have been fetched, per symbol and month. A session with no
+ * row is ambiguous — a holiday, or never fetched — and this table resolves it.
+ */
+export const intradayBarCoverage = sqliteTable("intraday_bar_coverage", {
+  id: text("id").primaryKey(),
+  symbol: text("symbol").notNull(),
+  interval: text("interval").notNull(),
+  month: text("month").notNull(),
+  fromDate: text("from_date").notNull(),
+  toDate: text("to_date").notNull(),
+  complete: integer("complete", { mode: "boolean" }).notNull().default(false),
+  fetchedAt: integer("fetched_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+/**
+ * The two trading dashboards on the 전략 tab, one row each (`live`, `paper`).
+ *
+ * Both are singletons on purpose: the live one trades one real Toss account, and
+ * two devices each running their own copy against it would double every order.
+ * The lease columns serialise ticks — the page and the background runner can
+ * both drive the same dashboard without placing an order twice.
+ */
+export const tradingDashboards = sqliteTable("trading_dashboards", {
+  id: text("id").primaryKey(),
+  statePayload: text("state_payload").notNull(),
+  leaseOwner: text("lease_owner"),
+  leaseUntil: integer("lease_until"),
+  lastTickAt: integer("last_tick_at"),
+  runnerHeartbeatAt: integer("runner_heartbeat_at"),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+/** Strategy generation checkpoints and account-wide approved slot registry. */
+export const strategyGenerationRuns = sqliteTable("strategy_generation_runs", {
+  id: text("id").primaryKey(), ownerId: text("owner_id").notNull(), slot: text("slot").notNull(),
+  status: text("status").notNull(), payload: text("payload").notNull(),
+  createdAt: integer("created_at").notNull(), updatedAt: integer("updated_at").notNull(),
+  leaseOwner: text("lease_owner"), leaseUntil: integer("lease_until"),
+}, table => [index("idx_generation_owner").on(table.ownerId, table.createdAt), uniqueIndex("idx_generation_active").on(table.status).where(sql`${table.status} = 'running'`)]);
+export const strategyGenerationData = sqliteTable("strategy_generation_data", {
+  runId: text("run_id").notNull(), part: integer("part").notNull(), payload: text("payload").notNull(),
+}, table => [primaryKey({ columns: [table.runId, table.part] })]);
+export const generatedRelayStrategies = sqliteTable("generated_relay_strategies", {
+  id: text("id").primaryKey(), slot: text("slot").notNull().unique(), runId: text("run_id").notNull().unique(),
+  ownerId: text("owner_id").notNull(), specPayload: text("spec_payload").notNull(), evidencePayload: text("evidence_payload").notNull(),
+  createdAt: integer("created_at").notNull(),
+});
+
+
+export const surgeIntradayObservations = sqliteTable("surge_intraday_observations", {
+  tradingDate: text("trading_date").notNull(), pool: text("pool").notNull(), symbol: text("symbol").notNull(), payload: text("payload").notNull(),
+}, table => [primaryKey({ columns: [table.tradingDate, table.pool, table.symbol] })]);
+export const surgeObservationStatus = sqliteTable("surge_observation_status", {
+  tradingDate: text("trading_date").primaryKey(), checkedAt: text("checked_at").notNull(), error: text("error"),
+  cursor: integer("cursor").notNull().default(0), leaseOwner: text("lease_owner"), leaseUntil: integer("lease_until"),
+});

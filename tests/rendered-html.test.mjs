@@ -38,7 +38,7 @@ test("keeps secrets server-only and starter assets removed", async () => {
     readFile(new URL("../app/quant-workspace.tsx", import.meta.url), "utf8"),
   ]);
   assert.match(analysisRoute, /ANTHROPIC_API_KEY/);
-  assert.match(analysisRoute, /claude-opus-4-7/);
+  assert.match(analysisRoute, /claude-opus-5/);
   assert.doesNotMatch(clientSource, /sk-ant-|ANTHROPIC_API_KEY/);
   assert.doesNotMatch(envExample, /sk-ant-/);
   await assert.rejects(access(new URL("../app/_sites-preview/SkeletonPreview.tsx", import.meta.url)));

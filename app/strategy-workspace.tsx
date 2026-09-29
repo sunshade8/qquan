@@ -5,6 +5,8 @@ import Layers from "lucide-react/dist/esm/icons/layers";
 import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw";
 import TriangleAlert from "lucide-react/dist/esm/icons/triangle-alert";
 import { useCallback, useEffect, useState } from "react";
+import { TradingDashboards } from "./trading-dashboards";
+import { StrategyGenerator } from "./strategy-generator";
 
 type Slot = {
   id: string; label: string; rationale: string;
@@ -47,11 +49,6 @@ const TOSS_FIX: Record<TossCause, { title: string; how: string }> = {
   unknown: { title: "토스 연결을 확인하지 못했습니다.", how: "아래 원문 메시지를 확인하세요." },
 };
 
-function usd(value: number | null | undefined) {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
-  return `${value < 0 ? "−" : ""}$${Math.abs(value).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
-}
-
 export function StrategyWorkspace() {
   const [board, setBoard] = useState<RelayBoard | null>(null);
   const [ready, setReady] = useState(false);
@@ -74,9 +71,9 @@ export function StrategyWorkspace() {
   return <section className="strategy-board">
     <header className="lab-page-head">
       <div>
-        <span>SLOT RELAY · ACCOUNT P&amp;L</span>
+        <span>SLOT RELAY · LIVE &amp; PAPER</span>
         <h1>전략</h1>
-        <p>하루를 슬롯으로 나누고, 같은 잔고를 순서대로 물려주는 구조입니다. 평가는 전략별 평균이 아니라 계좌의 일별 손익으로 합니다.</p>
+        <p>슬롯을 선택해 전략을 생성하고 검증한 뒤 모의·실전에서 실행합니다. 대시보드 시작 자본 $1,000은 운용 예산이며, 실제 토스 주문 가능 금액은 별도로 조회합니다.</p>
       </div>
       <div className="lab-capabilities">
         <span><Layers size={13} />슬롯 릴레이</span>
@@ -84,6 +81,8 @@ export function StrategyWorkspace() {
         <span><TriangleAlert size={13} />레버리지 제외</span>
       </div>
     </header>
+
+    <button className="generator-reconnect" onClick={() => void load()}>토스 연결 다시 확인</button>
 
     {fix && <div className="strategy-warning">
       <TriangleAlert size={15} />
@@ -95,12 +94,11 @@ export function StrategyWorkspace() {
       </div>
     </div>}
 
-    {toss?.ready && <div className="strategy-account">
-      <span><i />토스증권 계좌 <strong>{toss.account?.accountNo ?? "—"}</strong></span>
-      <span>USD 매수가능 <strong className={(toss.buyingPowerUsd ?? 0) > 0 ? "" : "warn"}>{usd(toss.buyingPowerUsd)}</strong></span>
-      <span>미국주식 수수료 <strong>{toss.usCommissionRate === null ? "—" : `${(toss.usCommissionRate * 100).toFixed(3)}%`}</strong> / 편도{toss.usCommissionEndDate ? ` (~${toss.usCommissionEndDate})` : ""}</span>
-      <span>주문 유형 <strong>{toss.orderMode === "loc" ? "LOC (종가 지정가)" : "시장가"}</strong></span>
-    </div>}
+    {board && <StrategyGenerator slots={board.slots} onRegistered={load} />}
+
+    <TradingDashboards />
+
+    {toss?.ready && toss.usCommissionRate !== null && <p className="strategy-board-note">토스 미국주식 수수료 편도 {(toss.usCommissionRate * 100).toFixed(3)}%{toss.usCommissionEndDate ? ` (~${toss.usCommissionEndDate})` : ""}</p>}
 
     {!ready && <div className="research-empty"><RefreshCw size={16} className="spin" /><strong>불러오는 중</strong></div>}
 
@@ -191,9 +189,10 @@ export function StrategyWorkspace() {
       <section className="relay-next">
         <header><span>NEXT</span><strong>슬롯을 채우는 조건</strong></header>
         <ol>
-          <li>규칙은 <code>lib/relay-strategies.ts</code>에 <code>SlotStrategy</code>로 등록합니다. 슬롯당 하나만 배정되고, 둘을 넣으면 등록 시점에 실패합니다.</li>
-          <li>레버리지·인버스 종목은 <code>lib/trade-slots.ts</code>에서 차단됩니다. 등록 시점에 걸러지므로 새벽에 브로커 앞에서 발견되지 않습니다.</li>
-          <li>배정 전에 <code>runRelay</code>로 계좌 단위 백테스트를 돌립니다. 판정 기준은 일평균 수익률, <strong>+1% 이상 달성일 비율</strong>, 최악의 날, 최대 낙폭입니다.</li>
+          <li>새 전략 생성에서 슬롯을 선택합니다. 실제 과거 데이터 실행과 타사 모델 검증을 모두 통과한 규칙만 슬롯당 하나씩 등록됩니다.</li>
+          <li>현금 범위의 정수 주식만 거래합니다. 잔고 부족·호가 확인 실패·과도한 스프레드·지연 신호는 신규 진입을 막습니다.</li>
+          <li>배정 전에 대시보드의 <strong>백테스트</strong>로 계좌 단위 결과를 봅니다. 판정 기준은 일평균 수익률, <strong>+1% 이상 달성일 비율</strong>, 최악의 날, 장중 포함 최대 낙폭, 규칙 준수율입니다.</li>
+          <li>규칙(<code>scan</code>)은 자기 봉 주기(1·3·5분)의 완성된 봉만 보고, 주문은 다음 봉 시가에 체결됩니다. 실전·모의 대시보드도 같은 방식으로 판단하므로 백테스트와 실거래의 차이는 체결에서만 생깁니다.</li>
         </ol>
       </section>
     </>}

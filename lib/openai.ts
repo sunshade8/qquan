@@ -12,10 +12,10 @@ import type { StructuredCall, TextCall } from "@/lib/claude";
  * The balanced (Sonnet) and fast (Haiku) tiers stay on Anthropic regardless.
  *
  * Everything runs through the Responses API so we can use the built-in
- * `web_search` tool and GPT-5.5 Thinking's `reasoning.effort` (xhigh).
+ * `web_search` tool and GPT-6 Astra's `reasoning.effort` (xhigh).
  */
 
-// OpenAI accepts "xhigh" for GPT-5.5 Thinking; the SDK's enum is narrower, so we
+// OpenAI accepts "xhigh" for GPT-6 Astra; the SDK's enum is narrower, so we
 // keep our own and send the raw string over the wire.
 export type OpenAiEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
 
@@ -36,10 +36,9 @@ export function openaiConfigured() {
   return Boolean(envValue("OPENAI_API_KEY"));
 }
 
-// "GPT-5.5 Thinking" on the API is the reasoning model `gpt-5.5` driven by
-// reasoning.effort (there is no `-thinking` model id).
+// GPT-6 Astra serves the shared orchestrator, synthesizer, and strategist tier.
 export function openaiFrontierModel() {
-  return envValue("OPENAI_MODEL")?.trim() || "gpt-5.5";
+  return envValue("OPENAI_MODEL")?.trim() || "gpt-6-astra";
 }
 
 export function openaiFrontierEffort(): OpenAiEffort {
@@ -81,6 +80,10 @@ export function mapOpenAiUsage(usage: OpenAiUsageShape): AnthropicUsage {
 /** Map an OpenAI SDK exception to a ClaudeApiError, or null if it is not one. */
 export function describeOpenAiError(error: unknown): ClaudeApiError | null {
   if (error instanceof OpenAI.AuthenticationError) return new ClaudeApiError("OpenAI API 키가 유효하지 않습니다.", 401);
+  // OpenAI answers an empty prepaid balance with 429 too; waiting never fixes it, so it gets its own status.
+  if (error instanceof OpenAI.RateLimitError && (error.code === "insufficient_quota" || error.code === "credit_balance_exhausted" || error.type === "insufficient_quota")) {
+    return new ClaudeApiError("OpenAI 크레딧이 소진되었습니다. platform.openai.com 결제 설정에서 충전해야 호출할 수 있습니다.", 402);
+  }
   if (error instanceof OpenAI.RateLimitError) return new ClaudeApiError("OpenAI 호출 한도를 잠시 초과했습니다. 잠시 후 다시 시도해주세요.", 429);
   if (error instanceof OpenAI.APIConnectionError) return new ClaudeApiError("OpenAI API에 연결하지 못했습니다.", 502);
   if (error instanceof OpenAI.APIError) {

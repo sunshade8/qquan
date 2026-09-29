@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "provider": "Massive",
+  "interval": "5m",
+  "session": "04:00–20:00 America/New_York",
+  "from": "2024-09-21",
+  "to": "2026-09-21",
+  "summary": [
+    {
+      "symbol": "SPY",
+      "sessions": 500,
+      "bars": 94887,
+      "first": "2024-09-23",
+      "last": "2026-09-21"
+    },
+    {
+      "symbol": "QQQ",
+      "sessions": 500,
+      "bars": 95348,
+      "first": "2024-09-23",
+      "last": "2026-09-21"
+    }
+  ]
+}

@@ -4,12 +4,12 @@ import { env } from "cloudflare:workers";
 import type { z } from "zod";
 import { recordLlmUsage, type AnthropicUsage } from "@/lib/llm-usage";
 import { ClaudeApiError } from "@/lib/llm-error";
+import { withTradingPolicy } from "./trading-policy.ts";
 import {
   describeOpenAiError,
   frontierProvider,
   generateStructuredOpenAI,
   generateTextOpenAI,
-  openaiConfigured,
   openaiFrontierModel,
 } from "@/lib/openai";
 
@@ -35,8 +35,8 @@ export type ModelRole =
   | "summarizer"; // compress tool output / conversation memory
 
 const TIER_DEFAULTS: Record<ModelTier, string> = {
-  frontier: "claude-opus-4-7",
-  counter: "claude-opus-4-7",
+  frontier: "claude-opus-5",
+  counter: "claude-opus-5",
   balanced: "claude-sonnet-5",
   fast: "claude-haiku-4-5",
 };
@@ -90,39 +90,30 @@ function envValue(key: string) {
  * `generateText` and `generateStructured` both branch on it, so a tier can never
  * be sent to a client that does not serve it.
  *
- * `counter` is defined as "not whoever serves frontier". When frontier is
- * OpenAI, counter is Anthropic; when frontier is Anthropic, counter is OpenAI
- * if a key exists, and otherwise falls back to Anthropic's *balanced* model —
- * still a different model id than the Anthropic frontier, which is the property
- * the tier exists to guarantee.
+ * `counter` always uses the other company. Missing credentials fail the call;
+ * a same-company fallback would invalidate independent verification.
  */
 export function providerForTier(tier: ModelTier): "OpenAI" | "Anthropic" {
   if (tier === "frontier") return frontierProvider() === "openai" ? "OpenAI" : "Anthropic";
-  if (tier === "counter") return frontierProvider() === "openai" ? "Anthropic" : openaiConfigured() ? "OpenAI" : "Anthropic";
+  if (tier === "counter") return frontierProvider() === "openai" ? "Anthropic" : "OpenAI";
   return "Anthropic";
 }
 
 export function modelForTier(tier: ModelTier) {
   if (providerForTier(tier) === "OpenAI") return openaiFrontierModel();
   if (tier === "counter") {
-    // Anthropic serves counter either as its frontier (when GPT holds frontier)
-    // or as balanced (when Anthropic already holds frontier and OpenAI has no key).
-    return frontierProvider() === "openai"
-      ? envValue("ANTHROPIC_MODEL")?.trim() || TIER_DEFAULTS.frontier
-      : envValue("ANTHROPIC_MODEL_BALANCED")?.trim() || TIER_DEFAULTS.balanced;
+    return envValue("ANTHROPIC_MODEL")?.trim() || TIER_DEFAULTS.frontier;
   }
   const override = tier === "frontier" ? envValue("ANTHROPIC_MODEL") : tier === "balanced" ? envValue("ANTHROPIC_MODEL_BALANCED") : envValue("ANTHROPIC_MODEL_FAST");
   return override?.trim() || TIER_DEFAULTS[tier];
 }
 
 /**
- * The invariant the `counter` tier exists to hold: a challenger must never be
- * the same model as the author it reviews. Callers assert this rather than
- * assume it, because a future env change (pointing ANTHROPIC_MODEL_BALANCED at
- * the frontier model, say) could silently collapse the two.
+ * The challenger must come from a different company, even if one provider is
+ * unavailable. Missing credentials surface as an error instead of self-review.
  */
 export function challengerIsIndependent() {
-  return modelForTier("counter") !== modelForTier("frontier");
+  return providerForTier("counter") !== providerForTier("frontier");
 }
 
 export function modelForRole(role: ModelRole) {
@@ -186,6 +177,10 @@ export function describeClaudeError(error: unknown): ClaudeApiError {
   if (openai) return openai;
   if (error instanceof Anthropic.AuthenticationError) return new ClaudeApiError("Claude API 키가 유효하지 않습니다.", 401);
   if (error instanceof Anthropic.RateLimitError) return new ClaudeApiError("Claude 호출 한도를 잠시 초과했습니다. 잠시 후 다시 시도해주세요.", 429);
+  // Anthropic reports an empty prepaid balance as a 400 whose only marker is the message.
+  if (error instanceof Anthropic.BadRequestError && /credit balance is too low/i.test(error.message)) {
+    return new ClaudeApiError("Anthropic 크레딧이 소진되었습니다. console.anthropic.com 결제 설정에서 충전해야 호출할 수 있습니다.", 402);
+  }
   if (error instanceof Anthropic.BadRequestError) return new ClaudeApiError(`Claude 요청이 거부되었습니다: ${error.message}`, 400);
   if (error instanceof Anthropic.APIConnectionError) return new ClaudeApiError("Claude API에 연결하지 못했습니다.", 502);
   if (error instanceof Anthropic.APIError) return new ClaudeApiError(`Claude API 오류 (${error.status ?? "?"}): ${error.message}`, typeof error.status === "number" ? error.status : 502);
@@ -212,7 +207,8 @@ export type TextCall = {
 };
 
 /** One-shot text generation. Uses streaming under the hood so long outputs never hit HTTP timeouts. */
-export async function generateText(call: TextCall) {
+export async function generateText(input: TextCall) {
+  const call = { ...input, system: withTradingPolicy(input.system) };
   if (providerForTier(ROLE_TIERS[call.role]) === "OpenAI") return generateTextOpenAI(call);
   const model = modelForRole(call.role);
   const client = claudeClient();
@@ -239,7 +235,8 @@ export async function generateText(call: TextCall) {
 export type StructuredCall<T extends z.ZodType> = Omit<TextCall, "maxTokens"> & { schema: T; maxTokens?: number };
 
 /** Structured generation validated against a Zod schema via output_config.format. */
-export async function generateStructured<T extends z.ZodType>(call: StructuredCall<T>): Promise<{ data: z.infer<T>; model: string; usage: AnthropicUsage; costUsd: number | null }> {
+export async function generateStructured<T extends z.ZodType>(input: StructuredCall<T>): Promise<{ data: z.infer<T>; model: string; usage: AnthropicUsage; costUsd: number | null }> {
+  const call = { ...input, system: withTradingPolicy(input.system) };
   if (providerForTier(ROLE_TIERS[call.role]) === "OpenAI") return generateStructuredOpenAI(call);
   const model = modelForRole(call.role);
   const client = claudeClient();

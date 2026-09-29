@@ -6,7 +6,7 @@ import ChevronDown from "lucide-react/dist/esm/icons/chevron-down";
 import Database from "lucide-react/dist/esm/icons/database";
 import FileUp from "lucide-react/dist/esm/icons/file-up";
 import FlaskConical from "lucide-react/dist/esm/icons/flask-conical";
-import Layers from "lucide-react/dist/esm/icons/layers";
+import DollarSign from "lucide-react/dist/esm/icons/dollar-sign";
 import HistoryIcon from "lucide-react/dist/esm/icons/history";
 import PanelRight from "lucide-react/dist/esm/icons/panel-right";
 import Play from "lucide-react/dist/esm/icons/play";
@@ -22,10 +22,10 @@ import { MarketCalendar } from "./market-calendar";
 import { MarketNews } from "./market-news";
 import { LabWorkspace, newConversationId } from "./lab-workspace";
 import { BacktestWorkspace } from "./backtest-workspace";
-import { StrategyWorkspace } from "./strategy-workspace";
+import { InvestWorkspace } from "./invest-workspace";
 import type { AgentActivity } from "@/lib/lab-types";
 
-type View = "market" | "strategy" | "backtest" | "calendar" | "news" | "lab" | "settings";
+type View = "market" | "invest" | "backtest" | "calendar" | "news" | "lab" | "settings";
 type DataTab = "rows" | "study" | "hypothesis";
 type Feature = "return1d" | "gap" | "range" | "volume20";
 type Operator = "gt" | "lt";
@@ -676,7 +676,7 @@ export function QuantWorkspace() {
 
   const navItems = [
     { id: "market" as View, label: "Market", icon: ChartCandlestick },
-    { id: "strategy" as View, label: "전략", icon: Layers },
+    { id: "invest" as View, label: "투자", icon: DollarSign },
     { id: "backtest" as View, label: "Backtest", icon: FlaskConical },
     { id: "calendar" as View, label: "Calendar", icon: CalendarDays },
     { id: "news" as View, label: "News", icon: Newspaper },
@@ -830,7 +830,7 @@ export function QuantWorkspace() {
           </div>
         )}
 
-        {view === "strategy" && <StrategyWorkspace />}
+        {view === "invest" && <InvestWorkspace />}
 
         {view === "backtest" && <BacktestWorkspace focusStrategyId={focusStrategyId} onAskLab={askLab} />}
 
@@ -909,7 +909,7 @@ export function QuantWorkspace() {
               <article><div><strong>FRED</strong><p>매크로 지표 원본 실제치와 개정 이력</p></div><span className={connections?.fred.configured ? "connected" : "missing"}><i />{connections?.fred.configured ? "Connected" : "FRED_API_KEY 미설정"}</span></article>
 
               <article className="llm-cost-card">
-                <div className="llm-cost-head"><div><span>MODEL ALLOCATION</span><strong>역할별 LLM 배분과 실제 호출</strong><p>각 역할이 <em>쓰도록 설정된</em> 모델과, 그 역할로 <em>실제 기록된</em> 호출 수를 함께 보여줍니다. 호출 0회는 그 역할에 도달하는 코드 경로가 없다는 뜻입니다. frontier는 LLM_FRONTIER_PROVIDER=openai로 GPT-5.5 Thinking에 연결하며, balanced/fast는 항상 Anthropic(ANTHROPIC_MODEL_BALANCED / ANTHROPIC_MODEL_FAST)입니다.</p></div></div>
+                <div className="llm-cost-head"><div><span>MODEL ALLOCATION</span><strong>역할별 LLM 배분과 실제 호출</strong><p>각 역할이 <em>쓰도록 설정된</em> 모델과, 그 역할로 <em>실제 기록된</em> 호출 수를 함께 보여줍니다. 호출 0회는 그 역할에 도달하는 코드 경로가 없다는 뜻입니다. frontier는 LLM_FRONTIER_PROVIDER=openai로 GPT-6 Astra에 연결하며, balanced/fast는 항상 Anthropic(ANTHROPIC_MODEL_BALANCED / ANTHROPIC_MODEL_FAST)입니다.</p></div></div>
                 {llmUsage?.allocation ? <><div className="model-allocation">{llmUsage.allocation.map((item) => <div key={item.role}><span><strong>{item.role}</strong><small>{item.purpose}</small></span><code>{item.provider ? `${item.provider} · ` : ""}{item.model}{item.price ? ` · $${item.price.input}/$${item.price.output}` : ""}</code><b className={item.calls ? "used" : "unused"}>{item.calls ? `${item.calls}회 · $${(item.costUsd ?? 0).toFixed(4)}` : "호출 없음"}</b><em className={item.tier}>{item.tier}</em></div>)}</div>
                 {llmUsage.allocation.some((item) => !item.calls) ? <p className="llm-cost-note">호출 0회 역할: {llmUsage.allocation.filter((item) => !item.calls).map((item) => item.role).join(", ")} — 이 역할을 호출하는 코드 경로가 아직 없거나, 해당 기능을 사용하지 않았습니다.</p> : null}
                 {llmUsage.unattributed?.calls ? <p className="llm-cost-note">역할 미기록 {llmUsage.unattributed.calls}회 (${llmUsage.unattributed.costUsd.toFixed(4)}) — role 기록 추가 이전에 쌓인 usage입니다.</p> : null}</> : <p className="llm-cost-note">{llmUsageError || "모델 배분을 불러오는 중"}</p>}

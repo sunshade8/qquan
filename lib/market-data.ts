@@ -573,6 +573,42 @@ export async function fetchTossSnapshot(symbol: string): Promise<BrokerSnapshot>
   }
 }
 
+/**
+ * The newest Toss 1-minute candles (up to 200 a call), newest first as Toss
+ * returns them. `before` pages back; each candle's timestamp is its *end*.
+ * Used by the live trading runner to build the same 5-minute bars the backtest
+ * decides on.
+ */
+export async function fetchTossMinuteCandles(symbol: string, options: { count?: number; before?: string | null } = {}) {
+  const params: Record<string, string> = { symbol, interval: "1m", count: String(Math.max(1, Math.min(200, options.count ?? 200))) };
+  if (options.before) params.before = options.before;
+  const result = await tossGet<TossCandlePage>("/api/v1/candles", params);
+  return { candles: result.candles ?? [], nextBefore: result.nextBefore ?? null };
+}
+
+/** Last price, plus the top of book when an order is about to be priced off it. */
+export async function fetchTossQuote(symbol: string, options: { withBook?: boolean } = {}) {
+  const [prices, book] = await Promise.all([
+    tossGet<TossPrice[]>("/api/v1/prices", { symbols: symbol }),
+    options.withBook ? tossGet<TossOrderbook>("/api/v1/orderbook", { symbol }) : Promise.resolve(null),
+  ]);
+  const price = validNumber(prices[0]?.lastPrice);
+  if (price === null || price <= 0) throw new MarketProviderError("toss", "not_found", `토스에서 ${symbol} 현재가를 찾지 못했습니다.`, 404);
+  return {
+    price,
+    bid: validNumber(book?.bids?.[0]?.price),
+    ask: validNumber(book?.asks?.[0]?.price),
+    timestamp: prices[0]?.timestamp ?? null,
+    bookTimestamp: book?.timestamp ?? null,
+  };
+}
+
 export function providerSummary(rows: PriceRow[]) {
   return { bars: rows.length, start: rows[0]?.date ?? null, end: rows.at(-1)?.date ?? null };
+}
+
+/** Broker calendar is authoritative for holidays, early closes and session boundaries. */
+export async function fetchTossTradingDay(date: string) {
+  const calendar = await tossGet<TossCalendar>("/api/v1/market-calendar/US", { date });
+  return [calendar.today, calendar.previousBusinessDay, calendar.nextBusinessDay].find(day => day?.date === date) ?? null;
 }
