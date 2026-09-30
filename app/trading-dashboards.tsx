@@ -487,7 +487,7 @@ export type TradingBookId = "relay" | "surge";
 const BOOK_COPY: Record<TradingBookId, { source: string; empty: string; backtest: boolean }> = {
   relay: {
     source: "전략 탭의 슬롯 전략",
-    empty: "위의 ‘새 전략 생성’으로 검증을 통과한 전략을 슬롯에 추가하세요. 실행을 시작할 때 등록된 전략으로 거래합니다.",
+    empty: "위의 ‘전략 연구’에서 검증된 후보를 비교하고 슬롯에 배정하세요. 실행을 시작할 때 등록된 전략으로 거래합니다.",
     backtest: true,
   },
   surge: {

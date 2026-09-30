@@ -22,7 +22,39 @@ export const GENERATION_STAGES = [
   { id: "report", label: "결과 요약", role: "reporter" },
   { id: "publish", label: "슬롯 등록", role: null },
 ] as const;
-export type GenerationStage = (typeof GENERATION_STAGES)[number]["id"];
+export type GenerationStage = (typeof GENERATION_STAGES)[number]["id"] | "discovery";
+export type ResearchGoal = "discover" | "complement" | "idea";
+export type ResearchOption = {
+  id: string;
+  title: string;
+  hypothesis: string;
+  rationale: string;
+  slot: SlotId;
+  universe: string[];
+  status: "queued" | "running" | "passed" | "rejected";
+  reasons: string[];
+  selected?: StrategySpec;
+  frozenHash?: string;
+  riskReview?: GenerationReview;
+  finalReview?: GenerationReview;
+  evidence?: ValidationEvidence;
+  training?: EvidenceSlice;
+  report?: { summary: string; issues: string[] };
+};
+export type StrategyResearch = {
+  goal: ResearchGoal;
+  phase: "discovery" | "experiments" | "complete";
+  /** Immutable calendar boundaries shared by every symbol and experiment. */
+  trainingTo: string;
+  windows: Array<{ validationFrom: string; validationTo: string; holdoutFrom: string; holdoutTo: string }>;
+  consumedWindows: number;
+  constraints: { universe?: string[]; slot?: SlotId };
+  options: ResearchOption[];
+  current: number;
+  revisions: number;
+  summary?: string;
+  discovery?: { asOf: string; source: string; candidates: Array<{ symbol: string; price: number; dollarVolume: number; rangePct: number; cachedSessions: number }> };
+};
 export type GenerationStatus =
   "running" | "paused" | "completed" | "rejected" | "failed" | "cancelled";
 export type GenerationEvent = {
@@ -48,7 +80,10 @@ export type GenerationJob = {
   budgetUsd: number;
   error: string | null;
   events: GenerationEvent[];
+  research?: StrategyResearch;
   universe?: string[];
+  /** New research derives each strategy's resolution from minutes; legacy jobs retain 5m evidence. */
+  sourceBarMinutes?: 1 | 5;
   attempt?: number;
   validationWindow?: number;
   researchSessions?: number;

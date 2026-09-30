@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   createPaperBroker, dashboardSummary, emptyDashboard, heldQuantity, requestStop, startDashboard, tickDashboard, BrokerRejection,
 } from "../lib/trading-engine.ts";
-import { aggregateFiveMinute, rangeAfter } from "../lib/live-bars.ts";
+import { aggregateFiveMinute, aggregateMinuteCandles, rangeAfter } from "../lib/live-bars.ts";
 import { easternWallTimeToEpoch } from "../lib/market-clock.ts";
 import { assessTrade } from "../lib/trade-adherence.ts";
 import { rollUpComplete } from "../lib/bar-rollup.ts";
@@ -435,4 +435,43 @@ test("a rule with its own window re-enters after its exit, skips bars it held th
   await tick("10:20");
   assert.equal(asked.length, before);
   assert.equal(state.trades.length, 2);
+});
+
+test("three-minute aggregation and execution exclude incomplete bars and exit on the last full bar", async () => {
+  const start = at("09:30");
+  const candles = Array.from({ length: 5 }, (_, i) => ({ endMs: start + (i + 1) * 60000, open: 20, high: 20, low: 20, close: 20, volume: 1000 }));
+  assert.deepEqual(aggregateMinuteCandles(candles, at("09:35"), 3).map(b => b.time), ["09:30"]);
+  assert.equal(aggregateMinuteCandles(candles.filter((_, i) => i !== 1), at("09:35"), 3).length, 0);
+  const broker = createPaperBroker(async () => ({ price: 20, bid: null, ask: null }));
+  const rule = { ...strategy({ signalAt: "15:30" }), barMinutes: 3, window: { from: "09:30", to: "15:55" } };
+  const market = minuteMarket({ RKLB: flatMinutes(20, "09:30", "16:00") });
+  let state = startDashboard(emptyDashboard("paper"), { now: () => at("15:30"), id: nextId });
+  state = await tickDashboard(state, deps({ nowMs: at("15:33", 1), broker, market, strategies: [rule] }));
+  assert.equal(state.trades[0].slotEndsAt, new Date(at("15:54")).toISOString());
+  state = await tickDashboard(state, deps({ nowMs: at("15:54"), broker, market, strategies: [rule] }));
+  assert.equal(state.trades[0].status, "closed");
+});
+
+test("a one-minute buy cannot remain working beyond its next-bar fill window", async () => {
+  const broker = fakeLiveBroker({ RKLB: 50 });
+  const rule = { ...strategy(), barMinutes: 1 };
+  const market = minuteMarket({ RKLB: flatMinutes(50) });
+  let state = startDashboard(emptyDashboard("live"), { now: () => at("09:30"), id: nextId });
+  state = await tickDashboard(state, deps({ nowMs: at("09:31", 50), broker, market, strategies: [rule] }));
+  assert.equal(broker.submits.length, 1);
+  state = await tickDashboard(state, deps({ nowMs: at("09:32"), broker, market, strategies: [rule] }));
+  assert.equal(broker.cancels.length, 1, "only ten seconds elapsed, but the intended fill bar ended");
+  assert.equal(state.orders[0].status, "cancel_requested");
+});
+
+test("a slow buying-power request cannot turn an expired one-minute signal into a live order", async () => {
+  let now = at("09:31", 30);
+  const broker = fakeLiveBroker({ RKLB: 50 });
+  broker.buyingPowerUsd = async () => { now = at("09:32"); return 1000; };
+  const rule = { ...strategy(), barMinutes: 1 };
+  const initial = startDashboard(emptyDashboard("live"), { now: () => at("09:30"), id: nextId });
+  const state = await tickDashboard(initial, { ...deps({ nowMs: now, broker, market: minuteMarket({ RKLB: flatMinutes(50) }), strategies: [rule] }), now: () => now });
+  assert.equal(broker.submits.length, 0);
+  assert.equal(state.trades[0].status, "missed");
+  assert.match(state.trades[0].violations[0], /진입 시간이 지남/);
 });

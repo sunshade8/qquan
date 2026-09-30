@@ -13,7 +13,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { GENERATION_MODELS } from "@/lib/strategy-generation-models";
 import { SURGE_STAGES, type SurgeJob, type SurgeActivity } from "@/lib/surge-types";
 import type { SurgePool } from "@/lib/surge-spec";
+import type { summarizeSurgeResearch } from "@/lib/surge-research";
 import { SurgeActivityPanel } from "./surge-activity";
+import { SurgeCases } from "./surge-cases";
 import { TradingDashboards } from "./trading-dashboards";
 
 type Job = Omit<SurgeJob, "ownerId">;
@@ -90,6 +92,28 @@ const compact = (value: number | null | undefined) =>
     : value >= 1e9 ? `${(value / 1e9).toFixed(1)}B`
     : value >= 1e6 ? `${(value / 1e6).toFixed(1)}M`
     : Math.round(value).toLocaleString();
+
+function SameDayPatterns({ data }: { data?: Record<string, unknown> }) {
+  const patterns = data?.afterSimilarFirst15m as ReturnType<typeof summarizeSurgeResearch>["afterSimilarFirst15m"] | undefined;
+  if (!patterns) return null;
+  const names: Record<string, string> = { first15m_up: "첫 15분 +1% 이상", first15m_flat: "첫 15분 −1%~+1%", first15m_down: "첫 15분 −1% 이하" };
+  return <details className="surge-evidence">
+    <summary>비슷한 당일 패턴 이후의 움직임 · 학습 구간</summary>
+    <p className="generator-note">급등락을 처음 관측한 시점을 맞춘 뒤 첫 15분 움직임으로 묶었습니다. 아래 수익률은 그 15분이 지난 가격부터의 변화입니다. 중앙값 [10~90백분위] · 유효 표본 수를 함께 표시합니다.</p>
+    <div className="lab-table-wrap"><table className="lab-table">
+      <thead><tr><th>관측 후 첫 15분</th><th>사건 / 거래일 / 종목</th><th>이후 15분</th><th>이후 30분</th><th>이후 60분</th></tr></thead>
+      <tbody>{patterns.groups.map(group => <tr key={group.shape}>
+        <th scope="row">{names[group.shape] ?? group.shape}</th>
+        <td>{group.events} / {group.sessions} / {group.symbols}</td>
+        {["+15m", "+30m", "+60m"].map(horizon => {
+          const row = group.forwardReturnPct[horizon];
+          return <td key={horizon}>{pct(row.median)} [{pct(row.p10)} ~ {pct(row.p90)}] · {row.samples}건</td>;
+        })}
+      </tr>)}</tbody>
+    </table></div>
+    <p className="generator-note">같은 거래일 안에서만 비교하며 관측 시점의 가격을 100으로 정규화합니다. 미래 움직임으로 분류하지 않고, 해당 시점의 봉이 없으면 결측으로 남깁니다. 이 통계는 비용 차감 전 패턴 비교이며, 전략의 거래 성과는 별도로 검증합니다.</p>
+  </details>;
+}
 
 export function SurgeWorkspace() {
   const [data, setData] = useState<State | null>(null);
@@ -242,9 +266,9 @@ export function SurgeWorkspace() {
   return <section className="surge-board">
     <header className="lab-page-head">
       <div>
-        <span>SURGE · SAME-DAY PATTERN &amp; PAYOFF</span>
+        <span>SURGE · TOSS TOP10 CASES → PATTERN → STRATEGY</span>
         <h1>급등주</h1>
-        <p><strong>오늘</strong> 급등·급락하는 종목은 <strong>그날 남은 시간에</strong> 비슷한 움직임을 보인다 — 이 가설을 정규장 1분봉으로 검증하고, 사건이 관측된 시점부터 시간을 재는 규칙으로 바꿔 실행합니다.</p>
+        <p>매일 한국시간 00:00의 <strong>토스 급상승·급하락 상위 10개</strong>를 사례로 쌓고, 그 날들의 행동에 <strong>유사성</strong>이 있는지 분석해 매매 규칙을 만듭니다.</p>
       </div>
       <div className="lab-capabilities">
         <span><Flame size={13} />당일 사건 관측</span>
@@ -252,6 +276,9 @@ export function SurgeWorkspace() {
         <span><Wallet size={13} />트레이딩 중 LLM 0회</span>
       </div>
     </header>
+
+    {/* ------------------------------------------ the owner's cases → agent */}
+    <SurgeCases />
 
     {/* ---------------------------------------------------- today's events */}
     <section className="surge-live">
@@ -370,7 +397,8 @@ export function SurgeWorkspace() {
       <div className="generator-head">
         <div>
           <span>SURGE STUDIO</span>
-          <h2>패턴을 찾고 손익비로 고정합니다</h2>
+          <h2>당일 급등락 종목의 비슷한 움직임을 찾습니다</h2>
+          <p>오늘 급등락이 관측된 종목들의 경로를 관측 시점부터 맞춰 비교하고, 반복되는 당일 움직임을 진입·청산 규칙으로 검증합니다.</p>
           <p>{data?.window.reason ?? "기간은 코드가 고정합니다."} 설계는 OpenAI, 검증은 Anthropic — 같은 회사 모델이 자기 결과를 승인할 수 없습니다.</p>
         </div>
         <div className="generator-actions">
@@ -511,6 +539,8 @@ export function SurgeWorkspace() {
           <ul className="generator-events">{latest.barFailures.map((line, index) => <li key={index}>{line}</li>)}</ul>
           <p className="generator-note">해당 날짜에는 신호가 나오지 않습니다. 상장폐지·거래정지 종목이 대부분이며, 생존편향을 완전히 제거하지는 못합니다.</p>
         </details>}
+
+        <SameDayPatterns data={latest.dataSummary} />
 
         {latest.evidence && <div className="surge-evidence">
           <header><span>EVIDENCE</span><strong>구간별 실측 — 손익비는 R로 읽습니다</strong></header>

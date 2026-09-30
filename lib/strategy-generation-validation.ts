@@ -1,5 +1,6 @@
 import {
   runRelay,
+  sessionBarsAt,
   type RelayMetrics,
   type RelayResult,
   type SessionBars,
@@ -156,7 +157,7 @@ export function evidenceProblems(
     e.delayed.metrics.totalTrades < 5 ||
     (e.delayed.metrics.totalReturnPct ?? -Infinity) <= 0
   )
-    reasons.push("5분 지연 스트레스에서 엣지 유지 실패");
+    reasons.push("전략 봉 1개 지연 스트레스에서 엣지 유지 실패");
   // Fixed two chronological halves prevent one lucky regime masking a losing half.
   for (const part of [e.validation, e.holdout]) {
     const midpoint = Math.floor(part.daily.length / 2);
@@ -208,19 +209,21 @@ export function auditDataset(
   sessions: SessionBars[],
   symbols: string[],
   slot: { from: string; to: string },
+  step: 1 | 3 | 5 = 5,
 ) {
   const issues: string[] = [];
   const times = (v: string) => Number(v.slice(0, 2)) * 60 + Number(v.slice(3));
-  const expected = (times(slot.to) - times(slot.from)) / 5;
+  const expected = Math.floor((times(slot.to) - times(slot.from)) / step);
   for (const symbol of symbols) {
     let covered = 0;
     for (const day of sessions) {
-      const bars = day.bars[symbol] ?? [],
+      const bars = sessionBarsAt(day, step)[symbol] ?? [],
         seen = new Set<string>();
       for (const b of bars) {
         if (
           seen.has(b.time) ||
           b.date !== day.date ||
+          times(b.time) % step !== 0 ||
           ![b.open, b.high, b.low, b.close, b.volume].every(Number.isFinite) ||
           b.low <= 0 ||
           b.volume < 0 ||

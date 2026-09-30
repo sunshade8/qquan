@@ -1,10 +1,11 @@
 import {
   compileStrategy,
   EXECUTION_LIMITS,
+  strategyBarMinutes,
   type Candidate,
 } from "./strategy-generation-spec.ts";
 import { costPerSidePct, roundTripPctFor } from "./symbol-liquidity.ts";
-import type { SessionBars } from "./relay-engine.ts";
+import { sessionBarsAt, type SessionBars } from "./relay-engine.ts";
 import type { GenerationJob } from "./strategy-generation-types.ts";
 import {
   splitSessions,
@@ -46,6 +47,23 @@ export function researchSplit(
   };
 }
 
+export function researchDataId(job: GenerationJob) {
+  return job.research ? `${job.id}:scope:${job.research.current}` : job.id;
+}
+
+export function splitResearchJob(job: GenerationJob, sessions: SessionBars[], first = false) {
+  if (!job.research) return researchSplit(sessions, first ? 0 : job.validationWindow ?? 0, job.researchSessions);
+  const index = first ? 0 : job.research.consumedWindows;
+  const window = job.research.windows[index];
+  if (!window) throw new Error("연구 전체의 미사용 검증 기간을 모두 사용했습니다.");
+  return {
+    train: sessions.filter(day => day.date < window.validationFrom),
+    validation: sessions.filter(day => day.date >= window.validationFrom && day.date <= window.validationTo),
+    holdout: sessions.filter(day => day.date >= window.holdoutFrom && day.date <= window.holdoutTo),
+    windows: job.research.windows.length,
+  };
+}
+
 function distribution(values: number[]) {
   const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
   const at = (q: number) =>
@@ -58,13 +76,10 @@ function distribution(values: number[]) {
   };
 }
 
-export function summarizeResearch(job: GenerationJob, sessions: SessionBars[]) {
+export function summarizeResearch(job: GenerationJob, sessions: SessionBars[], step: 1 | 3 | 5 = 5) {
   const slot = slotById(job.slot)!;
-  const split = researchSplit(
-    sessions,
-    job.validationWindow ?? 0,
-    job.researchSessions,
-  );
+  const split = splitResearchJob(job, sessions);
+  if (!split.train.length) throw new Error("학습 기간에 사용할 데이터가 없습니다.");
   return {
     sessions: sessions.length,
     training: {
@@ -75,6 +90,13 @@ export function summarizeResearch(job: GenerationJob, sessions: SessionBars[]) {
     validationSessions: split.validation.length,
     holdoutSessions: split.holdout.length,
     windows: split.windows,
+    barResolutions: [step].map(step => ({
+      interval: `${step}m`,
+      symbols: (job.universe ?? job.plan!.universe).map(symbol => {
+        const bars = split.train.flatMap(session => (sessionBarsAt(session, step)[symbol] ?? []).filter(bar => bar.time >= slot.from && bar.time < slot.to));
+        return { symbol, bars: bars.length, dollarVolumeDistribution: distribution(bars.map(bar => bar.close * bar.volume)) };
+      }),
+    })),
     symbols: (job.universe ?? job.plan!.universe).map((symbol) => {
       const bars = split.train.flatMap((s) =>
         (s.bars[symbol] ?? []).filter(
@@ -155,6 +177,8 @@ export function candidateFeasibility(
       "선택 종목은 학습 구간에서 자본·최소 거래량 조건을 함께 충족하지 못합니다.",
     );
   for (const [i, candidate] of candidates.entries()) {
+    const step = strategyBarMinutes(candidate);
+    if (job.sourceBarMinutes !== 1 && step !== 5) issues.push(`${candidate.name}: 기존 연구에는 5분봉만 있습니다. 다른 봉은 1분봉 기반 새 연구로 검증하세요.`);
     try {
       compileStrategy({
         version: 1,
@@ -175,7 +199,7 @@ export function candidateFeasibility(
         candidate.rankLookback,
         ...candidate.conditions.map((c) => c.lookback),
       ) *
-        5 >=
+        step >=
         Number(slot.to.slice(0, 2)) * 60 + Number(slot.to.slice(3)) - 240 - 10
     )
       issues.push(

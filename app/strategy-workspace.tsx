@@ -73,7 +73,7 @@ export function StrategyWorkspace() {
       <div>
         <span>SLOT RELAY · LIVE &amp; PAPER</span>
         <h1>전략</h1>
-        <p>슬롯을 선택해 전략을 생성하고 검증한 뒤 모의·실전에서 실행합니다. 대시보드 시작 자본 $1,000은 운용 예산이며, 실제 토스 주문 가능 금액은 별도로 조회합니다.</p>
+        <p>아이디어를 맡기고, 검증된 전략을 비교하세요. 선택한 전략은 모의·실전에서 실행할 수 있습니다.</p>
       </div>
       <div className="lab-capabilities">
         <span><Layers size={13} />슬롯 릴레이</span>
@@ -82,6 +82,9 @@ export function StrategyWorkspace() {
       </div>
     </header>
 
+    <StrategyGenerator slots={board?.slots ?? []} onRegistered={load} />
+
+    <details className="strategy-reference"><summary>계좌 연결 상태</summary>
     <button className="generator-reconnect" onClick={() => void load()}>토스 연결 다시 확인</button>
 
     {fix && <div className="strategy-warning">
@@ -94,7 +97,7 @@ export function StrategyWorkspace() {
       </div>
     </div>}
 
-    {board && <StrategyGenerator slots={board.slots} onRegistered={load} />}
+    </details>
 
     <TradingDashboards />
 
@@ -103,11 +106,13 @@ export function StrategyWorkspace() {
     {!ready && <div className="research-empty"><RefreshCw size={16} className="spin" /><strong>불러오는 중</strong></div>}
 
     {ready && board && <>
+      <details className="strategy-reference"><summary>슬롯 운용 원리와 가정</summary>
       <section className="relay-intro">
         <p><strong>왜 슬롯인가.</strong> 자본을 여러 전략에 나누면 각 전략의 엣지가 그만큼 나뉩니다. $1,000을 12분할하면 거래당 +0.85%짜리 규칙이 계좌를 +0.07% 움직입니다. 대신 같은 $1,000을 하루 안에 순서대로 재사용하면 각 규칙이 매번 전액을 씁니다. 슬롯은 시간이 겹치지 않으므로 자본을 두고 경쟁하지 않습니다.</p>
         <p><strong>왜 계좌 단위 평가인가.</strong> 전략별 평균 수익률은 계좌가 그날 얼마를 벌었는지 말해주지 않습니다. 백테스트는 달력을 하루씩 걸으며 잔고 하나를 굴리고, <em>거래하지 않은 날과 잃은 날을 포함해</em> 일별 수익률을 보고합니다. 목표가 하루 단위이므로 측정도 하루 단위여야 합니다.</p>
       </section>
 
+      </details>
       <div className="strategy-board-head">
         <strong>슬롯 {board.slots.length}</strong>
         <span className="strategy-board-note">배정된 전략 {board.registered}개 · 시각은 오늘 기준 (미국 서머타임에 따라 이동)</span>
@@ -135,6 +140,7 @@ export function StrategyWorkspace() {
         </li>)}
       </ol>
 
+      <details className="strategy-reference"><summary>운용 조건 · 비용과 참고 자료</summary>
       <section className="relay-targets">
         <header><span>TARGET</span><strong>슬롯당 목표수익률 — 하루 목표를 슬롯 수로 나눈 결과</strong></header>
         <p className="strategy-note">
@@ -189,12 +195,13 @@ export function StrategyWorkspace() {
       <section className="relay-next">
         <header><span>NEXT</span><strong>슬롯을 채우는 조건</strong></header>
         <ol>
-          <li>새 전략 생성에서 슬롯을 선택합니다. 실제 과거 데이터 실행과 타사 모델 검증을 모두 통과한 규칙만 슬롯당 하나씩 등록됩니다.</li>
+          <li>전략 연구에서 종목과 시간대를 자동으로 탐색합니다. 검증을 통과한 후보를 비교하고, 원하는 전략을 슬롯에 배정합니다.</li>
           <li>현금 범위의 정수 주식만 거래합니다. 잔고 부족·호가 확인 실패·과도한 스프레드·지연 신호는 신규 진입을 막습니다.</li>
           <li>배정 전에 대시보드의 <strong>백테스트</strong>로 계좌 단위 결과를 봅니다. 판정 기준은 일평균 수익률, <strong>+1% 이상 달성일 비율</strong>, 최악의 날, 장중 포함 최대 낙폭, 규칙 준수율입니다.</li>
           <li>규칙(<code>scan</code>)은 자기 봉 주기(1·3·5분)의 완성된 봉만 보고, 주문은 다음 봉 시가에 체결됩니다. 실전·모의 대시보드도 같은 방식으로 판단하므로 백테스트와 실거래의 차이는 체결에서만 생깁니다.</li>
         </ol>
       </section>
+      </details>
     </>}
   </section>;
 }

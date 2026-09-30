@@ -318,7 +318,7 @@ function executeSlot(
   if (execution) {
     const heldBars = bars.slice(entryIndex).filter(bar => bar.time <= exitTime);
     if (heldBars.some((bar, i) => i > 0 && minutes(bar.time) - minutes(heldBars[i-1].time) !== step)) dataViolations.push("보유 구간 봉 누락 — 체결 경로 검증 불가");
-    const due = Math.min(minutes(rule.window.to), holdLimit) - step;
+    const due = Math.floor(Math.min(minutes(rule.window.to), holdLimit) / step) * step - step;
     if (exit === "slot_end" && minutes(exitTime) !== due) dataViolations.push("슬롯 종료 봉 누락 — 청산 검증 불가");
   }
   return {
@@ -347,7 +347,7 @@ export type SessionBars = {
 };
 
 export function sessionBarsAt(session: SessionBars, step: 1 | 3 | 5) {
-  const bars = session.barsByStep?.[step] ?? (step === 5 ? session.bars : undefined);
+  const bars = session.barsByStep?.[step] ?? (!session.barsByStep && step === 5 ? session.bars : undefined);
   if (!bars) throw new Error(`${session.date} 세션에 ${step}분봉이 없습니다. 전략의 봉 주기로 데이터를 불러와야 합니다.`);
   return bars;
 }
@@ -396,12 +396,12 @@ export function decideSlot(
 }
 
 /** Splits one session's bars into the slot's window and everything before it. */
-export function sliceSession(bars: Record<string, IntradayBar[]>, universe: string[], slot: Pick<Slot, "from" | "to">) {
+export function sliceSession(bars: Record<string, IntradayBar[]>, universe: string[], slot: Pick<Slot, "from" | "to">, step: 1 | 3 | 5 = 5) {
   const window: Record<string, IntradayBar[]> = {};
   const earlier: Record<string, IntradayBar[]> = {};
   for (const symbol of universe) {
     const all = bars[symbol] ?? [];
-    window[symbol] = all.filter((bar) => inSlotWindow(bar.time, slot));
+    window[symbol] = all.filter((bar) => inSlotWindow(bar.time, slot) && minutes(bar.time) + step <= minutes(slot.to));
     earlier[symbol] = all.filter((bar) => minutes(bar.time) < minutes(slot.from));
   }
   return { window, earlier };
@@ -458,7 +458,7 @@ export function runRelay(
       }
       const step = barMinutesOf(strategy);
       const ruleWindow = strategyWindow(strategy);
-      const { window, earlier } = sliceSession(sessionBarsAt(session, step), strategy.universe, ruleWindow);
+      const { window, earlier } = sliceSession(sessionBarsAt(session, step), strategy.universe, ruleWindow, step);
       const history: Record<string, IntradayBar[][]> = {};
       for (const symbol of strategy.universe) {
         history[symbol] = sessions.slice(Math.max(0, index - strategy.warmupSessions), index).map((prior) => sessionBarsAt(prior, step)[symbol] ?? []);

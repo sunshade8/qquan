@@ -32,6 +32,8 @@ export const SURGE_STAGES = [
 ] as const;
 
 export type SurgeStage = (typeof SURGE_STAGES)[number]["id"];
+/** Pipeline version; distinct from the frozen rule language's version 2. */
+export const SURGE_RESEARCH_VERSION = 3;
 export type SurgeStatus = "running" | "paused" | "completed" | "rejected" | "failed" | "cancelled";
 
 /**

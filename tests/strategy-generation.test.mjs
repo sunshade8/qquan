@@ -1,16 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { candidate, spec, day, sessions } from "./helpers/strategy-fixture.mjs";
-import { compileStrategy, parseSpec, featureValue } from "../lib/strategy-generation-spec.ts";
+import { candidateSchema, compileStrategy, parseSpec, featureValue } from "../lib/strategy-generation-spec.ts";
+import { rollUpComplete } from "../lib/bar-rollup.ts";
 import { GENERATION_MODELS, assertDifferentProvider } from "../lib/strategy-generation-models.ts";
 import { auditDataset, splitSessions, evidenceProblems, sliceEvidence, validateFrozen } from "../lib/strategy-generation-validation.ts";
-import { runRelay, sliceSession } from "../lib/relay-engine.ts";
+import { runRelay, sliceSession, sessionBarsAt } from "../lib/relay-engine.ts";
 import { slotById } from "../lib/trade-slots.ts";
 const slot=slotById("trend");
 function context(price=100){const d=day(undefined,price),cut=sliceSession(d.bars,["NVDA"],slot);cut.window.NVDA=cut.window.NVDA.filter(b=>b.time<="10:00");return {date:d.date,slot,asOf:"10:00",...cut,history:{},equityUsd:1000};}
 
 test("exact frontier models and cross-company review cannot silently fall back",()=>{
- assert.equal(GENERATION_MODELS.orchestrator.model,"gpt-6-astra");assert.equal(GENERATION_MODELS.evidenceReviewer.model,"claude-opus-5");
+ assert.equal(GENERATION_MODELS.orchestrator.model,"gpt-6.1-sol");assert.equal(GENERATION_MODELS.evidenceReviewer.model,"claude-opus-5");
  assert.doesNotThrow(()=>assertDifferentProvider("designer","riskReviewer"));assert.throws(()=>assertDifferentProvider("orchestrator","designer"));
 });
 test("the bounded language rejects executable payloads, unsupported products and invalid stop risk",()=>{
@@ -24,6 +25,26 @@ test("stale, future, gapped, invalid or zero-volume candles fail closed",()=>{
  for(const change of [c=>{c.asOf="10:05";},c=>{c.window.NVDA[0].time="10:05";},c=>{c.earlier.NVDA.pop();},c=>{c.window.NVDA[0].volume=0;},c=>{c.window.NVDA[0].high=NaN;}]){const c=context();change(c);assert.equal(strategy.scan(c),null);}
 });
 test("feature warmup does not fabricate a zero value from missing history",()=>{assert.equal(featureValue([],"returnPct",2),null);});
+
+test("new candidates choose a resolution explicitly while legacy frozen rules keep 5m", () => {
+ const legacy = { ...candidate }; delete legacy.barInterval;
+ assert.throws(() => candidateSchema.parse(legacy));
+ assert.equal(compileStrategy({ ...spec, candidate: legacy }).barMinutes, 5);
+ assert.throws(() => parseSpec({ ...spec, candidate: { ...candidate, barInterval: "2m" } }));
+});
+
+test("generated 1m, 3m and 5m rules use their own feature windows and next-bar fills", () => {
+ const raw = day("2026-01-05", 100, 1);
+ const barsByStep = Object.fromEntries([1, 3, 5].map(step => [step, { NVDA: rollUpComplete(raw.bars.NVDA, step) }]));
+ for (const [step, entry] of [[1, "10:05"], [3, "10:06"], [5, "10:05"]]) {
+  const strategy = compileStrategy({ ...spec, candidate: { ...candidate, barInterval: `${step}m` } });
+  const result = runRelay([strategy], [{ ...raw, bars: barsByStep[5], barsByStep }], { capitalUsd: 1000 });
+  assert.equal(strategy.barMinutes, step);
+  assert.equal(result.days[0].slots.find(s => s.traded).entryTime, entry);
+ }
+ assert.throws(() => runRelay([compileStrategy({ ...spec, candidate: { ...candidate, barInterval: "1m" } })], [day()], { capitalUsd: 1000 }), /1분봉이 없습니다/);
+ assert.throws(() => sessionBarsAt({ ...raw, barsByStep: { 1: raw.bars } }, 5), /5분봉이 없습니다/);
+});
 test("compiled strategy executes in the real engine, next bar, whole shares, reserves and doubled costs",()=>{
  const strategy=compileStrategy(spec),data=sessions();const base=runRelay([strategy],data,{capitalUsd:1000});
  assert.equal(base.days[0].slots.find(s=>s.traded).entryTime,"10:05");assert.equal(base.days[0].slots.find(s=>s.traded).quantity,9);

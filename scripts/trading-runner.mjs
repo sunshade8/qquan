@@ -87,6 +87,24 @@ async function generationLoop() {
     await new Promise(resolve => setTimeout(resolve, 3000));
   }
 }
+/** The owner's recorded 급등락 사례 get their session minutes once the session (incl. after-hours) is over. */
+async function caseLoop() {
+  while (!stopping) {
+    try {
+      const response = await fetch(`${base}/api/invest/surge/cases`, {
+        method: "POST", headers: { "content-type": "application/json", ...(process.env.STRATEGY_RUNNER_SECRET ? { authorization: `Bearer ${process.env.STRATEGY_RUNNER_SECRET}` } : {}) },
+        body: JSON.stringify({ action: "collect", source: "runner" }), signal: AbortSignal.timeout(170_000),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) console.error(`[${stamp()}] 급등락 사례 수집: ${result.error ?? `HTTP ${response.status}`}`);
+      else if (result.collected || result.mismatch || result.failed) console.log(`[${stamp()}] 급등락 사례 수집 ${result.collected} · 확인 필요 ${result.mismatch} · 실패 ${result.failed}`);
+    } catch (error) {
+      console.error(`[${stamp()}] 급등락 사례 수집 연결 실패: ${error.message}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 600_000));
+  }
+}
+void caseLoop();
 void generationLoop();
 console.log(`QQuant trading runner → ${base} · ${generationOnly ? "전략 생성만 (거래 틱 없음)" : `${intervalSeconds}s 간격`}`);
 while (!stopping && !generationOnly) {

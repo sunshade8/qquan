@@ -2,7 +2,7 @@
  * Live strategy-resolution bars built from Toss minute candles.
  *
  * The backtest decides on completed Massive bars, so the live runner has to put
- * the same question to the rule: a bar exists only once its five minutes are
+ * the same question to the rule: a bar exists only once its strategy interval is
  * over. Toss stamps a 1-minute candle with its *end* time (the candle covers
  * [timestamp − 1m, timestamp)), and a bucket is complete only when the clock has
  * passed its end — a still-forming bar would be exactly the lookahead the
@@ -17,7 +17,6 @@ import { easternParts } from "./market-clock.ts";
 export type MinuteCandle = { endMs: number; open: number; high: number; low: number; close: number; volume: number };
 
 const MINUTE = 60_000;
-export const BAR_MS = 5 * MINUTE;
 
 type RawCandle = { timestamp?: string; openPrice?: string; highPrice?: string; lowPrice?: string; closePrice?: string; volume?: string };
 
@@ -28,8 +27,8 @@ export function parseTossCandle(raw: RawCandle): MinuteCandle | null {
   return { endMs, open, high, low, close, volume: Number(raw.volume) || 0 };
 }
 
-/** Start of the most recent 5-minute bar that has fully closed at `nowMs`. */
 export type BarIntervalMinutes = 1 | 3 | 5;
+/** Start of the most recent strategy bar that has fully closed at `nowMs`. */
 export function latestCompleteBarStart(nowMs: number, step: BarIntervalMinutes = 5) {
   const size = step * MINUTE;
   return Math.floor(nowMs / size) * size - size;

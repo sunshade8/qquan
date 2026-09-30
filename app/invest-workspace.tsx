@@ -17,7 +17,7 @@ import { SurgeWorkspace } from "./surge-workspace";
 export type InvestFeature = "strategy" | "surge";
 
 const FEATURES = [
-  { id: "strategy" as const, label: "전략", icon: Layers, blurb: "슬롯 릴레이 · 실전/모의 대시보드" },
+  { id: "strategy" as const, label: "전략", icon: Layers, blurb: "자동 전략 연구 · 모의/실전 운용" },
   { id: "surge" as const, label: "급등주", icon: Flame, blurb: "당일 급등락 이후 패턴 · 손익비 고정" },
 ];
 

@@ -71,6 +71,9 @@ const STATEMENTS = [
   // ranking has to know which moves were splits before it calls one a surge.
   "CREATE TABLE IF NOT EXISTS surge_splits (id text PRIMARY KEY NOT NULL, ticker text NOT NULL, execution_date text NOT NULL, split_from real NOT NULL, split_to real NOT NULL, created_at integer NOT NULL)",
   "CREATE INDEX IF NOT EXISTS idx_surge_splits_date ON surge_splits (execution_date)",
+  // 급등락 사례: the owner's nightly Toss TOP_GAINERS/TOP_LOSERS top 10, and each case's own session minutes.
+  "CREATE TABLE IF NOT EXISTS surge_cases (id text PRIMARY KEY NOT NULL, stated_date text NOT NULL, symbol text NOT NULL, board text NOT NULL, reported_pct real NOT NULL, rank integer NOT NULL, line text NOT NULL, status text NOT NULL, session_date text, attempts integer DEFAULT 0 NOT NULL, error text, profile text, minutes text, received_at integer NOT NULL, collected_at integer)",
+  "CREATE INDEX IF NOT EXISTS idx_surge_cases_status ON surge_cases (status, stated_date)",
   // The live and paper trading dashboards. The lease serialises ticks from the page and the runner.
   "CREATE TABLE IF NOT EXISTS trading_dashboards (id text PRIMARY KEY NOT NULL, state_payload text NOT NULL, lease_owner text, lease_until integer, last_tick_at integer, runner_heartbeat_at integer, updated_at integer NOT NULL)",
 ];

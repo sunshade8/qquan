@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { register } from "node:module";
+import { writeFileSync } from "node:fs";
 import { candidate, sessions } from "./helpers/strategy-fixture.mjs";
 register("./helpers/strategy-test-loader.mjs",import.meta.url);
 const sqlite=new DatabaseSync(":memory:");
@@ -17,7 +18,7 @@ globalThis.__strategyTestEnv={DB:{prepare:sql=>new Statement(sql),async batch(st
 const calls=[];
 const approve={approved:true,summary:"합성 fixture를 이용한 연결 테스트 승인입니다.",blockers:[],cautions:["합성 데이터"]};
 const defaultCall=async(role,prompt)=>{calls.push({role,prompt});if(role==="orchestrator")return {thesis:"합성 fixture에서 추세 규칙의 전체 연결을 검증하는 연구입니다.",universe:["NVDA"],hypotheses:["검증용 가설"],failureModes:["유동성","슬리피지","과최적화","낙폭","표본"]};if(role==="designer")return {candidates:[candidate]};if(role.endsWith("Reviewer"))return approve;return {summary:"합성 데이터로 코드 연결을 검증합니다. 실전 성과가 아닙니다.",issues:[]};};
-globalThis.__strategyTestHooks={sessions:sessions(260),call:defaultCall};
+globalThis.__strategyTestHooks={sessions:sessions(260,1),call:defaultCall};
 const store=await import("../lib/strategy-generation-store.ts");
 const workflow=await import("../lib/strategy-generation.ts");
 const owner="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -67,7 +68,7 @@ async function freshResearch(call=defaultCall) {
  calls.length=0;
  globalThis.__strategyTestHooks.call=call;
  globalThis.__strategyTestHooks.to="2026-09-17";
- globalThis.__strategyTestHooks.sessions=sessions(260);
+ globalThis.__strategyTestHooks.sessions=sessions(260,1);
  return create();
 }
 async function finishResearch(job) {
@@ -142,19 +143,131 @@ test("data-wait research automatically resumes on new dates without rerunning co
  let job=await finishResearch(await freshResearch(async(role,prompt)=>role==="evidenceReviewer"?{...approve,approved:false,blockers:["Independent test rejected"]}:defaultCall(role,prompt)));
  assert.equal(job.pauseReason,"data");
  const initialCount=job.researchSessions,oldEnd=job.attempts.at(-1).evidence.holdout.to;
- globalThis.__strategyTestHooks.sessions=sessions(300);
- globalThis.__strategyTestHooks.to=sessions(300).at(-1).date;
+ globalThis.__strategyTestHooks.sessions=sessions(300,1);
+ globalThis.__strategyTestHooks.to=sessions(300,1).at(-1).date;
  globalThis.__strategyTestHooks.call=defaultCall;
  job=await workflow.advanceGeneration(job.id);
  job=await finishResearch(job);
  assert.equal(job.status,"paused");
  assert.equal(job.pauseReason,"data");
- globalThis.__strategyTestHooks.sessions=sessions(301);
- globalThis.__strategyTestHooks.to=sessions(301).at(-1).date;
+ globalThis.__strategyTestHooks.sessions=sessions(301,1);
+ globalThis.__strategyTestHooks.to=sessions(301,1).at(-1).date;
  job=await workflow.advanceGeneration(job.id);
  job=await finishResearch(job);
  assert.equal(job.status,"completed",job.error);
  assert.equal(job.researchSessions,initialCount);
  assert.ok(job.evidence.validation.from>oldEnd);
  assert.equal(job.validationWindow,2);
+});
+
+test("one-minute source data persists, deduplicates overlaps and derives only complete strategy bars", async () => {
+ const id=crypto.randomUUID();
+ const data=sessions(2,1);
+ const part=data.map(day=>({...day,barsByStep:{1:day.bars}}));
+ await store.writeGenerationData(id,0,part);
+ await store.writeGenerationData(id,1,part);
+ const read=await store.readGenerationData(id);
+ assert.equal((await store.readGenerationData(id,1))[0].barsByStep[1].NVDA.length,390);
+ assert.equal((await store.readGenerationData(id,3))[0].barsByStep[3].NVDA.length,130);
+ assert.equal(read[0].barsByStep[5].NVDA.length,78);
+ assert.deepEqual(read[0].bars,read[0].barsByStep[5]);
+ const missing=structuredClone(part);
+ for (const day of missing) day.barsByStep[1].NVDA=day.barsByStep[1].NVDA.filter(b=>b.time!=="10:01");
+ const missingId=crypto.randomUUID();
+ await store.writeGenerationData(missingId,0,missing);
+ const incomplete=await store.readGenerationData(missingId);
+ assert.ok(!(await store.readGenerationData(missingId,3))[0].barsByStep[3].NVDA.some(b=>b.time==="10:00"));
+ assert.ok(!incomplete[0].barsByStep[5].NVDA.some(b=>b.time==="10:00"));
+});
+
+test("legacy persisted five-minute research stays readable and cannot masquerade as minutes", async () => {
+ const id=crypto.randomUUID(), data=sessions(2);
+ sqlite.prepare("INSERT INTO strategy_generation_data (run_id,part,payload) VALUES (?,?,?)").run(id,0,JSON.stringify(data));
+ assert.deepEqual((await store.readGenerationData(id))[0].bars,data[0].bars);
+ await assert.rejects(()=>store.readGenerationData(id,1),/원본이 없습니다/);
+});
+
+test("a generated three-minute strategy remains three-minute through freeze, validation and registration", async () => {
+ const job=await finishResearch(await freshResearch(async(role,prompt)=>role==="designer"?{candidates:[{...candidate,barInterval:"3m"}]}:defaultCall(role,prompt)));
+ assert.equal(job.status,"completed",job.error);
+ assert.equal(job.sourceBarMinutes,1);
+ assert.equal(job.selected.candidate.barInterval,"3m");
+ assert.equal((await store.registeredRelayStrategies())[0].barMinutes,3);
+ assert.ok(job.training.trades.every(t=>t.entryTime==="10:06"));
+ assert.ok(job.evidence.delayed.trades.every(t=>t.entryTime==="10:09"));
+});
+
+async function freshAutomatic(options = {}, modelHook) {
+ sqlite.exec("DELETE FROM generated_relay_strategies; DELETE FROM strategy_generation_data; DELETE FROM strategy_generation_runs; DELETE FROM surge_market_days;");
+ calls.length=0;
+ globalThis.__strategyTestHooks.to="2026-09-17";
+ const fixture=sessions(520,1);
+ for(const day of fixture) {
+  const date=new Date(Date.parse(day.date)-365*86400000).toISOString().slice(0,10);
+  day.date=date;
+  for(const bars of Object.values(day.bars)) for(const bar of bars) bar.date=date;
+ }
+ globalThis.__strategyTestHooks.sessions=fixture;
+ globalThis.__strategyTestHooks.call=async(role,prompt)=>{
+  if(prompt.startsWith("RESEARCH_DISCOVERY:")) {
+   calls.push({role,prompt});
+   return {summary:"실측 시장 자료에서 오전과 오후의 서로 다른 가설을 검증합니다.",options:[
+    {title:"오전 추세 가설",hypothesis:"개장 이후 형성된 상승 방향이 오전 거래 구간에 지속되는지 검증합니다.",rationale:"학습 시점 시장 데이터의 가격과 거래대금이 연구 범위에 적합합니다.",slot:"trend",universe:["NVDA"]},
+    {title:"오후 추세 가설",hypothesis:"오후에 거래가 다시 활발해질 때 상승 방향의 지속 여부를 검증합니다.",rationale:"다른 시간대의 독립된 가설을 새로운 검증 기간에서 살펴봅니다.",slot:"afternoon",universe:["NVDA"]},
+   ]};
+  }
+  return modelHook ? modelHook(role,prompt) : defaultCall(role,prompt);
+ };
+ const job=await workflow.createStrategyResearch(owner,{requestId:crypto.randomUUID(),...options});
+ sqlite.prepare("INSERT INTO surge_market_days (trading_date,payload,tickers,created_at,basis) VALUES (?,?,?,?,?)")
+  .run(job.research.trainingTo,JSON.stringify([["NVDA",100,100000000,105,99,100],["SPY",100,90000000,103,98,100]]),2,Date.now(),"raw-events-v2");
+ return job;
+}
+test("automatic research discovers scopes, shares budget and test dates, and waits for explicit registration",async()=>{
+ let job=await freshAutomatic();
+ const id=job.id;
+ const same=await workflow.createStrategyResearch(owner,{requestId:id});assert.equal(same.id,id);
+ job=await finishResearch(job);
+ assert.equal(job.status,"completed",job.error);
+ assert.equal(job.research.options.length,2);
+ assert.ok(job.research.options.every(option=>option.status==="passed"),JSON.stringify(job.research.options.map(option=>option.reasons)));
+ assert.equal(job.budgetUsd,8);
+ assert.equal((await store.registeredRelayStrategies()).length,0,"research must never auto-register");
+ const [first,second]=job.research.options;
+ assert.ok(first.evidence.holdout.to<second.evidence.validation.from);
+ assert.equal(job.research.consumedWindows,2);
+ assert.ok(Math.abs(job.costUsd - calls.length * 0.01) < 1e-9);
+ if (process.env.STRATEGY_UI_FIXTURE) writeFileSync(process.env.STRATEGY_UI_FIXTURE, JSON.stringify({jobs:[workflow.publicJob(job)],availability:{ready:true,missing:[]},inventory:[],registeredIds:[]}));
+ await store.registerResearchOption(job,first.id);
+ await store.registerResearchOption(job,first.id);
+ assert.equal((await store.registeredRelayStrategies()).length,1);
+ await store.registerResearchOption(job,second.id);
+ assert.equal((await store.registeredRelayStrategies()).length,2);
+ assert.equal((await store.getGenerationJob(job.id)).status,"completed");
+ const forged=structuredClone(job);forged.research.options[0].evidence.passed=false;
+ await assert.rejects(()=>store.registerResearchOption(forged,first.id),/검증 통과/);
+});
+test("automatic discovery honors ticker restrictions and cannot call a fabricated scope evidence",async()=>{
+ let job=await freshAutomatic({universe:["SPY"]});
+ job=await workflow.advanceGeneration(job.id);
+ assert.equal(job.status,"failed");assert.match(job.error,/종목/);
+ assert.equal((await store.registeredRelayStrategies()).length,0);
+});
+test("automatic research retains failed options and changes scopes after bounded revisions",async()=>{
+ let job=await freshAutomatic({},async(role,prompt)=>role==="riskReviewer"?{...approve,approved:false,blockers:["실행 가능한 진입 근거 부족"]}:defaultCall(role,prompt));
+ job=await finishResearch(job);
+ assert.equal(job.status,"completed",job.error);
+ assert.ok(job.research.options.every(option=>option.status==="rejected"));
+ assert.ok(job.research.options.every(option=>option.reasons.includes("실행 가능한 진입 근거 부족")));
+ assert.equal(job.research.consumedWindows,0);
+ assert.equal((await store.registeredRelayStrategies()).length,0);
+});
+test("automatic discovery budget pause preserves the snapshot and has no paid call",async()=>{
+ let job=await freshAutomatic();
+ assert.ok(await store.claimGenerationJob(job.id,"budget-auto"));job.budgetUsd=0;await store.saveGenerationJob(job,"budget-auto");
+ job=await workflow.advanceGeneration(job.id);
+ assert.equal(job.status,"paused");assert.equal(job.pauseReason,"budget");assert.equal(job.research.phase,"discovery");assert.equal(calls.length,0);
+ await store.resumeGenerationBudget(job);
+ job=await finishResearch(await store.getGenerationJob(job.id));
+ assert.equal(job.status,"completed",job.error);assert.equal(job.budgetUsd,8);
 });

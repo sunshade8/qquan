@@ -38,7 +38,7 @@ import { readSurgeBars } from "./surge-bars.ts";
 import type { SplitEvent } from "./surge-market.ts";
 import { surgeEvidenceProblems } from "./surge-validation.ts";
 import type { CompactMarketRow } from "./surge-universe.ts";
-import type { SurgeJob } from "./surge-types.ts";
+import { SURGE_RESEARCH_VERSION, type SurgeJob } from "./surge-types.ts";
 
 function db() {
   return (env as unknown as { DB: D1Database }).DB;
@@ -310,7 +310,7 @@ export async function registeredSurgeSpecs(): Promise<Array<{ runId: string; poo
 }
 
 export async function publishSurge(job: SurgeJob, token: string) {
-  if (job.researchVersion !== 2 || job.selected?.version !== 2) throw new Error("전일 랭킹 연구는 당일 관측 전략으로 등록할 수 없습니다.");
+  if (job.researchVersion !== SURGE_RESEARCH_VERSION || job.selected?.version !== 2) throw new Error("이전 연구는 당일 관측 전략으로 등록할 수 없습니다.");
   if (!job.selected || !job.evidence?.passed || !job.finalReview?.approved ||
       job.finalReview.blockers.length || !job.riskReview?.approved) {
     throw new Error("검증 승인 증거가 없습니다.");

@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { researchOwnerCookie, researchOwnerFrom } from "@/lib/research-owner";
 import {
   createGeneration,
+  createStrategyResearch,
   advanceGeneration,
   publicJob,
 } from "@/lib/strategy-generation";
@@ -13,6 +14,8 @@ import {
   nextGenerationJob,
   generationInventory,
   resumeGenerationBudget,
+  registerResearchOption,
+  registeredSpecs,
 } from "@/lib/strategy-generation-store";
 import {
   GENERATION_MODELS,
@@ -29,6 +32,7 @@ export async function GET(request: Request) {
         jobs: (await listGenerationJobs(owner)).map(publicJob),
         availability: generationAvailability(),
         inventory: await generationInventory(),
+        registeredIds: (await registeredSpecs()).map(spec => spec.id),
         models: GENERATION_MODELS,
         stages: GENERATION_STAGES,
         policy: VALIDATION_POLICY,
@@ -61,9 +65,19 @@ export async function POST(request: Request) {
       brief?: string;
       requestId?: string;
       source?: string;
+      goal?: string;
+      budgetUsd?: number;
+      optionId?: string;
     } | null;
   if (!body) return Response.json({ error: "JSON 요청 필요" }, { status: 400 });
   try {
+    if (body.action === "research") {
+      const job = await createStrategyResearch(owner, {
+        goal: body.goal, brief: body.brief, universe: body.universe, slot: body.slot,
+        budgetUsd: body.budgetUsd, requestId: body.requestId,
+      });
+      return Response.json({ job: publicJob(job) }, { headers: { "set-cookie": researchOwnerCookie(owner) }, status: 202 });
+    }
     if (body.action === "create") {
       const job = await createGeneration(owner, {
         slot: body.slot,
@@ -101,6 +115,11 @@ export async function POST(request: Request) {
     if (body.action === "resume_budget") {
       await resumeGenerationBudget(job);
       return Response.json({ ok: true });
+    }
+    if (body.action === "register") {
+      if (!body.optionId) throw new Error("배정할 후보를 선택해 주세요.");
+      const strategyId = await registerResearchOption(job, body.optionId);
+      return Response.json({ ok: true, strategyId });
     }
     if (body.action === "cancel") {
       await cancelGenerationJob(job);

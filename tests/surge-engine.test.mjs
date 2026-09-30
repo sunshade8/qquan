@@ -71,6 +71,20 @@ const sessionOf = (bars, events = [event("SURG", 40)]) => ({
   bars: Object.fromEntries(events.map((row) => [row.symbol, bars.map((bar) => ({ ...bar }))])),
 });
 
+test("a 3m surge rule exits on the last complete bar before 15:55 without a false missing-bar violation", () => {
+  const bars = Array.from({ length: 130 }, (_, i) => {
+    const minute = 570 + i * 3;
+    return { date: DATE, time: `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`, open: 10.5, high: 10.5, low: 10.5, close: 10.5, volume: 100000 };
+  });
+  const strategy = strategyOf({ barInterval: "3m", maxHoldMinutes: 385 });
+  const result = runSurge(strategy, [sessionOf(bars, [event("SURG", 40, "14:52")])], { capitalUsd: 1000 });
+  const trade = result.days[0].slots.find(s => s.traded);
+  assert.equal(trade.entryTime, "14:54");
+  assert.equal(trade.exitTime, "15:51", "the 15:51 bar closes at 15:54; 15:54 would close too late");
+  assert.equal(trade.exit, "time");
+  assert.deepEqual(trade.violations, []);
+});
+
 test("a target hit returns the rule's reward:risk minus modelled cost, in R", () => {
   // The event is seen at 10:02; the 10:00 bar closes at 10:05, the first decision it can inform.
   const result = runSurge(strategyOf(), [sessionOf(day(DATE, 10.5, { "10:30": { close: 11.5, high: 11.6 } }))], { capitalUsd: 1000 });

@@ -221,3 +221,70 @@ test("a legacy budget pause resumes without a top-up and retains measured spend"
   assert.equal(resumed.nextAction, undefined);
   assert.match(resumed.events.at(-1).detail, /예산 제한 없이/);
 });
+
+test("the model receives minute-aligned same-day paths from training dates only", async () => {
+  sqlite.exec("UPDATE surge_generation_runs SET status='cancelled' WHERE status='running'");
+  const now = new Date().toISOString();
+  const job = {
+    researchVersion: 3, id: crypto.randomUUID(), ownerId: "gggggggg", pool: "losers", status: "running",
+    stageIndex: 2, createdAt: now, updatedAt: now, from: dates[0], to: dates.at(-1), capitalUsd: 1000,
+    brief: "", costUsd: 0, error: null, events: [], sessionDates: dates,
+  };
+  let prompt;
+  globalThis.__strategyTestHooks.call = async (_role, input) => {
+    prompt = input;
+    return { thesis: "당일 급하락 관측 후 비슷한 초기 움직임의 반복성을 검증합니다.", pool: "losers", hypotheses: ["관측 후 당일 반등"], failureModes: ["비용", "결측", "갭", "표본", "거래정지"] };
+  };
+  await store.createSurgeJob(job);
+  const result = await workflow.advanceSurgeGeneration(job.id);
+  assert.equal(result.status, "running", result.error ?? "");
+  assert.equal(result.dataSummary.analysisBarInterval, "1m");
+  assert.equal(result.dataSummary.to, dates[Math.floor(dates.length * 0.6) - 1]);
+  assert.ok(result.dataSummary.afterSimilarFirst15m);
+  assert.match(prompt, /first-15m shape must wait at least 15 minutes/);
+  assert.match(prompt, /No outcome crosses the session boundary/);
+  await store.cancelSurgeJob(result);
+});
+
+test("current same-day research can publish real passing replay evidence while legacy research cannot", async () => {
+  const { compileSurgeStrategy, surgeSpecHash } = await import("../lib/surge-spec.ts");
+  const { runSurge } = await import("../lib/surge-engine.ts");
+  const { splitSurgeSessions, surgeSlice, validateFrozenSurge } = await import("../lib/surge-validation.ts");
+  const { SURGE_RESEARCH_VERSION } = await import("../lib/surge-types.ts");
+  const candidate = {
+    name: "당일 급등 지속", hypothesis: "당일 급등 사건을 관측한 이후 같은 거래일의 지속 움직임을 검증합니다.",
+    pool: "gainers", minEventMovePct: 10, maxEventMovePct: 100, minPrice: 1, maxPrice: 100,
+    entryFrom: "10:00", entryTo: "15:00", minMinutesSinceEvent: 0, maxMinutesSinceEvent: 60,
+    maxHoldMinutes: 60, maxTradesPerDay: 1, barInterval: "3m", barConditions: [],
+    dayConditions: [{ feature: "fromPrevClosePct", operator: "gte", value: 10 }],
+    rankBy: "eventChangePct", rankDirection: "desc", rankLookback: 2, stopPct: 5, rewardRisk: 2,
+    minBarDollarVolume: 10000, maxSpreadPct: 1, cautions: ["테스트 합성 경로", "실제 성과 아님"],
+  };
+  const spec = { version: 2, id: `publish-${crypto.randomUUID()}`, candidate, evidence: "synthetic replay" };
+  const sessions = dates.slice(0, 120).map(date => {
+    const bars = [];
+    for (let minute = 570; minute < 960; minute += 3) {
+      const price = minute >= 630 ? 11.1 : 10;
+      bars.push({ date, time: `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`, open: price, high: price, low: price, close: price, volume: 100000 });
+    }
+    return { date, candidates: [{ symbol: "AAA", rankedOn: date, observedAt: "10:00", observedPrice: 10, changePct: 25, prevClose: 8, dollarVolume: 2e6, priorDollarVolume: 1e8, volume: 200000, rank: 1 }], bars: { AAA: bars } };
+  });
+  const split = splitSurgeSessions(sessions);
+  const now = new Date().toISOString();
+  const training = surgeSlice(runSurge(compileSurgeStrategy(spec), split.train, { capitalUsd: 1000 }));
+  const evidence = validateFrozenSurge(spec, split, 1000, training, now);
+  assert.ok(evidence.passed, evidence.reasons.join("; "));
+  const approved = { approved: true, summary: "Synthetic replay gate test", blockers: [], cautions: [] };
+  const job = {
+    researchVersion: SURGE_RESEARCH_VERSION, id: crypto.randomUUID(), ownerId: "publish-test", pool: "gainers", status: "running",
+    stageIndex: 10, createdAt: now, updatedAt: now, from: dates[0], to: dates[119], capitalUsd: 1000,
+    brief: "", costUsd: 0, error: null, events: [], selected: spec, evidence, frozenHash: await surgeSpecHash(spec),
+    riskReview: approved, finalReview: approved,
+  };
+  await assert.rejects(() => store.publishSurge({ ...job, researchVersion: 2 }, "test"), /이전 연구/);
+  await store.createSurgeJob(job);
+  assert.ok(await store.claimSurgeJob(job.id, "publish-test"));
+  await store.publishSurge(job, "publish-test");
+  assert.equal((await store.getSurgeJob(job.id)).status, "completed");
+  assert.equal((await store.registeredSurgeSpecs()).find(row => row.runId === job.id).spec.candidate.barInterval, "3m");
+});

@@ -579,9 +579,11 @@ export async function fetchTossSnapshot(symbol: string): Promise<BrokerSnapshot>
  * Used by the live trading runner to build the same 5-minute bars the backtest
  * decides on.
  */
-export async function fetchTossMinuteCandles(symbol: string, options: { count?: number; before?: string | null } = {}) {
+export async function fetchTossMinuteCandles(symbol: string, options: { count?: number; before?: string | null; adjusted?: boolean } = {}) {
   const params: Record<string, string> = { symbol, interval: "1m", count: String(Math.max(1, Math.min(200, options.count ?? 200))) };
   if (options.before) params.before = options.before;
+  // Toss defaults to split-adjusted; a past session's history needs the prices that actually traded.
+  if (options.adjusted !== undefined) params.adjusted = String(options.adjusted);
   const result = await tossGet<TossCandlePage>("/api/v1/candles", params);
   return { candles: result.candles ?? [], nextBefore: result.nextBefore ?? null };
 }

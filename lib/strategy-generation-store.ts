@@ -10,6 +10,12 @@ import {
 import type { GenerationJob } from "./strategy-generation-types.ts";
 import { evidenceProblems } from "./strategy-generation-validation.ts";
 import type { SessionBars } from "./relay-engine.ts";
+import { rollUpComplete } from "./bar-rollup.ts";
+
+type CompactGenerationData = {
+  version: 2;
+  sessions: Array<{ date: string; step: 1 | 3 | 5; bars: Record<string, Array<[string, number, number, number, number, number]>> }>;
+};
 
 function db() {
   return (env as unknown as { DB: D1Database }).DB;
@@ -114,15 +120,25 @@ export async function writeGenerationData(
   part: number,
   sessions: SessionBars[],
 ) {
+  // Store source candles once, compactly; a symbol-month of duplicated minute
+  // objects can exceed D1's row limit. Derived resolutions are never persisted.
+  const payload: CompactGenerationData = { version: 2, sessions: sessions.map(day => {
+    const step = day.barsByStep?.[1] ? 1 : day.barsByStep?.[3] ? 3 : 5;
+    const bars = day.barsByStep?.[step] ?? day.bars;
+    return { date: day.date, step, bars: Object.fromEntries(Object.entries(bars).map(([symbol, rows]) => [symbol,
+      rows.map(bar => [bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume] as [string, number, number, number, number, number]),
+    ])) };
+  }) };
   await db()
     .prepare(
       "INSERT OR REPLACE INTO strategy_generation_data (run_id,part,payload) VALUES (?,?,?)",
     )
-    .bind(jobId, part, JSON.stringify(sessions))
+    .bind(jobId, part, JSON.stringify(payload))
     .run();
 }
 export async function readGenerationData(
   jobId: string,
+  step: 1 | 3 | 5 = 5,
 ): Promise<SessionBars[]> {
   const rows = await db()
     .prepare(
@@ -131,15 +147,28 @@ export async function readGenerationData(
     .bind(jobId)
     .all<{ payload: string }>();
   const byDate = new Map<string, SessionBars>();
-  for (const row of rows.results)
-    for (const day of JSON.parse(row.payload) as SessionBars[]) {
-      const merged = byDate.get(day.date) ?? { date: day.date, bars: {} };
-      for (const [symbol, bars] of Object.entries(day.bars))
-        merged.bars[symbol] = [...(merged.bars[symbol] ?? []), ...bars].sort(
-          (a, b) => a.time.localeCompare(b.time),
-        );
+  for (const row of rows.results) {
+    const stored = JSON.parse(row.payload) as SessionBars[] | CompactGenerationData;
+    const days: SessionBars[] = Array.isArray(stored) ? stored : stored.sessions.map(day => ({
+      date: day.date, bars: {}, barsByStep: { [day.step]: Object.fromEntries(Object.entries(day.bars).map(([symbol, bars]) => [symbol,
+        bars.map(([time, open, high, low, close, volume]) => ({ date: day.date, time, open, high, low, close, volume })),
+      ])) },
+    }));
+    for (const day of days) {
+      const merged: SessionBars = byDate.get(day.date) ?? { date: day.date, bars: {}, barsByStep: {} };
+      const minutes = day.barsByStep?.[1];
+      const source = minutes ?? day.barsByStep?.[step] ?? (step === 5 && !day.barsByStep ? day.bars : undefined);
+      if (!source) throw new Error(`${day.date}: 저장된 연구에 ${step}분봉을 만들 원본이 없습니다.`);
+      const target = merged.barsByStep![step] ??= {};
+      for (const [symbol, bars] of Object.entries(source)) {
+        const resolved = minutes ? rollUpComplete(bars, step) : bars;
+        target[symbol] = [...new Map([...(target[symbol] ?? []), ...resolved].map(bar => [bar.time, bar])).values()]
+          .sort((a, b) => a.time.localeCompare(b.time));
+      }
+      merged.bars = target;
       byDate.set(day.date, merged);
     }
+  }
   return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
 /** Global account registry, matching the existing shared live/paper dashboards. Owner is provenance. */
@@ -240,12 +269,32 @@ export async function registeredSpecs(): Promise<StrategySpec[]> {
   return rows.results.map((r) => JSON.parse(r.spec_payload));
 }
 
+/** Explicitly adopt one stored option. This only registers rules; it never starts trading. */
+export async function registerResearchOption(job: GenerationJob, optionId: string) {
+  const option = job.research?.options.find(item => item.id === optionId);
+  if (job.status !== "completed" || !option || option.status !== "passed" || !option.selected ||
+    !option.evidence?.passed || !option.riskReview?.approved || option.riskReview.blockers.length ||
+    !option.finalReview?.approved || option.finalReview.blockers.length)
+    throw new Error("완료된 연구의 검증 통과 후보만 배정할 수 있습니다.");
+  if (option.selected.slot !== option.slot || option.frozenHash !== await strategySpecHash(option.selected) || evidenceProblems(option.evidence).length)
+    throw new Error("동결된 규칙과 검증 근거가 일치하지 않습니다.");
+  compileStrategy(option.selected);
+  if (RELAY_STRATEGIES.some(strategy => strategy.slot === option.slot)) throw new Error("이미 전략이 배정된 시간대입니다.");
+  await db().prepare("INSERT INTO generated_relay_strategies (id,slot,run_id,owner_id,spec_payload,evidence_payload,created_at) SELECT ?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM strategy_generation_runs WHERE id=? AND owner_id=? AND status='completed' AND payload=?) ON CONFLICT DO NOTHING")
+    .bind(option.selected.id, option.slot, option.id, job.ownerId, JSON.stringify(option.selected),
+      JSON.stringify({ frozenHash: option.frozenHash, evidence: option.evidence, review: option.finalReview, report: option.report }),
+      Date.now(), job.id, job.ownerId, JSON.stringify(job)).run();
+  const registered = await db().prepare("SELECT id FROM generated_relay_strategies WHERE slot=?").bind(option.slot).first<{ id: string }>();
+  if (registered?.id !== option.selected.id) throw new Error("이 시간대에 다른 전략이 배정됐거나 연구 상태가 변경됐습니다. 새로고침 후 확인해 주세요.");
+  return option.selected.id;
+}
+
 /** Read actual cached rows; absence is never reported as a completed download. */
 export async function generationInventory() {
   await ensureSchema();
   const rows = await db()
     .prepare(
-      "SELECT symbol, interval, provider, COUNT(*) sessions, MIN(trading_date) firstDate, MAX(trading_date) lastDate, SUM(json_array_length(payload)) bars FROM intraday_bar_days WHERE interval='5m' GROUP BY symbol, interval, provider",
+      "SELECT symbol, interval, provider, COUNT(*) sessions, MIN(trading_date) firstDate, MAX(trading_date) lastDate, SUM(json_array_length(payload)) bars FROM intraday_bar_days WHERE interval IN ('1m','5m') GROUP BY symbol, interval, provider",
     )
     .all<{
       symbol: string;

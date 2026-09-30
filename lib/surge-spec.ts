@@ -204,7 +204,7 @@ export function surgeWindow(candidate: SurgeCandidateSpec) {
     entryFrom: candidate.entryFrom,
     entryTo: candidate.entryTo,
     exitBy: SURGE_EXIT_BY,
-    lastBar: clock(minute(SURGE_EXIT_BY) - step),
+    lastBar: clock(Math.floor(minute(SURGE_EXIT_BY) / step) * step - step),
   };
 }
 

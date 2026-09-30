@@ -53,13 +53,14 @@ const TOUCH_LEVELS = [3, 5, 8] as const;
 /** The forward path of one event from its observation price, on the bars after the observation minute. */
 function forwardPath(event: SurgeCandidate, bars: IntradayBar[], step: number) {
   const price = event.observedPrice!;
+  bars = bars.filter(bar => bar.date === event.rankedOn && minuteEnd(bar.time, step) <= SURGE_EXIT_BY)
+    .sort((a, b) => a.time.localeCompare(b.time));
   // Closes after the observation are forward prices; excursions only count bars that began after it.
   const closing = bars.filter((bar) => minutes(minuteEnd(bar.time, step)) > minutes(event.observedAt!));
   const after = bars.filter((bar) => minutes(bar.time) >= minutes(event.observedAt!));
   const closeAt = (clock: string) => {
-    // The last bar that had closed by `clock`.
-    const done = closing.filter((bar) => minutes(minuteEnd(bar.time, step)) <= minutes(clock));
-    return done.length ? done.at(-1)!.close : null;
+    // A stale price is not an observed forward return at the requested horizon.
+    return closing.find(bar => minuteEnd(bar.time, step) === clock)?.close ?? null;
   };
   // Thin names skip minutes; a bar with a missing minute is dropped, and a signal before it cannot fill.
   const expected = Math.max(1, Math.floor((minutes(SURGE_EXIT_BY) - minutes(event.observedAt!)) / step));
@@ -70,8 +71,10 @@ function forwardPath(event: SurgeCandidate, bars: IntradayBar[], step: number) {
   })) as Record<(typeof HORIZONS)[number], number | null>;
   const toExit = closeAt(SURGE_EXIT_BY);
   const hour = after.filter((bar) => minutes(bar.time) < minutes(event.observedAt!) + 60);
+  const fullHour = hour.length === 60 / step && hour.every((bar, index) => minutes(bar.time) === minutes(event.observedAt!) + index * step);
   const firstTouch = Object.fromEntries(TOUCH_LEVELS.map((level) => {
-    let result: "up" | "down" | "neither" = "neither";
+    let result: "up" | "down" | "neither" | "missing" = fullHour ? "neither" : "missing";
+    if (!fullHour) return [level, result];
     for (const bar of hour) {
       const down = bar.low <= price * (1 - level / 100);
       const up = bar.high >= price * (1 + level / 100);
@@ -80,12 +83,12 @@ function forwardPath(event: SurgeCandidate, bars: IntradayBar[], step: number) {
       if (up) { result = "up"; break; }
     }
     return [level, result];
-  })) as Record<(typeof TOUCH_LEVELS)[number], "up" | "down" | "neither">;
+  })) as Record<(typeof TOUCH_LEVELS)[number], "up" | "down" | "neither" | "missing">;
   return {
     forward,
     toExit: toExit === null ? null : (toExit / price - 1) * 100,
-    maxUp60: hour.length ? (Math.max(...hour.map((bar) => bar.high)) / price - 1) * 100 : null,
-    maxDown60: hour.length ? (Math.min(...hour.map((bar) => bar.low)) / price - 1) * 100 : null,
+    maxUp60: fullHour ? (Math.max(...hour.map((bar) => bar.high)) / price - 1) * 100 : null,
+    maxDown60: fullHour ? (Math.min(...hour.map((bar) => bar.low)) / price - 1) * 100 : null,
     firstTouch,
     completeBarShare: Math.min(1, after.filter((bar) => minutes(bar.time) < minutes(SURGE_EXIT_BY)).length / expected),
   };
@@ -108,13 +111,29 @@ function pathSummary(paths: Path[]) {
         upFirst: touched.filter((value) => value === "up").length,
         downFirst: touched.filter((value) => value === "down").length,
         neither: touched.filter((value) => value === "neither").length,
+        missing: touched.filter((value) => value === "missing").length,
       }];
     })),
   };
 }
 
+/** A setup is classified with only the first 15m; outcomes start after those 15m. */
+function earlyShape(event: SurgeCandidate, bars: IntradayBar[], step: number) {
+  const end = minuteEnd(event.observedAt!, 15);
+  const early = bars.filter(bar => bar.date === event.rankedOn && bar.time >= event.observedAt! && minuteEnd(bar.time, step) <= end)
+    .sort((a, b) => a.time.localeCompare(b.time));
+  if (end >= SURGE_EXIT_BY || early.length !== 15 / step || early.some((bar, i) => minutes(bar.time) !== minutes(event.observedAt!) + i * step)) return null;
+  const price = early.at(-1)!.close;
+  const move = (price / event.observedPrice! - 1) * 100;
+  const shape = move >= 1 ? "first15m_up" : move <= -1 ? "first15m_down" : "first15m_flat";
+  return { shape, path: forwardPath({ ...event, observedAt: end, observedPrice: price }, bars, step) };
+}
+
 /** Measured facts about the training block's same-day events. `step` is the bars' resolution. */
-export function summarizeSurgeResearch(train: SurgeSession[], capitalUsd: number, step = 5) {
+export function createSurgeResearchSummary(capitalUsd: number, step = 1) {
+  let sessions = 0;
+  let from = "";
+  let to = "";
   const perSession: number[] = [];
   const changes: number[] = [];
   const prices: number[] = [];
@@ -125,12 +144,16 @@ export function summarizeSurgeResearch(train: SurgeSession[], capitalUsd: number
   const byTime = new Map<string, Path[]>(TIME_BUCKETS.map((bucket) => [bucket.label, []]));
   const byMove = new Map<string, Path[]>(MOVE_BUCKETS.map(([low, high]) => [`${low}-${high === Infinity ? "" : high}%`, []]));
   const observedCounts = new Map<string, number>(TIME_BUCKETS.map((bucket) => [bucket.label, 0]));
+  const shapes = new Map(["first15m_up", "first15m_flat", "first15m_down"].map(shape => [shape, [] as Array<{ date: string; symbol: string; path: Path }> ]));
   let withBars = 0;
 
-  for (const session of train) {
-    perSession.push(session.candidates.length);
+  function add(session: SurgeSession) {
+    sessions++;
+    from = !from || session.date < from ? session.date : from;
+    to = session.date > to ? session.date : to;
+    perSession.push(session.candidates.filter(event => event.rankedOn === session.date && event.observedAt && event.observedPrice).length);
     for (const event of session.candidates) {
-      if (!event.observedAt || !event.observedPrice) continue;
+      if (event.rankedOn !== session.date || !event.observedAt || !event.observedPrice) continue;
       const move = Math.abs(event.changePct);
       changes.push(event.changePct);
       prices.push(event.observedPrice);
@@ -148,48 +171,71 @@ export function summarizeSurgeResearch(train: SurgeSession[], capitalUsd: number
       withBars += 1;
       const path = forwardPath(event, bars, step);
       all.push(path);
+      const shape = earlyShape(event, bars, step);
+      if (shape) shapes.get(shape.shape)!.push({ date: session.date, symbol: event.symbol, path: shape.path });
       byTime.get(timeLabel)!.push(path);
       const moveKey = MOVE_BUCKETS.find(([low, high]) => move >= low && move < high);
       if (moveKey) byMove.get(`${moveKey[0]}-${moveKey[1] === Infinity ? "" : moveKey[1]}%`)!.push(path);
     }
   }
 
-  const medianRoundTrip = distribution(roundTrip).median ?? 0;
-  return {
-    sessions: train.length,
-    from: train[0]?.date ?? "",
-    to: train.at(-1)?.date ?? "",
-    eventDefinition: `정규장 완성 1분봉 종가가 전일 종가 대비 ${SURGE_OBSERVATION.changePct}% 이상 움직이고, $${SURGE_OBSERVATION.minPrice}–$${SURGE_OBSERVATION.maxPrice}, 그 분까지 누적 거래대금 ≥ $${SURGE_OBSERVATION.minSessionDollarVolume / 1e6}M인 첫 분`,
-    events: changes.length,
-    eventsWithBars: withBars,
-    eventsPerSessionDistribution: distribution(perSession),
-    sessionsWithoutEvents: perSession.filter((count) => count === 0).length,
-    eventChangePctDistribution: distribution(changes),
-    observationPriceDistribution: distribution(prices),
-    sessionDollarVolumeAtObservationMDistribution: distribution(tape),
-    observationTimeOfDay: [...observedCounts].map(([window, count]) => ({ window, events: count })),
-    wholeSharesAtCapitalDistribution: distribution(affordable),
-    modelledRoundTripPctDistribution: distribution(roundTrip),
-    /** The core evidence for "surging names move alike later today": aligned at observation. */
-    afterObservation: pathSummary(all),
-    afterObservationByTimeOfDay: [...byTime].map(([window, paths]) => ({ window, ...pathSummary(paths) })),
-    afterObservationByMoveSize: [...byMove].map(([move, paths]) => ({ move, ...pathSummary(paths) })),
-    /** The hurdle: what the median round trip costs as a fraction of the stop. */
-    roundTripInR: [2, 3, 5, 8, 12].map((stopPct) => ({
-      stopPct,
-      costInR: Number((medianRoundTrip / stopPct).toFixed(4)),
-      breakEvenWinRatePctAt2to1: breakEvenWinRatePct(2, medianRoundTrip / stopPct),
-    })),
-    limitations: [
-      "호가·체결 대기열 증거 없음. 스프레드는 가격(틱)과 거래대금으로 추정한 모형 가정이며 등록 전 2배 재실행을 통과해야 합니다.",
-      "사건은 정규장 완성 1분봉에서 처음 관측된 시점부터만 존재합니다. 일봉 고가·저가는 분봉을 받을 종목을 고르는 데만 쓰고 신호로 쓰지 않습니다.",
-      "전방 수익률은 관측가 기준 서술 통계입니다. 실제 체결은 결정 봉 다음 봉 시가이며 비용이 빠집니다.",
-      "상장폐지·거래정지 종목의 분봉이 비어 있을 수 있고, 그 사건은 빠집니다 — 생존편향을 완전히 제거하지는 못합니다.",
-      "롱 전용·현금·정수 주식·1% 준비금. 급하락 사건은 공매도가 아니라 반등 매수로만 거래할 수 있습니다.",
-      "실거래 관측은 토스 급상승·급하락 랭킹(상위 100)과 토스 1분봉으로 같은 정의를 재현합니다. 순간 스파이크를 놓치거나 늦게 볼 수 있고, 늦게 본 사건은 늦은 시각부터만 거래합니다.",
-      "가격·수량은 원주가입니다. 분할·병합일의 종목은 사건에서 제외했습니다.",
-    ],
-  };
+  function result() {
+    const medianRoundTrip = distribution(roundTrip).median ?? 0;
+    return {
+      sessions,
+      from,
+      to,
+      analysisBarInterval: `${step}m`,
+      alignment: "당일 급등락 최초 관측가=100, 관측 시각=0분. 각 전방 시점의 정확한 완성 봉이 없으면 결측 처리.",
+      eventDefinition: `정규장 완성 1분봉 종가가 전일 종가 대비 ${SURGE_OBSERVATION.changePct}% 이상 움직이고, $${SURGE_OBSERVATION.minPrice}–$${SURGE_OBSERVATION.maxPrice}, 그 분까지 누적 거래대금 ≥ $${SURGE_OBSERVATION.minSessionDollarVolume / 1e6}M인 첫 분`,
+      events: changes.length,
+      eventsWithBars: withBars,
+      eventsPerSessionDistribution: distribution(perSession),
+      sessionsWithoutEvents: perSession.filter((count) => count === 0).length,
+      eventChangePctDistribution: distribution(changes),
+      observationPriceDistribution: distribution(prices),
+      sessionDollarVolumeAtObservationMDistribution: distribution(tape),
+      observationTimeOfDay: [...observedCounts].map(([window, count]) => ({ window, events: count })),
+      wholeSharesAtCapitalDistribution: distribution(affordable),
+      modelledRoundTripPctDistribution: distribution(roundTrip),
+      /** The core evidence for "surging names move alike later today": aligned at observation. */
+      afterObservation: pathSummary(all),
+      afterObservationByTimeOfDay: [...byTime].map(([window, paths]) => ({ window, ...pathSummary(paths) })),
+      afterObservationByMoveSize: [...byMove].map(([move, paths]) => ({ move, ...pathSummary(paths) })),
+      afterSimilarFirst15m: {
+        definition: "관측 후 첫 15분 수익률 ≥+1%, ≤−1%, 그 사이로 고정 분류. 이후 수익률은 15분 시점 가격부터 측정하며 분류에 사용하지 않음.",
+        decisionAvailableAfterMinutes: 15,
+        groups: [...shapes].map(([shape, rows]) => ({
+          shape, sessions: new Set(rows.map(row => row.date)).size, symbols: new Set(rows.map(row => row.symbol)).size,
+          ...pathSummary(rows.map(row => row.path)),
+        })),
+      },
+      /** The hurdle: what the median round trip costs as a fraction of the stop. */
+      roundTripInR: [2, 3, 5, 8, 12].map((stopPct) => ({
+        stopPct,
+        costInR: Number((medianRoundTrip / stopPct).toFixed(4)),
+        breakEvenWinRatePctAt2to1: breakEvenWinRatePct(2, medianRoundTrip / stopPct),
+      })),
+      limitations: [
+        "호가·체결 대기열 증거 없음. 스프레드는 가격(틱)과 거래대금으로 추정한 모형 가정이며 등록 전 2배 재실행을 통과해야 합니다.",
+        "사건은 정규장 완성 1분봉에서 처음 관측된 시점부터만 존재합니다. 일봉 고가·저가는 분봉을 받을 종목을 고르는 데만 쓰고 신호로 쓰지 않습니다.",
+        "전방 수익률은 관측가 기준 서술 통계입니다. 실제 체결은 결정 봉 다음 봉 시가이며 비용이 빠집니다.",
+        "유사 경로는 첫 15분만으로 분류하며 이후 결과는 분류에 쓰지 않습니다. 15분 전에 이 분류로 진입할 수 없습니다. 같은 날 사건은 서로 독립 표본이 아닐 수 있습니다.",
+        "전방 시점의 봉이 없으면 수익률은 결측입니다. 60분 전체가 없으면 최대 상승·하락과 선도달 통계에서 제외합니다.",
+        "상장폐지·거래정지 종목의 분봉이 비어 있을 수 있고, 그 사건은 빠집니다 — 생존편향을 완전히 제거하지는 못합니다.",
+        "롱 전용·현금·정수 주식·1% 준비금. 급하락 사건은 공매도가 아니라 반등 매수로만 거래할 수 있습니다.",
+        "실거래 관측은 토스 급상승·급하락 랭킹(상위 100)과 토스 1분봉으로 같은 정의를 재현합니다. 순간 스파이크를 놓치거나 늦게 볼 수 있고, 늦게 본 사건은 늦은 시각부터만 거래합니다.",
+        "가격·수량은 원주가입니다. 분할·병합일의 종목은 사건에서 제외했습니다.",
+      ],
+    };
+  }
+  return { add, result };
+}
+
+export function summarizeSurgeResearch(train: SurgeSession[], capitalUsd: number, step = 1) {
+  const summary = createSurgeResearchSummary(capitalUsd, step);
+  train.forEach(session => summary.add(session));
+  return summary.result();
 }
 
 /** Everything checkable about a candidate before a paid reviewer sees it. */
@@ -198,8 +244,9 @@ export function surgeCandidateFeasibility(
   candidates: SurgeCandidateSpec[],
   train: SurgeSession[],
   capitalUsd: number,
+  measuredSummary = summarizeSurgeResearch(train, capitalUsd),
 ) {
-  const summaryOfTrain = summarizeSurgeResearch(train, capitalUsd);
+  const summaryOfTrain = measuredSummary;
   const issues: string[] = [];
   const medianRoundTrip = summaryOfTrain.modelledRoundTripPctDistribution.median ?? 0;
 

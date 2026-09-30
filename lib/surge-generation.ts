@@ -52,8 +52,9 @@ import {
   type SurgeInterval,
 } from "./surge-spec.ts";
 import { SURGE_OBSERVATION } from "./surge-observation.ts";
-import { runSurge } from "./surge-engine.ts";
-import { summarizeSurgeResearch, surgeCandidateFeasibility } from "./surge-research.ts";
+import { runSurge, type SurgeSession } from "./surge-engine.ts";
+import { createSurgeResearchSummary, surgeCandidateFeasibility } from "./surge-research.ts";
+import { SURGE_RESEARCH_VERSION } from "./surge-types.ts";
 import {
   auditSurgeSessions,
   splitSurgeSessions,
@@ -131,7 +132,7 @@ export async function createSurgeGeneration(ownerId: string, input: unknown) {
 
   const now = new Date().toISOString();
   const job: SurgeJob = {
-    researchVersion: 3,
+    researchVersion: SURGE_RESEARCH_VERSION,
     id: request.requestId,
     ownerId,
     pool: request.pool,
@@ -299,7 +300,7 @@ export async function advanceSurgeGeneration(
   job = (await getSurgeJob(id))!;
   if (job.status !== "running") return job;
 
-  if (job.researchVersion !== 3) {
+  if (job.researchVersion !== SURGE_RESEARCH_VERSION) {
     pause(job, "interrupted", "이전 방식(전일 랭킹 또는 고정 슬롯)의 연구입니다. 당일 급등락 가설로 새 연구를 시작하세요.", "기존 기록은 보존됩니다. 새 급등주 전략 생성을 누르세요.");
     await saveSurgeJob(job, token);
     return job;
@@ -471,7 +472,7 @@ export async function advanceSurgeGeneration(
      * Sessions are loaded one block at a time — the designer's survey reads the
      * training block only, and never the days it will be tested on — and each
      * event keeps only the bars its rule can reach (`loadIntradaySurgeSessions`).
-     * The survey reads every event at five minutes; every measured run
+     * The survey reads every event at one minute, one day at a time; every measured run
      * afterwards loads its own rule's events at its own resolution.
      */
     const blocks = () => splitSurgeSessions(job!.sessionDates ?? []);
@@ -481,12 +482,22 @@ export async function advanceSurgeGeneration(
       await report(`${sessions.length}개 세션 로드 완료 · 사건 ${sessions.reduce((sum, session) => sum + session.candidates.length, 0).toLocaleString()}건`);
       return sessions;
     };
-    const survey = { interval: "5m" as SurgeInterval, rule: null };
+    let measuredSummary: ReturnType<ReturnType<typeof createSurgeResearchSummary>["result"]> | undefined;
+    const surveyEvents: SurgeSession[] = [];
 
     if (["plan", "data_review", "design"].includes(stage.id)) {
-      const train = await sessionsFor(blocks().train, survey);
-      await report("학습 구간 사건의 관측 이후 당일 경로·거래비용 통계 계산");
-      job.dataSummary = summarizeSurgeResearch(train, job.capitalUsd);
+      const summary = createSurgeResearchSummary(job.capitalUsd, 1);
+      const dates = blocks().train;
+      await report("학습 구간 1분봉 · 당일 관측 이후 경로와 유사한 첫 15분 패턴 비교");
+      for (const [index, date] of dates.entries()) {
+        const [session] = await loadIntradaySurgeSessions(job.pool, [date], "1m");
+        summary.add(session);
+        // Keep only events for feasibility; minute OHLCV is released after each day.
+        surveyEvents.push({ date, candidates: session.candidates, bars: {} });
+        if ((index + 1) % 10 === 0 || index + 1 === dates.length) await report(`1분봉 세션 로드 완료 ${index + 1}/${dates.length} · 당일 경로 통계 계산`);
+      }
+      measuredSummary = summary.result();
+      job.dataSummary = measuredSummary;
     }
 
     const context = JSON.stringify({
@@ -502,7 +513,7 @@ export async function advanceSurgeGeneration(
       period: { from: job.from, to: job.to, sessions: job.marketSessions },
       trainingData: job.dataSummary,
       selectionContract:
-        `The owner's hypothesis: stocks that are surging or crashing TODAY behave alike for the rest of TODAY. Events are rebuilt from completed 1-minute bars (see the feature definitions). At any decision only events already observed are visible; a rule picks among them with rankBy. There is no previous-day selection and no next-day holding. The training summary's afterObservation blocks report what events did after they were first seen, overall, by time of day and by move size — design from those measured paths, not from folklore. Crash-side rules are long-only bounce hypotheses because the broker offers no US short selling.`,
+        `The owner's hypothesis: stocks that are surging or crashing TODAY behave alike for the rest of TODAY. Events are rebuilt from completed 1-minute bars (see the feature definitions). At any decision only events already observed are visible; a rule picks among them with rankBy. There is no previous-day selection and no next-day holding. The training summary is aligned on the exact first observation minute, price=100. afterObservation reports same-day forward paths. afterSimilarFirst15m groups events using ONLY their first 15-minute return, then measures subsequent same-day paths from the +15m price. Compare group sample counts and dispersion before claiming similar behavior. Any rule using a first-15m shape must wait at least 15 minutes after observation and encode the setup with available features; future outcomes must never label a setup. Similarity is a hypothesis to falsify, not a promised continuation or reversal. The previous close is only a return baseline, never yesterday's winner/loser selection. No outcome crosses the session boundary. Crash-side rules are long-only bounce hypotheses because the broker offers no US short selling.`,
       executionContract:
         `Timing is EVENT-RELATIVE: a decision is made on a completed bar at the rule's barInterval (${SURGE_INTERVALS.join(", ")}) whose close falls in [entryFrom, entryTo] ET (entryFrom no earlier than the first bar's close after ${SURGE_DAY_FROM}, entryTo no later than ${SURGE_LAST_ENTRY}) and is between minMinutesSinceEvent and maxMinutesSinceEvent after the event's observedAt. The fill is the next bar's open. A position exits at the stop, the target (stopPct*rewardRisk), after maxHoldMinutes, or at ${SURGE_EXIT_BY} ET, whichever is first. Up to maxTradesPerDay sequential trades a day, one position at a time, never the same name twice; the search resumes after each exit. Whole shares with 99% of the balance, capped at 1% of the signal bar's volume; the stop is taken first when a bar covers both. Minutes are downloaded once and rolled up, so a finer interval costs nothing extra. Prices are RAW, not split-adjusted, and names whose split executed that day are excluded. Spread is modelled from price and dollar volume, never quoted. No per-trade risk budget, no scaling in or out. These are known limitations requiring cautions, not fabricated facts.`,
       attempt: job.attempt,
@@ -538,7 +549,7 @@ export async function advanceSurgeGeneration(
 
       case "data_review":
         job.dataNote = await ask(job, "dataAnalyst", noteSchema,
-          `Summarize the measured training sample of ${POOL_LABEL[job.pool]} for the designer: how the SAME session behaves AFTER an event was first observed (forward returns, excursions, first touch; by time of day and by move size), where the cost hurdle sits, and what the data cannot show. Do not claim approval and do not describe validation or holdout data — you have not seen it. ${context}\n${JSON.stringify(job.dataSummary)}`);
+          `Summarize the measured training sample of ${POOL_LABEL[job.pool]} for the designer: how the SAME session behaves AFTER an event was first observed (forward returns, excursions, first touch; by time of day, move size and similar first-15m paths). Identify where similar observable setups do and do not lead to repeatable later-today behavior. Report dispersion, missing observations, event counts and distinct sessions; never infer similarity from only an overall average, where the cost hurdle sits, and what the data cannot show. Do not claim approval and do not describe validation or holdout data — you have not seen it. ${context}\n${JSON.stringify(job.dataSummary)}`);
         break;
 
       case "design": {
@@ -549,7 +560,7 @@ export async function advanceSurgeGeneration(
           revise(job, "design", ["후보가 지정된 풀과 다릅니다. 사용자가 선택한 풀만 사용하세요."]);
           break;
         }
-        const feasibility = surgeCandidateFeasibility(job.id, job.candidates, await sessionsFor(blocks().train, survey), job.capitalUsd);
+        const feasibility = surgeCandidateFeasibility(job.id, job.candidates, surveyEvents, job.capitalUsd, measuredSummary!);
         if (feasibility.issues.length) revise(job, "design", feasibility.issues);
         break;
       }

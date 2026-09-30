@@ -32,7 +32,7 @@ import { shiftDate } from "./market-clock.ts";
 import type { IntradayBar } from "./relay-engine.ts";
 import { intervalMinutes, SURGE_DAY_FROM, SURGE_DAY_TO, SURGE_INTERVALS, type SurgeInterval } from "./surge-spec.ts";
 import { missingIntradayRange } from "./intraday-coverage.ts";
-import { rollUp } from "./bar-rollup.ts";
+import { rollUp, rollUpComplete } from "./bar-rollup.ts";
 
 const BASE = "https://api.massive.com";
 const PROVIDER = "Massive/raw";
@@ -160,7 +160,7 @@ export async function loadSurgeBars(
 
   let sessions = 0;
   for (const interval of SURGE_INTERVALS) {
-    sessions = Math.max(sessions, await writeInterval(symbol, interval, rollUp(minutes, intervalMinutes(interval))));
+    sessions = Math.max(sessions, await writeInterval(symbol, interval, rollUpComplete(minutes, intervalMinutes(interval))));
   }
   const coveredFrom = coverage && coverage.fromDate < missing.from ? coverage.fromDate : missing.from;
   const coveredTo = coverage && coverage.toDate > missing.to ? coverage.toDate : missing.to;

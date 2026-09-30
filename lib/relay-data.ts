@@ -1,10 +1,9 @@
 /**
  * Session bars for the relay backtest, at the resolution each rule reads.
  *
- * Five-minute rules read Massive's five-minute aggregates. One- and
- * three-minute rules read one-minute aggregates (the three-minute bar is rolled
- * up from them on the hour grid the live runner also uses), cached under their
- * own key so a coarse cache can never stand in for a fine one.
+ * Every rule reads complete buckets built from one-minute aggregates on the
+ * same grid as the live runner. Provider-native five-minute bars may contain
+ * missing minutes, so they cannot stand in for this execution data.
  *
  * Massive Basic serves two years at five calls a minute, so the loader fetches
  * one calendar month per call, waits its turn on the shared pacer in
@@ -12,7 +11,7 @@
  * so through `onProgress`; the second over the same window is a database read.
  *
  * Bars cover the whole 04:00–19:55 ET day because slots run in pre- and
- * after-market as well. Yahoo is a fallback only for the last 59 days when
+ * after-market as well. Yahoo minute data is a fallback only for the last 7 days when
  * Massive is not configured or fails, and its bars are never cached — a cache
  * that silently mixes providers is not evidence of anything.
  */
@@ -31,8 +30,6 @@ import { paceMassive, sleep } from "./massive-pacer.ts";
 import { rollUpComplete } from "./bar-rollup.ts";
 
 type SourceInterval = "1m" | "5m";
-/** The download a rule's bar is built from: minutes for 1m and 3m, five-minute bars for 5m. */
-const sourceInterval = (step: 1 | 3 | 5): SourceInterval => (step === 5 ? "5m" : "1m");
 const YAHOO_WINDOW_DAYS = 58;
 
 export type LoadProgress = (message: string) => void;
@@ -211,10 +208,10 @@ export async function loadRelaySessions(
   const perSymbol = new Map<string, Map<string, IntradayBar[]>>();
   const sources: RelayDataSource[] = [];
   const warnings: string[] = [];
-  const interval = sourceInterval(step);
+  const interval: SourceInterval = "1m";
   for (const symbol of symbols) {
     const { days, source } = await loadSymbol(symbol, loadFrom, to, onProgress, interval);
-    if (step === 3) for (const [date, bars] of days) days.set(date, rollUpComplete(bars, 3));
+    for (const [date, bars] of days) days.set(date, rollUpComplete(bars, step));
     perSymbol.set(symbol, days);
     sources.push(source);
     if (!days.size) warnings.push(`${symbol}: 기간 내 ${step}분봉이 없습니다. 이 종목을 쓰는 규칙은 신호를 내지 못합니다.`);
@@ -230,7 +227,7 @@ export async function loadRelaySessions(
     date,
     bars: Object.fromEntries(symbols.map((symbol) => [symbol, perSymbol.get(symbol)?.get(date) ?? []])),
   }));
-  return { sessions, warmup: warmupSessions > 0 ? prior.length : 0, sources, warnings };
+  return { sessions: sessions.map(session => ({ ...session, barsByStep: { [step]: session.bars } })), warmup: warmupSessions > 0 ? prior.length : 0, sources, warnings };
 }
 
 /**

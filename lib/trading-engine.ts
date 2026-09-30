@@ -369,8 +369,13 @@ async function reconcileOrders(ctx: Ctx) {
     applyOrderState(ctx, order, snapshot);
     if (order.status !== "working") continue;
 
-    const limit = order.side === "buy" ? ENTRY_ORDER_TIMEOUT_MS : EXIT_ORDER_TIMEOUT_MS;
-    if (age > limit) {
+    const trade = ctx.state.trades.find(item => item.id === order.tradeId);
+    const deadline = order.side === "buy" ? Math.min(
+      Date.parse(order.submittedAt) + ENTRY_ORDER_TIMEOUT_MS,
+      trade ? Date.parse(trade.decidedAt) + (trade.barMinutes ?? 5) * 60_000 : Infinity,
+      trade ? Date.parse(trade.slotEndsAt) : Infinity,
+    ) : Date.parse(order.submittedAt) + EXIT_ORDER_TIMEOUT_MS;
+    if (ctx.nowMs >= deadline) {
       try {
         await ctx.deps.broker.cancel(order);
         order.status = "cancel_requested";
@@ -530,7 +535,7 @@ async function scanStrategy(ctx: Ctx, strategy: SlotStrategy, window: ReturnType
   }
 
   const tradedToday = new Set(ctx.state.trades.filter((trade) => trade.strategyId === strategy.id && trade.date === et.date).map((trade) => trade.symbol));
-  const { window: slotBars, earlier } = sliceSession(bars, strategy.universe, window);
+  const { window: slotBars, earlier } = sliceSession(bars, strategy.universe, window, step);
   const decision = decideSlot(strategy, window, et.date, slotBars, earlier, history, ctx.state.cashUsd, {
     after: progress.lastBarTime,
     onBar: (time) => { progress.lastBarTime = time; },
@@ -549,7 +554,7 @@ async function scanStrategy(ctx: Ctx, strategy: SlotStrategy, window: ReturnType
   const signalStartMs = easternWallTimeToEpoch(et.date, decision.signalTime);
   const problem = orderProblem(order, strategy.universe);
   const quote = problem ? null : await quoteFor(ctx, order.symbol);
-  const windowEndMs = easternWallTimeToEpoch(et.date, window.to);
+  const windowEndMs = latestCompleteBarStart(easternWallTimeToEpoch(et.date, window.to), step) + barMs;
   // The fill is due at the next bar's open, so a time exit counts from there.
   const holdEndMs = strategy.maxHoldMinutes ? signalStartMs + barMs + Math.max(1, Math.floor(strategy.maxHoldMinutes / step)) * barMs : Infinity;
   const trade: DashboardTrade = {
@@ -571,7 +576,7 @@ async function scanStrategy(ctx: Ctx, strategy: SlotStrategy, window: ReturnType
   event(ctx.state, ctx.at, "signal", `${strategy.name} 신호 ${decision.signalTime} ${step}분봉 — ${trade.symbol} (${trade.reason})`);
 
   if (problem) return markMissed(ctx, trade, `규칙 위반 주문: ${problem}`);
-  if (ctx.nowMs > signalStartMs + 2 * barMs) {
+  if (ctx.deps.now() >= signalStartMs + 2 * barMs) {
     return markMissed(ctx, trade, "체결해야 할 다음 봉이 이미 지남 (틱이 늦게 들어옴)");
   }
   if (!quote || !Number.isFinite(quote.price) || quote.price <= 0) return markMissed(ctx, trade, "유효한 시세 없음");
@@ -609,6 +614,14 @@ async function scanStrategy(ctx: Ctx, strategy: SlotStrategy, window: ReturnType
   budget *= 1 - (execution?.reservePct ?? 0) / 100;
   const quantity = Math.min(Math.floor(budget / ((limitPrice ?? trade.referencePrice) * (1 + perShareCostPct / 100))), execution ? Math.floor((signalBar?.volume ?? 0) * execution.participationPct / 100) : Infinity);
   if (quantity < 1) return markMissed(ctx, trade, `잔고 $${budget.toFixed(2)}로 1주도 못 삼`);
+  // Candle/account requests can cross a short strategy's entire fill window.
+  // Recheck the real clock immediately before persisting/submitting the intent.
+  const submitMs = ctx.deps.now();
+  if (submitMs >= signalStartMs + 2 * barMs || submitMs >= Date.parse(trade.slotEndsAt)) {
+    return markMissed(ctx, trade, "조회 중 다음 전략 봉의 진입 시간이 지남");
+  }
+  ctx.nowMs = submitMs;
+  ctx.at = new Date(submitMs).toISOString();
   await placeOrder(ctx, trade, { side: "buy", purpose: "entry", quantity, limitPrice, referencePrice: trade.referencePrice, attempt: 1 });
 }
 

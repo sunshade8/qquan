@@ -1,5 +1,7 @@
 import { z } from "zod";
-import { slotById } from "./trade-slots.ts";
+import { slotById, SLOTS, assertTradable } from "./trade-slots.ts";
+import { researchRequestSchema, researchCalendar, discoveryPlanSchema, validateDiscoveryPlan } from "./strategy-discovery.ts";
+import { discoverResearchUniverse } from "@/lib/strategy-discovery-data";
 import { shiftDate } from "./market-clock.ts";
 import { lastCompleteDate, loadRelaySessions } from "@/lib/relay-data";
 import {
@@ -25,6 +27,8 @@ import {
   FEATURES,
   SLOT_IDS,
   EXECUTION_LIMITS,
+  STRATEGY_INTERVALS,
+  strategyBarMinutes,
 } from "./strategy-generation-spec.ts";
 import {
   VALIDATION_POLICY,
@@ -33,11 +37,12 @@ import {
   validateFrozen,
 } from "./strategy-generation-validation.ts";
 import {
-  researchSplit,
+  splitResearchJob,
+  researchDataId,
   summarizeResearch,
   candidateFeasibility,
 } from "./strategy-generation-research.ts";
-import { runRelay } from "./relay-engine.ts";
+import { runRelay, type SessionBars } from "./relay-engine.ts";
 import {
   GENERATION_STAGES,
   type GenerationJob,
@@ -95,6 +100,7 @@ export async function createGeneration(ownerId: string, input: unknown) {
     capitalUsd: 1000,
     brief: request.brief,
     universe: request.universe,
+    sourceBarMinutes: 1,
     attempt: 1,
     validationWindow: 0,
     attempts: [],
@@ -108,6 +114,82 @@ export async function createGeneration(ownerId: string, input: unknown) {
   };
   await createGenerationJob(job);
   return job;
+}
+
+export async function createStrategyResearch(ownerId: string, input: unknown) {
+  const request = researchRequestSchema.parse(input);
+  const existing = await getGenerationJob(request.requestId);
+  if (existing) {
+    if (existing.ownerId !== ownerId) throw new Error("요청 식별자 충돌");
+    return existing;
+  }
+  const availability = generationAvailability();
+  if (!availability.ready) throw new Error(`연구 모델 연결 필요: ${availability.missing.join(", ")}`);
+  if (request.universe) assertTradable(request.universe, "연구 범위");
+  const to = lastCompleteDate(), from = shiftDate(to, -730), now = new Date().toISOString();
+  const job: GenerationJob = {
+    id: request.requestId, ownerId, slot: request.slot ?? "trend", status: "running", stageIndex: 0,
+    createdAt: now, updatedAt: now, from, to, capitalUsd: 1000, brief: request.brief,
+    costUsd: 0, budgetUsd: request.budgetUsd, error: null, events: [], universe: [], sourceBarMinutes: 1,
+    attempt: 1, attempts: [], validationWindow: 0,
+    research: { goal: request.goal, phase: "discovery", ...researchCalendar(from, to), consumedWindows: 0,
+      constraints: { universe: request.universe, slot: request.slot }, options: [], current: 0, revisions: 0 },
+  };
+  await createGenerationJob(job);
+  return job;
+}
+
+function beginResearchOption(job: GenerationJob) {
+  const research = job.research!, option = research.options[research.current];
+  option.status = "running";
+  job.slot = option.slot;
+  job.universe = [...option.universe];
+  job.dataTasks = months(option.universe, job.from, job.to);
+  job.dataCursor = 0;
+  job.dataSources = [];
+  job.validationWindow = research.consumedWindows;
+  research.revisions = 0;
+  delete job.researchSessions;
+  delete job.dataSummary;
+  delete job.dataNote;
+  delete job.plan;
+  delete job.candidates;
+  delete job.riskReview;
+  delete job.selected;
+  delete job.training;
+  delete job.trials;
+  delete job.frozenAt;
+  delete job.frozenHash;
+  delete job.evidence;
+  delete job.finalReview;
+  delete job.report;
+  job.error = null;
+  job.stageIndex = 0;
+}
+
+function finishResearchOption(job: GenerationJob, reasons: string[] = []) {
+  const research = job.research!, option = research.options[research.current];
+  const passed = !reasons.length && job.evidence?.passed && job.finalReview?.approved && !job.finalReview.blockers.length;
+  Object.assign(option, {
+    status: passed ? "passed" : "rejected", reasons,
+    selected: job.selected, training: job.training, evidence: job.evidence,
+    frozenHash: job.frozenHash, riskReview: job.riskReview, finalReview: job.finalReview, report: job.report,
+  });
+  // Once any outcome is seen, that calendar window is spent across ALL scopes.
+  if (job.evidence) research.consumedWindows++;
+  if (research.current + 1 < research.options.length && research.consumedWindows < research.windows.length) {
+    research.current++;
+    beginResearchOption(job);
+    job.stageIndex = -1; // the enclosing stage commit increments it
+  } else {
+    for (const queued of research.options.filter(item => item.status === "queued")) {
+      queued.status = "rejected";
+      queued.reasons = ["연구 전체의 미사용 검증 기간이 소진되어 실행하지 않았습니다."];
+    }
+    research.phase = "complete";
+    job.status = "completed";
+    job.error = null;
+  }
 }
 function months(symbols: string[], from: string, to: string) {
   const tasks: Array<{ symbol: string; from: string; to: string }> = [];
@@ -123,6 +205,26 @@ function months(symbols: string[], from: string, to: string) {
     }
   }
   return tasks;
+}
+
+/** Only one resolution is held at a time; the model still gets evidence for each choice. */
+async function researchSummary(job: GenerationJob, sessions: SessionBars[]) {
+  const summary = summarizeResearch(job, sessions);
+  if (job.sourceBarMinutes === 1) for (const step of [1, 3] as const) {
+    const data = await readGenerationData(researchDataId(job), step);
+    summary.barResolutions.push(...summarizeResearch(job, data, step).barResolutions);
+  }
+  return summary;
+}
+
+/** Keep this slot plus the maximum 24-bar lookback at 5m, aligned for every supported grid. */
+function researchWindow(sessions: SessionBars[], slot: NonNullable<ReturnType<typeof slotById>>, step: 1 | 5) {
+  const start = Math.max(240, Math.floor((Number(slot.from.slice(0, 2)) * 60 + Number(slot.from.slice(3)) - 125) / 15) * 15);
+  const from = `${String(Math.floor(start / 60)).padStart(2, "0")}:${String(start % 60).padStart(2, "0")}`;
+  return sessions.map(day => {
+    const bars = Object.fromEntries(Object.entries(day.bars).map(([symbol, rows]) => [symbol, rows.filter(bar => bar.time >= from && bar.time < slot.to)]));
+    return { date: day.date, bars, barsByStep: { [step]: bars } };
+  });
 }
 async function ask<T extends z.ZodType>(
   job: GenerationJob,
@@ -180,6 +282,10 @@ function revise(
     finalReview: job.finalReview,
   });
   job.attempt = (job.attempt ?? 1) + 1;
+  if (job.research && (consumed || ++job.research.revisions >= 2)) {
+    finishResearchOption(job, reasons);
+    return;
+  }
   if (consumed) job.validationWindow = (job.validationWindow ?? 0) + 1;
   delete job.candidates;
   delete job.riskReview;
@@ -220,10 +326,12 @@ export async function advanceGeneration(
   if (!(await claimGenerationJob(id, token))) return job;
   job = (await getGenerationJob(id))!;
   if (job.status !== "running") return job;
-  const stage = GENERATION_STAGES[job.stageIndex];
+  const stage = job.research?.phase === "discovery"
+    ? { id: "discovery" as const, label: "종목과 시간대 탐색", role: "orchestrator" as const }
+    : GENERATION_STAGES[job.stageIndex];
   try {
     if (!stage) throw new Error("알 수 없는 생성 단계");
-    if (!job.universe?.length)
+    if (!job.universe?.length && stage.id !== "discovery")
       throw new Error(
         "종목 범위가 없는 이전 작업입니다. 종목코드를 입력해 새 연구를 시작하세요.",
       );
@@ -240,12 +348,32 @@ export async function advanceGeneration(
     });
     await generationProgress(job, token);
     onProgress(stage.label);
+    if (stage.id === "discovery") {
+      await checkGenerationModels();
+      const research = job.research!;
+      research.discovery ??= await discoverResearchUniverse(job, onProgress);
+      await generationProgress(job, token);
+      const registered = await registeredRelayStrategies();
+      const slots = SLOTS.filter(slot => (!research.constraints.slot || slot.id === research.constraints.slot) &&
+        (research.goal !== "complement" || !registered.some(strategy => strategy.slot === slot.id)));
+      if (!slots.length) throw new Error("연구할 빈 시간대가 없습니다. 자동 탐색으로 기존 전략의 대안을 비교할 수 있습니다.");
+      const prompt = `RESEARCH_DISCOVERY: Build 1–3 distinct, ranked research options using only the measured candidate symbols and allowed slots. You choose symbols, time window and falsifiable hypothesis. These are options for empirical comparison, not buy/sell instructions. Do not refuse research because investing has risk. Evaluate liquidity, whole-share affordability and available training data. The daily snapshot is a coarse screen, not intraday evidence or proof of an edge. Prefer economical scopes of 1–2 symbols. Engine supports completed OHLCV return/VWAP/range/volume/breakout conditions, 1/3/5-minute bars, long-only, one entry per slot/day and slot-end exit. No news/options/shorting signals. Goal complement means target underrepresented time windows or different hypotheses; do not claim measured diversification or improved portfolio performance. User constraints may restrict choices. Do not promise returns or invent statistics. All options share one $${job.budgetUsd} budget and immutable chronological test blocks. Data: ${JSON.stringify({ goal: research.goal, brief: job.brief, capitalUsd: job.capitalUsd, constraints: research.constraints, discovery: research.discovery, slots, existingStrategies: registered.map(strategy => ({ name: strategy.name, slot: strategy.slot, universe: strategy.universe, summary: strategy.summary })) })}`;
+      const plan = validateDiscoveryPlan(await ask(job, "orchestrator", discoveryPlanSchema, prompt),
+        research.discovery.candidates.map(row => row.symbol), slots.map(slot => slot.id), research.constraints);
+      research.summary = plan.summary;
+      research.options = plan.options.map((option, index) => ({ ...option, id: `${job.id}:option:${index}`, status: "queued", reasons: [] }));
+      research.phase = "experiments";
+      beginResearchOption(job);
+      job.events.push({ at: new Date().toISOString(), stage: "discovery", state: "done", detail: plan.summary, role: "orchestrator" });
+      await saveGenerationJob(job, token);
+      return (await getGenerationJob(id)) ?? job;
+    }
     const slot = slotById(job.slot)!;
     if (stage.id === "plan" || stage.id === "data_review") {
-      const sessions = await readGenerationData(job.id);
+      const sessions = await readGenerationData(researchDataId(job));
       if (
         (job.validationWindow ?? 0) >=
-        researchSplit(sessions, 0, job.researchSessions).windows
+        splitResearchJob(job, sessions, true).windows
       ) {
         pause(
           job,
@@ -263,13 +391,16 @@ export async function advanceGeneration(
         await saveGenerationJob(job, token);
         return job;
       }
-      job.dataSummary = summarizeResearch(job, sessions);
+      job.dataSummary = await researchSummary(job, sessions);
     }
     const context = JSON.stringify({
       slot,
       brief: job.brief,
+      researchOption: job.research?.options[job.research.current],
+      previousOptions: job.research?.options.filter(option => option.status === "rejected" || option.status === "passed").map(option => ({ title: option.title, slot: option.slot, universe: option.universe, reasons: option.reasons, status: option.status })),
       capitalUsd: job.capitalUsd,
       universe: job.universe,
+      barIntervals: job.sourceBarMinutes === 1 ? STRATEGY_INTERVALS : ["5m"],
       period: { from: job.from, to: job.to },
       trainingData: job.dataSummary,
       executionContract:
@@ -312,10 +443,10 @@ export async function advanceGeneration(
           job,
           "orchestrator",
           planSchema,
-          `Act as GPT-6 Astra orchestrator. On revisions, reconcile previous blockers and executable rules with a new preregistered hypothesis for this attempt. Plan falsifiable cash-only intraday research for exactly this slot. Use exactly the user-selected universe. Do not add or remove symbols. Assess measured whole-share affordability, liquidity and modeled costs before planning. You will delegate data summarization, rule design, independent Anthropic reviews and deterministic replay. Use training summaries only; never inspect future test blocks. No promise of returns. Context: ${context}\n${DETAIL_CHECKLIST}`,
+          `Act as the strategy research orchestrator. On revisions, reconcile previous blockers and executable rules with a new preregistered hypothesis for this attempt. Plan falsifiable cash-only intraday research for exactly this slot. Use exactly this experiment’s selected universe. Do not add or remove symbols. Assess measured whole-share affordability, liquidity and modeled costs before planning. You will delegate data summarization, rule design, independent Anthropic reviews and deterministic replay. Use training summaries only; never inspect future test blocks. No promise of returns. Context: ${context}\n${DETAIL_CHECKLIST}`,
         );
         if (
-          job.plan.universe.length !== job.universe.length ||
+          job.plan.universe.length !== job.universe!.length ||
           job.plan.universe.some((s) => !job.universe!.includes(s))
         )
           revise(job, "plan", [
@@ -333,13 +464,16 @@ export async function advanceGeneration(
           task.to,
           0,
           onProgress,
+          job.sourceBarMinutes ?? 5,
         );
         if (loaded.sources.some((s) => s.provider !== "Massive"))
           throw new Error(
             "검증 데이터는 Massive 단일 출처가 필요합니다. 대체 데이터로 승격하지 않습니다.",
           );
         if (loaded.warnings.length) throw new Error(loaded.warnings.join("; "));
-        await writeGenerationData(job.id, cursor, loaded.sessions);
+        const sourceIssues = auditDataset(loaded.sessions, [task.symbol], slot, job.sourceBarMinutes ?? 5);
+        if (sourceIssues.length) throw new Error(`데이터 품질 부족: ${sourceIssues.join("; ")}`);
+        await writeGenerationData(researchDataId(job), cursor, researchWindow(loaded.sessions, slot, job.sourceBarMinutes ?? 5));
         job.dataSources!.push(
           ...loaded.sources.map((s) => ({
             symbol: s.symbol,
@@ -361,14 +495,19 @@ export async function advanceGeneration(
           await saveGenerationJob(job, token);
           return job;
         }
-        const sessions = await readGenerationData(job.id),
-          issues = auditDataset(sessions, job.universe, slot);
+        const sessions = await readGenerationData(researchDataId(job)),
+          issues = auditDataset(sessions, job.universe!, slot);
         if (issues.length)
           throw new Error(`데이터 품질 부족: ${issues.join("; ")}`);
+        if (job.research) {
+          const split = splitResearchJob(job, sessions);
+          if (split.train.length < 90 || split.validation.length < 20 || split.holdout.length < 20)
+            throw new Error(`고정 검증 기간의 데이터 부족: 학습 ${split.train.length}, 검증 ${split.validation.length}, 최종 ${split.holdout.length}세션`);
+        }
         job.researchSessions ??= sessions.length;
         if (
           (job.validationWindow ?? 0) >=
-          researchSplit(sessions, 0, job.researchSessions).windows
+          splitResearchJob(job, sessions, true).windows
         ) {
           pause(
             job,
@@ -378,14 +517,14 @@ export async function advanceGeneration(
           );
           break;
         }
-        job.dataSummary = summarizeResearch(job, sessions);
+        job.dataSummary = await researchSummary(job, sessions);
         break;
       }
       case "data_review": {
-        const sessions = await readGenerationData(job.id);
+        const sessions = await readGenerationData(researchDataId(job));
         if (
           (job.validationWindow ?? 0) >=
-          researchSplit(sessions, 0, job.researchSessions).windows
+          splitResearchJob(job, sessions, true).windows
         ) {
           pause(
             job,
@@ -395,7 +534,7 @@ export async function advanceGeneration(
           );
           break;
         }
-        job.dataSummary = summarizeResearch(job, sessions);
+        job.dataSummary = await researchSummary(job, sessions);
         job.dataNote = await ask(
           job,
           "dataAnalyst",
@@ -409,13 +548,13 @@ export async function advanceGeneration(
           job,
           "designer",
           candidatesSchema,
-          `Design 1–3 distinct simple hypotheses as executable rules. Repair prior blockers using the full shared context and training diagnostics. Do not repeat identical rejected candidates. Do not invent sizing capabilities or require quotes absent from historical OHLCV. No arbitrary code. The parameters will be frozen before validation; only training can select candidates. ${context}\nPlan:${JSON.stringify(job.plan)}\nTraining data:${JSON.stringify(job.dataSummary)}\nData note:${JSON.stringify(job.dataNote)}\nLanguage:${JSON.stringify(z.toJSONSchema(candidateSchema))}\nFeatures ${FEATURES.join(",")}: all use last lookback+1 completed same-day consecutive 5-minute bars (including earlier slots). returnPct = last close / first close -1 in percent; vwapDistancePct uses typical-price volume weighted mean; rangePosition is 0..1 over sample; relativeVolume is last volume / prior sample mean; breakoutPct is percent above previous lookback highs; rangePct is sample high-low / close percent. All conditions AND. Rank selects one eligible symbol. Price/volume/affordability/gaps are hard guarded. minMinutesAfterOpen means minutes after this SLOT starts, not exchange open. Leave at least 10 minutes for exit. Max one entry per slot/day. Entry at next bar open. Stop and target relative to actual fill, conservative stop-first if both touched, mandatory slot end exit. Favor sparse falsifiable rules, no data-mined threshold sweeps. ${DETAIL_CHECKLIST}`,
+          `Design 1–3 distinct simple hypotheses as executable rules. Repair prior blockers using the full shared context and training diagnostics. Do not repeat identical rejected candidates. Do not invent sizing capabilities or require quotes absent from historical OHLCV. No arbitrary code. The parameters will be frozen before validation; only training can select candidates. ${context}\nPlan:${JSON.stringify(job.plan)}\nTraining data:${JSON.stringify(job.dataSummary)}\nData note:${JSON.stringify(job.dataNote)}\nLanguage:${JSON.stringify(z.toJSONSchema(candidateSchema))}\nFeatures ${FEATURES.join(",")}: Choose barInterval from context.barIntervals to match the hypothesis timescale; freeze it with the rule. All features use last lookback+1 completed same-day consecutive bars at that interval (including earlier slots). Lookback counts bars, not minutes. minBarDollarVolume and participation apply to that same resolution; use barResolutions training evidence. returnPct = last close / first close -1 in percent; vwapDistancePct uses typical-price volume weighted mean; rangePosition is 0..1 over sample; relativeVolume is last volume / prior sample mean; breakoutPct is percent above previous lookback highs; rangePct is sample high-low / close percent. All conditions AND. Rank selects one eligible symbol. Price/volume/affordability/gaps are hard guarded. minMinutesAfterOpen means minutes after this SLOT starts, not exchange open. Leave at least two strategy bars before the slot ends. Max one entry per slot/day. Entry at the next strategy bar open; the delay stress is one bar of this same interval. Stop and target relative to actual fill, conservative stop-first if both touched, mandatory slot end exit. Favor sparse falsifiable rules, no data-mined threshold sweeps. ${DETAIL_CHECKLIST}`,
         );
         job.candidates = output.candidates;
         const feasibility = candidateFeasibility(
           job,
           job.candidates,
-          await readGenerationData(job.id),
+          await readGenerationData(researchDataId(job)),
         );
         if (feasibility.issues.length)
           revise(job, "design", feasibility.issues);
@@ -427,7 +566,7 @@ export async function advanceGeneration(
           job,
           "riskReviewer",
           reviewSchema,
-          `You independently review GPT-6 Astra rules. Reject any material unsupported assumption, unexecutable candidate or leakage. Review ALL candidates against the supplied engine contract. Require exact actionable repairs for blockers. Known disclosed OHLCV limitations belong in cautions unless rules depend on unavailable data. Do not invent a per-trade risk budget, and do not reject solely because a feasible whole-share strategy uses small capital. Review ALL candidates; no rewriting. A backtest is not a guarantee. ${DETAIL_CHECKLIST}\n${context}\n${JSON.stringify({ plan: job.plan, candidates: job.candidates, data: job.dataSummary, language: z.toJSONSchema(candidateSchema) })}`,
+          `You independently review GPT-6.1 Sol rules. Reject any material unsupported assumption, unexecutable candidate or leakage. Review ALL candidates against the supplied engine contract. Require exact actionable repairs for blockers. Known disclosed OHLCV limitations belong in cautions unless rules depend on unavailable data. Do not invent a per-trade risk budget, and do not reject solely because a feasible whole-share strategy uses small capital. Review ALL candidates; no rewriting. A backtest is not a guarantee. ${DETAIL_CHECKLIST}\n${context}\n${JSON.stringify({ plan: job.plan, candidates: job.candidates, data: job.dataSummary, language: z.toJSONSchema(candidateSchema) })}`,
         );
         if (!job.riskReview.approved || job.riskReview.blockers.length)
           revise(
@@ -440,28 +579,25 @@ export async function advanceGeneration(
         break;
       }
       case "training": {
-        const sessions = await readGenerationData(job.id),
-          split = researchSplit(
-            sessions,
-            job.validationWindow ?? 0,
-            job.researchSessions,
-          );
-        const trials = job.candidates!.map((candidate, i) => {
+        const trials: Array<{ spec: ReturnType<typeof parseSpec>; result: ReturnType<typeof runRelay> }> = [];
+        for (const [i, candidate] of job.candidates!.entries()) {
+          const sessions = await readGenerationData(researchDataId(job), strategyBarMinutes(candidate));
+          const split = splitResearchJob(job, sessions);
           const spec = parseSpec({
             version: 1,
-            id: `generated-${job.id}-${i}`,
+            id: `generated-${job.id}-${job.research?.current ?? 0}-${i}`,
             slot: job.slot,
             universe: job.plan!.universe,
             candidate,
-            evidence: `생성 ${job.id} · 과거 5분봉 검증`,
+            evidence: `생성 ${job.id} · 과거 ${candidate.barInterval ?? "5m"}봉 검증`,
           });
-          return {
+          trials.push({
             spec,
             result: runRelay([compileStrategy(spec)], split.train, {
               capitalUsd: job.capitalUsd,
             }),
-          };
-        });
+          });
+        }
         job.trials = trials.map((t) => ({
           name: t.spec.candidate.name,
           metrics: t.result.metrics,
@@ -496,18 +632,14 @@ export async function advanceGeneration(
           throw new Error("동결 규칙 없음");
         if (job.frozenHash !== (await strategySpecHash(job.selected)))
           throw new Error("동결한 규칙이 변경되었습니다.");
-        const sessions = await readGenerationData(job.id);
+        const sessions = await readGenerationData(researchDataId(job), strategyBarMinutes(job.selected.candidate));
         job.evidence = validateFrozen(
           job.selected,
           sessions,
           job.capitalUsd,
           job.training,
           job.frozenAt,
-          researchSplit(
-            sessions,
-            job.validationWindow ?? 0,
-            job.researchSessions,
-          ),
+          splitResearchJob(job, sessions),
         );
         // Still ask the independent reviewer to diagnose a failed test; publication remains impossible.
         break;
@@ -546,8 +678,11 @@ export async function advanceGeneration(
         );
         break;
       case "publish":
-        await publishGeneration(job, token);
-        job.status = "completed";
+        if (job.research) finishResearchOption(job);
+        else {
+          await publishGeneration(job, token);
+          job.status = "completed";
+        }
         break;
     }
     job.events.push({
@@ -559,7 +694,7 @@ export async function advanceGeneration(
         (job.attempts?.at(-1)?.attempt === (job.attempt ?? 1) - 1 &&
         job.attempts.at(-1)?.stage === stage.id
           ? `후보 개선 ${job.attempt}회차로 자동 진행: ${job.attempts.at(-1)!.reasons.join("; ")}`
-          : `${stage.label} 완료`),
+          : stage.id === "publish" && job.research ? "후보 검증 결과 저장 · 배정은 사용자가 선택" : `${stage.label} 완료`),
       role: stage.role,
     });
     if (job.status === "running") job.stageIndex++;
@@ -572,6 +707,9 @@ export async function advanceGeneration(
         error.message,
         "예산을 추가하면 같은 연구 기록과 현재 단계에서 이어갑니다.",
       );
+    } else if (job.research?.phase === "experiments" && stage?.id === "data") {
+      finishResearchOption(job, [error instanceof Error ? error.message : "데이터 확보 실패"]);
+      if (job.status === "running") job.stageIndex++;
     } else {
       job.status = "failed";
       job.error = error instanceof Error ? error.message : "전략 생성 실패";
@@ -580,7 +718,7 @@ export async function advanceGeneration(
       at: new Date().toISOString(),
       stage: stage?.id ?? "plan",
       state: "error",
-      detail: job.error ?? "전략 생성 실패",
+      detail: job.error ?? (error instanceof Error ? error.message : "전략 생성 실패"),
       role: stage?.role ?? null,
     });
     await saveGenerationJob(job, token);

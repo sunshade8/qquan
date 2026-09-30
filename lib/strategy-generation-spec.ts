@@ -38,6 +38,9 @@ export const FEATURES = [
   "breakoutPct",
   "rangePct",
 ] as const;
+export const STRATEGY_INTERVALS = ["1m", "3m", "5m"] as const;
+export const strategyBarMinutes = (candidate: { barInterval?: (typeof STRATEGY_INTERVALS)[number] }): 1 | 3 | 5 =>
+  candidate.barInterval === "1m" ? 1 : candidate.barInterval === "3m" ? 3 : 5;
 const conditionSchema = z
   .object({
     feature: z.enum(FEATURES),
@@ -50,6 +53,7 @@ export const candidateSchema = z
   .object({
     name: z.string().min(3).max(100),
     hypothesis: z.string().min(20).max(1600),
+    barInterval: z.enum(STRATEGY_INTERVALS),
     conditions: z.array(conditionSchema).min(2).max(6),
     rankBy: z.enum(FEATURES),
     rankDirection: z.enum(["asc", "desc"]),
@@ -153,7 +157,8 @@ export function parseSpec(value: unknown): StrategySpec {
       id: z.string().min(1).max(100),
       slot: z.enum(SLOT_IDS),
       universe: universeSchema,
-      candidate: candidateSchema,
+      // Already frozen rules without a resolution retain their original 5m meaning.
+      candidate: candidateSchema.extend({ barInterval: z.enum(STRATEGY_INTERVALS).default("5m") }),
       evidence: z.string().max(5000),
     })
     .strict();
@@ -163,7 +168,7 @@ export function parseSpec(value: unknown): StrategySpec {
   const slot = slotById(spec.slot)!;
   if (
     spec.candidate.minMinutesAfterOpen >=
-    minute(slot.to) - minute(slot.from) - 5
+    minute(slot.to) - minute(slot.from) - strategyBarMinutes(spec.candidate)
   )
     throw new Error("슬롯 안에 진입·청산 시간이 남지 않는 규칙");
   return spec;
@@ -196,16 +201,18 @@ function usableBars(context: SlotSessionContext, symbol: string) {
 export function compileStrategy(value: unknown): SlotStrategy {
   const spec = parseSpec(value),
     c = spec.candidate;
+  const step = strategyBarMinutes(c);
   return {
+    barMinutes: step,
     id: spec.id,
     name: c.name,
     slot: spec.slot,
     universe: [...spec.universe],
     summary: c.hypothesis,
-    rules: c.conditions.map(
+    rules: [`${step}분봉 완성 후 판단 · 다음 ${step}분봉 진입`, ...c.conditions.map(
       (x) =>
         `${x.feature}(${x.lookback}) ${x.operator === "gte" ? "≥" : "≤"} ${x.value}`,
-    ),
+    )],
     evidence: spec.evidence,
     cautions: c.cautions,
     warmupSessions: 0,
@@ -215,8 +222,9 @@ export function compileStrategy(value: unknown): SlotStrategy {
         slotStart = minute(context.slot.from),
         end = minute(context.slot.to);
       if (
-        time + 5 < slotStart + c.minMinutesAfterOpen ||
-        time + 10 >= end ||
+        time % step !== 0 ||
+        time + step < slotStart + c.minMinutesAfterOpen ||
+        time + 2 * step >= end ||
         !(context.equityUsd > 0)
       )
         return null;
@@ -233,7 +241,7 @@ export function compileStrategy(value: unknown): SlotStrategy {
             .slice(-needed)
             .some(
               (b, i, a) =>
-                i > 0 && minute(b.time) - minute(a[i - 1].time) !== 5,
+                i > 0 && minute(b.time) - minute(a[i - 1].time) !== step,
             )
         )
           continue;
