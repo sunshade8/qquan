@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { researchFailure, uncertainResearchCost } from "./research-recovery.ts";
+import { usageCostUsd } from "@/lib/llm-usage";
 import { slotById, SLOTS, assertTradable } from "./trade-slots.ts";
 import { researchRequestSchema, researchCalendar, discoveryPlanSchema, validateDiscoveryPlan } from "./strategy-discovery.ts";
 import { discoverResearchUniverse } from "@/lib/strategy-discovery-data";
@@ -6,11 +8,12 @@ import { shiftDate } from "./market-clock.ts";
 import { lastCompleteDate, loadRelaySessions } from "@/lib/relay-data";
 import {
   generationAvailability,
-  checkGenerationModels,
   generationCall,
 } from "@/lib/strategy-generation-llm";
 import {
   GENERATION_MODELS,
+  researchModel,
+  researchMaxTokens,
   assertDifferentProvider,
   type GenerationRole,
 } from "./strategy-generation-models.ts";
@@ -46,6 +49,8 @@ import { runRelay, type SessionBars } from "./relay-engine.ts";
 import {
   GENERATION_STAGES,
   type GenerationJob,
+  type ResearchCall,
+  type ResearchMeter,
   publicJob,
 } from "./strategy-generation-types.ts";
 import {
@@ -53,6 +58,7 @@ import {
   getGenerationJob,
   claimGenerationJob,
   generationProgress,
+  saveResearchMeter,
   saveGenerationJob,
   registeredRelayStrategies,
   writeGenerationData,
@@ -226,31 +232,88 @@ function researchWindow(sessions: SessionBars[], slot: NonNullable<ReturnType<ty
     return { date: day.date, bars, barsByStep: { [step]: bars } };
   });
 }
-async function ask<T extends z.ZodType>(
-  job: GenerationJob,
-  role: GenerationRole,
-  schema: T,
-  prompt: string,
-) {
-  const model = GENERATION_MODELS[role];
-  // Reserve a conservative upper bound before each call; no hidden retries/fallbacks.
-  const maxOutput =
-    role === "dataAnalyst"
-      ? 4000
-      : role === "reporter"
-        ? 3000
-        : model.provider === "OpenAI"
-          ? 16000
-          : 12000;
-  const reserve =
-    (prompt.length * 2 * model.input + maxOutput * model.output) / 1_000_000;
-  if (job.costUsd + reserve > job.budgetUsd)
-    throw new ResearchBudgetError(
-      `연구 예산 $${job.budgetUsd} 내 추가 호출 여유가 없습니다.`,
-    );
-  const result = await generationCall(job.ownerId, role, schema, prompt);
-  job.costUsd += result.costUsd;
-  return result.data;
+type ResearchRuntime = { token: string; onUsage: (meter: ResearchMeter) => void };
+const runtimes = new WeakMap<GenerationJob, ResearchRuntime>();
+async function ask<T extends z.ZodType>(job: GenerationJob, role: GenerationRole, schema: T, prompt: string) {
+  const runtime = runtimes.get(job)!;
+  const model = researchModel(role, job.recovery?.failures);
+  const keyBytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify({
+    role, prompt, schema: z.toJSONSchema(schema), option: job.research?.current, attempt: job.attempt, stage: job.stageIndex,
+  })));
+  const key = Array.from(new Uint8Array(keyBytes), value => value.toString(16).padStart(2, "0")).join("");
+  job.calls ??= [];
+  const cached = job.calls.find(call => call.key === key && call.status === "completed");
+  if (cached) return schema.parse(cached.result);
+  // A killed worker may have incurred charges even if its final response was lost.
+  for (const old of job.calls.filter(call => call.status === "started")) {
+    old.status = "interrupted";
+    old.uncertainUsd = old.reserveUsd;
+    old.error = "연결 중단으로 최종 사용량 미확인";
+  }
+  // Includes system/schema overhead and a conservative UTF token bound, including retries.
+  const reserve = ((prompt.length + JSON.stringify(z.toJSONSchema(schema)).length + 4000) * 2 * model.input + researchMaxTokens(role) * model.output) / 1_000_000;
+  if (job.costUsd + uncertainResearchCost(job.calls) + reserve > job.budgetUsd)
+    throw new ResearchBudgetError(`연구 예산 $${job.budgetUsd} 내 추가 호출 여유가 없습니다. 미확인 호출 비용도 한도에 포함합니다.`);
+  const now = new Date().toISOString();
+  const call: ResearchCall = { id: crypto.randomUUID(), key, role, model: model.model, provider: model.provider,
+    status: "started", startedAt: now, updatedAt: now, usage: {}, estimated: true, costUsd: 0, reserveUsd: reserve };
+  job.calls.push(call);
+  await generationProgress(job, runtime.token); // Intent is durable BEFORE spending money.
+  let persistedAt = Date.now(), meteredAt = 0;
+  let accounted = false;
+  const meter = () => {
+    const { result: _result, key: _key, ...publicCall } = call;
+    void _result; void _key;
+    const snapshot = { jobId: job.id, call: publicCall, costUsd: job.costUsd, uncertainUsd: uncertainResearchCost(job.calls) };
+    runtime.onUsage(snapshot);
+    return snapshot;
+  };
+  try {
+    const result = await generationCall(job.ownerId, role, schema, prompt, {
+      failures: job.recovery?.failures,
+      onUsage: async (usage, estimated) => {
+        call.usage = usage;
+        call.estimated = estimated;
+        call.costUsd = usageCostUsd(call.model, usage) ?? 0;
+        call.updatedAt = new Date().toISOString();
+        const snapshot = meter();
+        if (Date.now() - meteredAt >= 2000 || !estimated) {
+          await saveResearchMeter(snapshot, runtime.token);
+          meteredAt = Date.now();
+        }
+        // Stream to the browser immediately; checkpoint at most once per 10s to avoid D1 overload.
+        if (Date.now() - persistedAt >= 10_000) {
+          await generationProgress(job, runtime.token);
+          persistedAt = Date.now();
+        }
+      },
+    });
+    call.result = result.data;
+    call.status = "completed";
+    call.estimated = false;
+    call.costUsd = result.costUsd;
+    call.updatedAt = new Date().toISOString();
+    job.costUsd += result.costUsd;
+    accounted = true;
+    // A replay reuses the validated response even if the following stage commit was interrupted.
+    await generationProgress(job, runtime.token);
+    await saveResearchMeter(meter(), runtime.token);
+    return result.data;
+  } catch (error) {
+    if (!accounted) {
+      call.status = "failed";
+      const failure = researchFailure(error);
+      call.error = failure.message;
+      if ([400, 401, 402, 403, 404, 429].includes(failure.status)) {
+        call.usage = {}; call.costUsd = 0; call.estimated = false;
+      }
+      if (call.estimated) call.uncertainUsd = call.reserveUsd;
+      else job.costUsd += call.costUsd;
+      await generationProgress(job, runtime.token);
+    }
+    meter();
+    throw error;
+  }
 }
 class ResearchBudgetError extends Error {}
 function pause(
@@ -306,6 +369,7 @@ function revise(
 export async function advanceGeneration(
   id: string,
   onProgress: (message: string) => void = () => undefined,
+  onUsage: (meter: ResearchMeter) => void = () => undefined,
 ) {
   let job = await getGenerationJob(id);
   if (
@@ -322,10 +386,18 @@ export async function advanceGeneration(
     job = await getGenerationJob(id);
   }
   if (!job || job.status !== "running") return job;
+  if (job.recovery?.retryAt && Date.parse(job.recovery.retryAt) > Date.now()) return job;
   const token = crypto.randomUUID();
   if (!(await claimGenerationJob(id, token))) return job;
   job = (await getGenerationJob(id))!;
   if (job.status !== "running") return job;
+  runtimes.set(job, { token, onUsage });
+  let committing = false;
+  const commit = async () => {
+    committing = true;
+    await saveGenerationJob(job!, token);
+    committing = false;
+  };
   const stage = job.research?.phase === "discovery"
     ? { id: "discovery" as const, label: "종목과 시간대 탐색", role: "orchestrator" as const }
     : GENERATION_STAGES[job.stageIndex];
@@ -335,10 +407,14 @@ export async function advanceGeneration(
       throw new Error(
         "종목 범위가 없는 이전 작업입니다. 종목코드를 입력해 새 연구를 시작하세요.",
       );
-    if (job.events.at(-1)?.state === "started")
-      throw new Error(
-        "이전 단계가 중단되었습니다. 중복 과금·검증 재사용을 막기 위해 종료합니다. 새 생성으로 재시도하세요.",
-      );
+    if (job.events.at(-1)?.state === "started") {
+      const failures = (job.recovery?.failures ?? 0) + 1;
+      job.recovery = { failures, message: "실행 중단 감지 · 저장된 단계 복구" };
+      if (failures >= 3) throw new Error("반복된 실행 중단으로 자동 복구를 일시정지합니다.");
+      onProgress("중단된 단계 복구 · 완료된 모델 응답과 기존 검증 기록 재사용");
+    }
+    job.error = null;
+    delete job.nextAction;
     job.events.push({
       at: new Date().toISOString(),
       stage: stage.id,
@@ -349,7 +425,6 @@ export async function advanceGeneration(
     await generationProgress(job, token);
     onProgress(stage.label);
     if (stage.id === "discovery") {
-      await checkGenerationModels();
       const research = job.research!;
       research.discovery ??= await discoverResearchUniverse(job, onProgress);
       await generationProgress(job, token);
@@ -365,7 +440,8 @@ export async function advanceGeneration(
       research.phase = "experiments";
       beginResearchOption(job);
       job.events.push({ at: new Date().toISOString(), stage: "discovery", state: "done", detail: plan.summary, role: "orchestrator" });
-      await saveGenerationJob(job, token);
+      delete job.recovery;
+      await commit();
       return (await getGenerationJob(id)) ?? job;
     }
     const slot = slotById(job.slot)!;
@@ -388,7 +464,7 @@ export async function advanceGeneration(
           detail: job.error!,
           role: stage.role,
         });
-        await saveGenerationJob(job, token);
+        await commit();
         return job;
       }
       job.dataSummary = await researchSummary(job, sessions);
@@ -437,8 +513,6 @@ export async function advanceGeneration(
     });
     switch (stage.id) {
       case "plan": {
-        onProgress("필수 모델 접근 확인 (읽기 전용)");
-        await checkGenerationModels();
         job.plan = await ask(
           job,
           "orchestrator",
@@ -456,7 +530,7 @@ export async function advanceGeneration(
       }
       case "data": {
         const cursor = job.dataCursor ?? 0,
-          task = job.dataTasks?.[cursor];
+          task = job.dataTasks?.[Math.min(cursor, job.dataTasks.length - 1)];
         if (!task) throw new Error("데이터 수집 계획 없음");
         const loaded = await loadRelaySessions(
           [task.symbol],
@@ -473,8 +547,9 @@ export async function advanceGeneration(
         if (loaded.warnings.length) throw new Error(loaded.warnings.join("; "));
         const sourceIssues = auditDataset(loaded.sessions, [task.symbol], slot, job.sourceBarMinutes ?? 5);
         if (sourceIssues.length) throw new Error(`데이터 품질 부족: ${sourceIssues.join("; ")}`);
-        await writeGenerationData(researchDataId(job), cursor, researchWindow(loaded.sessions, slot, job.sourceBarMinutes ?? 5));
-        job.dataSources!.push(
+        await writeGenerationData(researchDataId(job), Math.min(cursor, job.dataTasks!.length - 1), researchWindow(loaded.sessions, slot, job.sourceBarMinutes ?? 5));
+        job.dataSources = (job.dataSources ?? []).filter(source => !(source.symbol === task.symbol && source.from === task.from && source.to === task.to));
+        job.dataSources.push(
           ...loaded.sources.map((s) => ({
             symbol: s.symbol,
             provider: s.provider,
@@ -483,7 +558,7 @@ export async function advanceGeneration(
             to: task.to,
           })),
         );
-        job.dataCursor = cursor + 1;
+        job.dataCursor = Math.min(cursor + 1, job.dataTasks!.length);
         if (job.dataCursor < job.dataTasks!.length) {
           job.events.push({
             at: new Date().toISOString(),
@@ -492,7 +567,8 @@ export async function advanceGeneration(
             detail: `데이터 ${job.dataCursor}/${job.dataTasks!.length} 구간 확보`,
             role: null,
           });
-          await saveGenerationJob(job, token);
+          delete job.recovery;
+          await commit();
           return job;
         }
         const sessions = await readGenerationData(researchDataId(job)),
@@ -650,7 +726,7 @@ export async function advanceGeneration(
           job,
           "evidenceReviewer",
           reviewSchema,
-          `You are the independent Claude Opus 5 final verifier of GPT's frozen strategy. All metrics were computed by the actual relay engine, not by an LLM. Check sample size, costs, missed fills, drawdowns, train/validation/holdout drift, regime concentration, multiple hypotheses tried, data limits and realistic execution. NEVER approve if deterministic passed=false. Do not change parameters or ask for another try on this holdout. ${DETAIL_CHECKLIST}\n${context}\n${JSON.stringify({ spec: job.selected, trials: job.trials, evidence: job.evidence, data: job.dataSummary, risk: job.riskReview })}`,
+          `You are the independent Anthropic final verifier of GPT's frozen strategy. All metrics were computed by the actual relay engine, not by an LLM. Check sample size, costs, missed fills, drawdowns, train/validation/holdout drift, regime concentration, multiple hypotheses tried, data limits and realistic execution. NEVER approve if deterministic passed=false. Do not change parameters or ask for another try on this holdout. ${DETAIL_CHECKLIST}\n${context}\n${JSON.stringify({ spec: job.selected, trials: job.trials, evidence: job.evidence, data: job.dataSummary, risk: job.riskReview })}`,
         );
         if (
           !job.evidence?.passed ||
@@ -696,10 +772,16 @@ export async function advanceGeneration(
           ? `후보 개선 ${job.attempt}회차로 자동 진행: ${job.attempts.at(-1)!.reasons.join("; ")}`
           : stage.id === "publish" && job.research ? "후보 검증 결과 저장 · 배정은 사용자가 선택" : `${stage.label} 완료`),
       role: stage.role,
+      model: job.calls?.at(-1)?.role === stage.role ? job.calls.at(-1)?.model : undefined,
     });
     if (job.status === "running") job.stageIndex++;
-    await saveGenerationJob(job, token);
+    delete job.recovery;
+    await commit();
   } catch (error) {
+    // Never run failure transitions on a mutated stage whose commit was ambiguous.
+    if (/작업 취소 또는 실행 잠금/.test(String(error))) return await getGenerationJob(id);
+    if (committing) throw error;
+    const failure = researchFailure(error);
     if (error instanceof ResearchBudgetError) {
       pause(
         job,
@@ -707,6 +789,18 @@ export async function advanceGeneration(
         error.message,
         "예산을 추가하면 같은 연구 기록과 현재 단계에서 이어갑니다.",
       );
+    } else if (failure.recoverable || job.recovery?.message.includes("실행 중단")) {
+      const failures = (job.recovery?.failures ?? 0) + 1;
+      job.error = failure.message;
+      if (failure.transient && failures < 3) {
+        const seconds = failures === 1 ? 10 : 30;
+        job.recovery = { failures, retryAt: new Date(Date.now() + seconds * 1000).toISOString(), message: failure.message };
+        job.nextAction = `${seconds}초 후 같은 단계 자동 재시도${failures === 2 && stage?.role && GENERATION_MODELS[stage.role].provider === "Anthropic" ? " · Claude Sonnet 5 대체 검증" : ""}. 기존 후보와 검증 기록은 유지됩니다.`;
+        onProgress(job.nextAction);
+      } else {
+        job.recovery = { failures, message: failure.message };
+        pause(job, "interrupted", failure.message, "자동 복구를 멈췄습니다. 저장된 단계에서 이어갈 수 있습니다. 인증·결제 오류는 해당 설정을 확인한 뒤 재개하세요.");
+      }
     } else if (job.research?.phase === "experiments" && stage?.id === "data") {
       finishResearchOption(job, [error instanceof Error ? error.message : "데이터 확보 실패"]);
       if (job.status === "running") job.stageIndex++;
@@ -721,7 +815,7 @@ export async function advanceGeneration(
       detail: job.error ?? (error instanceof Error ? error.message : "전략 생성 실패"),
       role: stage?.role ?? null,
     });
-    await saveGenerationJob(job, token);
+    await commit();
   }
   // A cancellation wins over a late result returned by a provider.
   return (await getGenerationJob(id)) ?? job;

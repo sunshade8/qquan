@@ -7,6 +7,7 @@ import { env } from "cloudflare:workers";
  */
 
 const STATEMENTS = [
+  "CREATE TABLE IF NOT EXISTS strategy_generation_meters (run_id text PRIMARY KEY NOT NULL, payload text NOT NULL, updated_at integer NOT NULL)",
   "CREATE TABLE IF NOT EXISTS strategy_generation_runs (id text PRIMARY KEY, owner_id text NOT NULL, slot text NOT NULL, status text NOT NULL, payload text NOT NULL, created_at integer NOT NULL, updated_at integer NOT NULL, lease_owner text, lease_until integer)",
   "CREATE UNIQUE INDEX IF NOT EXISTS idx_generation_active ON strategy_generation_runs(status) WHERE status='running'",
   "CREATE INDEX IF NOT EXISTS idx_generation_owner ON strategy_generation_runs(owner_id,created_at)",

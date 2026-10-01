@@ -48,6 +48,16 @@ export const GENERATION_MODELS = {
   },
 } as const;
 export type GenerationRole = keyof typeof GENERATION_MODELS;
+/** Keep independent review on Anthropic even when Opus is temporarily unavailable. */
+export function researchModel(role: GenerationRole, failures = 0) {
+  const primary = GENERATION_MODELS[role];
+  return failures >= 2 && primary.provider === "Anthropic"
+    ? { ...primary, model: "claude-sonnet-5", input: 2, output: 10 }
+    : primary;
+}
+export function researchMaxTokens(role: GenerationRole) {
+  return role === "dataAnalyst" ? 4000 : role === "reporter" ? 3000 : GENERATION_MODELS[role].provider === "OpenAI" ? 16000 : 12000;
+}
 export function assertDifferentProvider(
   author: GenerationRole,
   reviewer: GenerationRole,

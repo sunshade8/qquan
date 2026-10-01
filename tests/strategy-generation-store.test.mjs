@@ -10,7 +10,7 @@ class Statement {
  constructor(sql,values=[]){this.sql=sql;this.values=values;}
  bind(...values){return new Statement(this.sql,values);}
  _run(){return {meta:{changes:Number(sqlite.prepare(this.sql).run(...this.values).changes)}};}
- async run(){return this._run();}
+ async run(){globalThis.__strategyTestHooks?.storageFault?.(this.sql,this.values);return this._run();}
  async first(){return sqlite.prepare(this.sql).get(...this.values)??null;}
  async all(){return {results:sqlite.prepare(this.sql).all(...this.values)};}
 }
@@ -270,4 +270,118 @@ test("automatic discovery budget pause preserves the snapshot and has no paid ca
  await store.resumeGenerationBudget(job);
  job=await finishResearch(await store.getGenerationJob(job.id));
  assert.equal(job.status,"completed",job.error);assert.equal(job.budgetUsd,8);
+});
+
+async function advanceTo(job, index) {
+ while (job.stageIndex < index && job.status === "running") job = await workflow.advanceGeneration(job.id);
+ assert.equal(job.stageIndex, index);
+ return job;
+}
+async function skipCooldown(job) {
+ assert.ok(await store.claimGenerationJob(job.id, "skip-cooldown"));
+ delete job.recovery.retryAt;
+ await store.saveGenerationJob(job, "skip-cooldown");
+}
+test("524 retries only the failed review, uses Anthropic fallback and preserves frozen evidence", async () => {
+ let reviews = 0;
+ let job = await freshResearch(async (role, prompt, options) => {
+  if (role === "evidenceReviewer") {
+   reviews++;
+   if (reviews <= 2) throw Object.assign(new Error("Claude API 오류 (524): timeout"), {status:524});
+   assert.equal(options.failures, 2);
+  }
+  return defaultCall(role, prompt);
+ });
+ job = await advanceTo(job, 7);
+ const evidence = structuredClone(job.evidence), hash = job.frozenHash, attempt = job.attempt;
+ for (let failure = 1; failure <= 2; failure++) {
+  job = await workflow.advanceGeneration(job.id);
+  assert.equal(job.status, "running"); assert.equal(job.stageIndex, 7);
+  assert.equal(job.recovery.failures, failure); assert.ok(job.recovery.retryAt);
+  await workflow.advanceGeneration(job.id); assert.equal(reviews, failure, "cooldown forbids paid retry");
+  assert.deepEqual(job.evidence, evidence); assert.equal(job.frozenHash, hash); assert.equal(job.attempt, attempt);
+  await skipCooldown(job);
+ }
+ job = await workflow.advanceGeneration(job.id);
+ assert.equal(job.stageIndex, 8); assert.equal(job.recovery, undefined);
+ assert.equal(job.calls.at(-1).model, "claude-sonnet-5");
+ assert.equal(job.calls.at(-1).provider, "Anthropic");
+ assert.ok(job.calls.filter(c => c.status === "failed").every(c => c.uncertainUsd > 0));
+ assert.equal(calls.filter(c => c.role === "designer").length, 1);
+ await store.cancelGenerationJob(job);
+});
+test("three failures pause; manual resume keeps the same id, data, candidates and budget", async () => {
+ let job = await freshResearch(async(role,prompt) => {
+  if(role === "riskReviewer") throw Object.assign(new Error("Claude API 오류 (529): overloaded"), {status:529});
+  return defaultCall(role,prompt);
+ });
+ job = await advanceTo(job, 4);
+ const candidates = structuredClone(job.candidates), cursor = job.dataCursor, budget = job.budgetUsd;
+ for(let i=0;i<3;i++) { job = await workflow.advanceGeneration(job.id); if(i<2) await skipCooldown(job); }
+ assert.equal(job.status, "paused"); assert.equal(job.pauseReason, "interrupted");
+ const callCount = job.calls.length;
+ await workflow.advanceGeneration(job.id); assert.equal((await store.getGenerationJob(job.id)).calls.length,callCount);
+ await Promise.all([store.resumeGenerationFailure(structuredClone(job)),store.resumeGenerationFailure(structuredClone(job))]);
+ job = await store.getGenerationJob(job.id);
+ assert.equal(job.stageIndex,4); assert.equal(job.budgetUsd,budget); assert.equal(job.dataCursor,cursor); assert.deepEqual(job.candidates,candidates);
+ globalThis.__strategyTestHooks.call = defaultCall;
+ job = await workflow.advanceGeneration(job.id);
+ assert.equal(job.stageIndex,5); assert.equal(job.status,"running");
+ await store.cancelGenerationJob(job);
+});
+test("lost stage commit reuses the durable paid response without another call or charge", async () => {
+ let job = await advanceTo(await freshResearch(), 1);
+ globalThis.__strategyTestHooks.storageFault = (sql) => {
+  if(sql.includes("lease_owner=NULL,lease_until=NULL WHERE id=? AND lease_owner=?")) throw new Error("D1_ERROR: D1 DB is overloaded. Requests queued for too long.");
+ };
+ await assert.rejects(() => workflow.advanceGeneration(job.id), /D1/);
+ delete globalThis.__strategyTestHooks.storageFault;
+ job = await store.getGenerationJob(job.id);
+ assert.equal(job.stageIndex,1); assert.equal(job.calls.at(-1).status,"completed");
+ const before = calls.length, cost = job.costUsd;
+ sqlite.prepare("UPDATE strategy_generation_runs SET lease_until=0 WHERE id=?").run(job.id);
+ job = await workflow.advanceGeneration(job.id);
+ assert.equal(job.stageIndex,2); assert.equal(job.costUsd,cost); assert.equal(calls.length,before);
+ await store.cancelGenerationJob(job);
+});
+test("live usage is emitted and visible to a second viewer before a stage finishes", async () => {
+ const updates=[];
+ let job = await advanceTo(await freshResearch(),1);
+ let release, entered;
+ const wait = new Promise(resolve => {entered=resolve;});
+ globalThis.__strategyTestHooks.usage=async(role, options) => {
+  await options.onUsage({input_tokens:1000,output_tokens:3},true);
+  await options.onUsage({input_tokens:1000,output_tokens:30},true);
+  entered(); await new Promise(resolve => {release=resolve;});
+ };
+ const running=workflow.advanceGeneration(job.id,()=>{}, meter=>updates.push(meter));
+ await wait;
+ assert.equal(updates.length,2); assert.ok(updates[1].call.costUsd > updates[0].call.costUsd);
+ const viewer=(await store.listGenerationJobs(owner)).find(item=>item.id===job.id);
+ assert.equal(viewer.stageIndex,1); assert.equal(viewer.liveMeter.call.status,"started");
+ assert.equal(viewer.liveMeter.call.usage.input_tokens,1000);
+ release(); job=await running; delete globalThis.__strategyTestHooks.usage;
+ assert.equal(job.stageIndex,2); assert.equal(updates.at(-1).call.status,"completed");
+ await store.cancelGenerationJob(job);
+});
+test("legacy failed 524 jobs resume without creating new ideation or resetting their budget", async () => {
+ let job = await advanceTo(await freshResearch(),4);
+ assert.ok(await store.claimGenerationJob(job.id,"legacy"));
+ job.status="failed"; job.error="Claude API 오류 (524): 524 error code: 524";
+ await store.saveGenerationJob(job,"legacy");
+ const cost=job.costUsd, candidates=structuredClone(job.candidates);
+ await store.resumeGenerationFailure(job);
+ job=await store.getGenerationJob(job.id);
+ assert.equal(job.stageIndex,4); assert.equal(job.costUsd,cost); assert.deepEqual(job.candidates,candidates);
+ job=await workflow.advanceGeneration(job.id); assert.equal(job.stageIndex,5);
+ await store.cancelGenerationJob(job);
+});
+test("permanent authentication error pauses immediately instead of retrying or rejecting a hypothesis", async () => {
+ let job = await freshResearch(async(role,prompt) => {
+  if(role === "riskReviewer") throw Object.assign(new Error("Claude API 키가 유효하지 않습니다."), {status:401});
+  return defaultCall(role,prompt);
+ });
+ job=await advanceTo(job,4); job=await workflow.advanceGeneration(job.id);
+ assert.equal(job.pauseReason,"interrupted"); assert.equal(job.recovery.failures,1); assert.equal(job.recovery.retryAt,undefined);
+ await store.cancelGenerationJob(job);
 });

@@ -1,3 +1,5 @@
+import { researchFailure, retryResearchStorage } from "./research-recovery.ts";
+import { GENERATION_STAGES } from "./strategy-generation-types.ts";
 import { env } from "cloudflare:workers";
 import { easternParts, shiftDate } from "./market-clock.ts";
 import { ensureSchema } from "@/db/ensure";
@@ -7,7 +9,7 @@ import {
   strategySpecHash,
   type StrategySpec,
 } from "./strategy-generation-spec.ts";
-import type { GenerationJob } from "./strategy-generation-types.ts";
+import type { GenerationJob, ResearchMeter } from "./strategy-generation-types.ts";
 import { evidenceProblems } from "./strategy-generation-validation.ts";
 import type { SessionBars } from "./relay-engine.ts";
 import { rollUpComplete } from "./bar-rollup.ts";
@@ -20,7 +22,7 @@ type CompactGenerationData = {
 function db() {
   return (env as unknown as { DB: D1Database }).DB;
 }
-export async function listGenerationJobs(ownerId: string) {
+async function listGenerationJobsOnce(ownerId: string) {
   await ensureSchema();
   const rows = await db()
     .prepare(
@@ -28,9 +30,15 @@ export async function listGenerationJobs(ownerId: string) {
     )
     .bind(ownerId)
     .all<{ payload: string }>();
-  return rows.results.map((r) => JSON.parse(r.payload) as GenerationJob);
+  const jobs = rows.results.map((r) => JSON.parse(r.payload) as GenerationJob);
+  const meters = await db().prepare("SELECT m.run_id, m.payload FROM strategy_generation_meters m JOIN strategy_generation_runs r ON r.id=m.run_id WHERE r.owner_id=? AND r.status='running'").bind(ownerId).all<{ run_id: string; payload: string }>();
+  for (const row of meters.results) {
+    const job = jobs.find(item => item.id === row.run_id);
+    if (job) job.liveMeter = JSON.parse(row.payload) as ResearchMeter;
+  }
+  return jobs;
 }
-export async function getGenerationJob(id: string) {
+async function getGenerationJobOnce(id: string) {
   await ensureSchema();
   const row = await db()
     .prepare("SELECT payload FROM strategy_generation_runs WHERE id=?")
@@ -63,7 +71,7 @@ export async function createGenerationJob(job: GenerationJob) {
     throw error;
   }
 }
-export async function claimGenerationJob(id: string, token: string) {
+async function claimGenerationJobOnce(id: string, token: string) {
   const now = Date.now();
   const result = await db()
     .prepare(
@@ -73,7 +81,7 @@ export async function claimGenerationJob(id: string, token: string) {
     .run();
   return result.meta.changes === 1;
 }
-export async function saveGenerationJob(job: GenerationJob, token: string) {
+async function saveGenerationJobOnce(job: GenerationJob, token: string) {
   job.updatedAt = new Date().toISOString();
   const result = await db()
     .prepare(
@@ -83,7 +91,7 @@ export async function saveGenerationJob(job: GenerationJob, token: string) {
     .run();
   return result.meta.changes === 1;
 }
-export async function generationProgress(job: GenerationJob, token: string) {
+async function generationProgressOnce(job: GenerationJob, token: string) {
   job.updatedAt = new Date().toISOString();
   const result = await db()
     .prepare(
@@ -115,7 +123,7 @@ export async function nextGenerationJob() {
     .first<{ id: string }>();
   return row?.id ?? null;
 }
-export async function writeGenerationData(
+async function writeGenerationDataOnce(
   jobId: string,
   part: number,
   sessions: SessionBars[],
@@ -136,7 +144,7 @@ export async function writeGenerationData(
     .bind(jobId, part, JSON.stringify(payload))
     .run();
 }
-export async function readGenerationData(
+async function readGenerationDataOnce(
   jobId: string,
   step: 1 | 3 | 5 = 5,
 ): Promise<SessionBars[]> {
@@ -361,4 +369,64 @@ export async function resumeGenerationData(
     )
     .bind(JSON.stringify(job), Date.now(), job.id, previous)
     .run();
+}
+
+export function listGenerationJobs(...args: Parameters<typeof listGenerationJobsOnce>) {
+  return retryResearchStorage(() => listGenerationJobsOnce(...args));
+}
+
+export function getGenerationJob(...args: Parameters<typeof getGenerationJobOnce>) {
+  return retryResearchStorage(() => getGenerationJobOnce(...args));
+}
+
+export function claimGenerationJob(...args: Parameters<typeof claimGenerationJobOnce>) {
+  return retryResearchStorage(() => claimGenerationJobOnce(...args));
+}
+
+export function saveGenerationJob(...args: Parameters<typeof saveGenerationJobOnce>) {
+  return retryResearchStorage(() => saveGenerationJobOnce(...args));
+}
+
+export function generationProgress(...args: Parameters<typeof generationProgressOnce>) {
+  return retryResearchStorage(() => generationProgressOnce(...args));
+}
+
+export function writeGenerationData(...args: Parameters<typeof writeGenerationDataOnce>) {
+  return retryResearchStorage(() => writeGenerationDataOnce(...args));
+}
+
+export function readGenerationData(...args: Parameters<typeof readGenerationDataOnce>) {
+  return retryResearchStorage(() => readGenerationDataOnce(...args));
+}
+
+/** Compare-and-swap resumes the saved payload without clearing any research artifacts. */
+export async function resumeGenerationFailure(job: GenerationJob) {
+  if (!((job.status === "paused" && job.pauseReason === "interrupted") ||
+    (job.status === "failed" && researchFailure(new Error(job.error ?? "")).recoverable)))
+    throw new Error("복구 가능한 중단 연구만 이어갈 수 있습니다.");
+  const previous = JSON.stringify(job);
+  job.status = "running";
+  job.error = null;
+  job.recovery = { failures: 0, message: "사용자가 저장된 단계에서 연구 재개" };
+  delete job.pauseReason;
+  delete job.nextAction;
+  job.events.push({ at: new Date().toISOString(),
+    stage: job.research?.phase === "discovery" ? "discovery" : GENERATION_STAGES[job.stageIndex]?.id ?? "plan",
+    state: "done", role: null, detail: "기존 후보·데이터·검증 기록 보존 · 중단 지점에서 재개" });
+  const result = await retryResearchStorage(() => db().prepare(
+    "UPDATE strategy_generation_runs SET status='running',payload=?,updated_at=?,lease_owner=NULL,lease_until=NULL WHERE id=? AND owner_id=? AND status IN ('failed','paused') AND payload=?"
+  ).bind(JSON.stringify(job), Date.now(), job.id, job.ownerId, previous).run());
+  if (result.meta.changes !== 1) {
+    const current = await getGenerationJob(job.id);
+    if (current?.status !== "running") throw new Error("연구 상태가 바뀌었습니다. 다시 확인해 주세요.");
+  }
+}
+
+/** Small cross-worker snapshot: runner/browser viewers see progress without full-job writes. */
+export function saveResearchMeter(meter: ResearchMeter, token: string) {
+  return retryResearchStorage(async () => {
+    const result = await db().prepare("INSERT INTO strategy_generation_meters (run_id,payload,updated_at) SELECT ?,?,? WHERE EXISTS (SELECT 1 FROM strategy_generation_runs WHERE id=? AND status='running' AND lease_owner=?) ON CONFLICT(run_id) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at")
+      .bind(meter.jobId, JSON.stringify(meter), Date.now(), meter.jobId, token).run();
+    if (result.meta.changes !== 1) throw new Error("작업 취소 또는 실행 잠금 해제됨");
+  });
 }

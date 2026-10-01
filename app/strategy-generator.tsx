@@ -5,7 +5,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import ArrowRight from "lucide-react/dist/esm/icons/arrow-right";
 import Check from "lucide-react/dist/esm/icons/check";
 import LoaderCircle from "lucide-react/dist/esm/icons/loader-circle";
-import { GENERATION_STAGES, type GenerationJob, type ResearchGoal, type ResearchOption } from "@/lib/strategy-generation-types";
+import { GENERATION_STAGES, type GenerationJob, type ResearchGoal, type ResearchOption, type ResearchMeter } from "@/lib/strategy-generation-types";
+import { researchFailure, uncertainResearchCost } from "@/lib/research-recovery";
 import { GENERATION_MODELS } from "@/lib/strategy-generation-models";
 import type { ValidationEvidence } from "@/lib/strategy-generation-validation";
 
@@ -26,7 +27,8 @@ const GOALS: Array<{ id: ResearchGoal; label: string; description: string }> = [
 const percent = (value: number | null | undefined) => value == null ? "—" : `${value.toFixed(2)}%`;
 function runLabel(job: Job) {
   if (job.status === "completed") return job.research ? "연구 완료" : "슬롯 등록 완료";
-  if (job.status === "paused") return job.pauseReason === "budget" ? "연구 예산 대기" : "새 데이터 대기";
+  if (job.status === "paused") return job.pauseReason === "budget" ? "연구 예산 대기" : job.pauseReason === "interrupted" ? "연구 복구 대기" : "새 데이터 대기";
+  if (job.recovery?.retryAt) return "일시적 오류 · 자동 복구 대기";
   if (job.status === "failed") return "연구 중단";
   if (job.status === "cancelled") return "취소된 연구";
   if (job.status === "rejected") return "검증 기준 미달";
@@ -64,6 +66,35 @@ function OptionCard({ option, slotLabel, registered, occupied, canRegister, busy
   </article>;
 }
 
+function UsageMeter({ job, streamed }: { job: Job; streamed: ResearchMeter | null }) {
+  const saved = job.liveMeter;
+  const meter = streamed?.jobId === job.id && (!saved || streamed.call.updatedAt >= saved.call.updatedAt) ? streamed : saved;
+  const calls = [...(job.calls ?? [])];
+  if (meter) {
+    const index = calls.findIndex(call => call.id === meter.call.id);
+    if (index < 0) calls.push({ ...meter.call, key: "" });
+    else if (calls[index].updatedAt <= meter.call.updatedAt) calls[index] = { ...calls[index], ...meter.call };
+  }
+  const current = calls.at(-1);
+  const active = current?.status === "started" && job.status === "running";
+  const totals = calls.reduce((sum, call) => ({
+    input: sum.input + (call.usage.input_tokens ?? 0),
+    output: sum.output + (call.usage.output_tokens ?? 0),
+    cache: sum.cache + (call.usage.cache_creation_input_tokens ?? 0) + (call.usage.cache_read_input_tokens ?? 0),
+  }), { input: 0, output: 0, cache: 0 });
+  const settled = Math.max(job.costUsd, meter?.costUsd ?? 0);
+  const uncertain = Math.max(uncertainResearchCost(calls), meter?.uncertainUsd ?? 0);
+  const liveCost = active ? current.costUsd : 0;
+  const estimated = calls.some(call => call.estimated);
+  return <div className="research-usage" aria-label="실시간 연구 사용량">
+    <div className="research-usage-title"><span><i className={active ? "live" : ""} aria-hidden="true" />{active ? "실시간 사용량" : "누적 사용량"}</span><span>{current?.model ?? "호출 대기"}{current && ` · ${GENERATION_MODELS[current.role].label}`}</span></div>
+    <dl><div><dt>입력 토큰{estimated ? " (추정 포함)" : ""}</dt><dd>{totals.input.toLocaleString("ko-KR")}</dd></div><div><dt>출력 토큰{estimated ? " (추정 포함)" : ""}</dt><dd>{totals.output.toLocaleString("ko-KR")}</dd></div><div><dt>캐시 토큰</dt><dd>{totals.cache.toLocaleString("ko-KR")}</dd></div><div><dt>연구 비용 USD{active ? " (생성 중 포함)" : ""}</dt><dd>${(settled + liveCost).toFixed(5)}<small> / ${job.budgetUsd}</small></dd></div></dl>
+    <p>확정 사용량 환산 ${settled.toFixed(5)}{active && ` · 현재 호출 ${current.estimated ? "추정 " : ""}$${liveCost.toFixed(5)}`}{uncertain > 0 && ` · 청구 미확인 한도 예약 $${uncertain.toFixed(5)}`}</p>
+    <p>생성 중 토큰·비용은 수신된 응답 기준 추정이며, 완료 시 제공자 사용량으로 정산합니다. 숨겨진 추론은 완료 전 집계되지 않을 수 있습니다. 기존 기록에 없는 과거 토큰은 제외됩니다.</p>
+    {current && <p>최근 수신 {new Date(current.updatedAt).toLocaleTimeString("ko-KR")} · {active ? "응답 수신 시 자동 갱신" : "호출 기록 저장됨"}</p>}
+  </div>;
+}
+
 export function StrategyGenerator({ slots, onRegistered }: Props) {
   const [data, setData] = useState<State | null>(null);
   const [goal, setGoal] = useState<ResearchGoal>("discover");
@@ -74,25 +105,34 @@ export function StrategyGenerator({ slots, onRegistered }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [meter, setMeter] = useState<ResearchMeter | null>(null);
+  const loading = useRef(false), retryLoadAt = useRef(0), loadFailures = useRef(0);
   const [progress, setProgress] = useState("");
   const [selectedJob, setSelectedJob] = useState("");
+  const nextAdvanceAt = useRef(0), advanceFailures = useRef(0);
   const advancing = useRef(false), requestId = useRef<string | null>(null), knownCompleted = useRef(new Set<string>());
   const load = useCallback(async () => {
+    if (loading.current || Date.now() < retryLoadAt.current) return;
+    loading.current = true;
     try {
       const response = await fetch("/api/strategy-generation", { cache: "no-store" });
       const body = await response.json() as State;
       if (!response.ok) throw new Error(body.error ?? "연구 상태를 불러오지 못했습니다.");
       setData(body);
       setLoadError(null);
+      loadFailures.current = 0;
       for (const job of body.jobs) if (job.status === "completed" && !knownCompleted.current.has(job.id)) {
         knownCompleted.current.add(job.id);
         onRegistered();
       }
-    } catch (cause) { setLoadError(cause instanceof Error ? cause.message : "상태 조회 실패"); }
+    } catch (cause) {
+      retryLoadAt.current = Date.now() + Math.min(30_000, 3000 * 2 ** loadFailures.current++);
+      setLoadError(cause instanceof Error ? cause.message : "상태 조회 실패");
+    } finally { loading.current = false; }
   }, [onRegistered]);
   useEffect(() => {
     queueMicrotask(() => void load());
-    const timer = setInterval(() => void load(), 5000);
+    const timer = setInterval(() => { if (!document.hidden) void load(); }, 3000);
     return () => clearInterval(timer);
   }, [load]);
   const active = data?.jobs.find(job => job.status === "running");
@@ -103,11 +143,12 @@ export function StrategyGenerator({ slots, onRegistered }: Props) {
     if (!activeId) return;
     let disposed = false;
     const advance = async () => {
-      if (advancing.current || disposed) return;
+      if (advancing.current || disposed || Date.now() < nextAdvanceAt.current) return;
       advancing.current = true;
       try {
         const response = await fetch("/api/strategy-generation", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "advance", id: activeId }) });
         if (!response.ok) throw new Error(((await response.json()) as { error?: string }).error ?? "연구 진행 실패");
+        if (!disposed) setError(null);
         const reader = response.body?.getReader();
         if (!reader) throw new Error("진행 응답을 받지 못했습니다.");
         const decoder = new TextDecoder();
@@ -119,13 +160,22 @@ export function StrategyGenerator({ slots, onRegistered }: Props) {
           buffer = lines.pop() ?? "";
           for (const line of lines) if (line.trim()) {
             const message = JSON.parse(line);
+            if (message.type === "result") {
+              advanceFailures.current = 0;
+              nextAdvanceAt.current = message.job?.recovery?.retryAt ? Date.parse(message.job.recovery.retryAt) : Date.now() + 1000;
+            }
+            if (message.type === "usage" && !disposed) setMeter(message.meter);
+            if (message.type === "result" && message.job && !disposed) setData(current => current ? { ...current, jobs: current.jobs.map(job => job.id === message.job.id ? message.job : job) } : current);
             if (message.type === "progress" && !disposed) setProgress(message.message);
             if (message.type === "error") throw new Error(message.message);
           }
           if (done) break;
         }
         if (!disposed) await load();
-      } catch (cause) { if (!disposed) setError(cause instanceof Error ? cause.message : "연결을 다시 확인하고 있습니다."); }
+      } catch (cause) {
+        nextAdvanceAt.current = Date.now() + Math.min(30_000, 3000 * 2 ** advanceFailures.current++);
+        if (!disposed) setError(cause instanceof Error ? cause.message : "연결을 다시 확인하고 있습니다.");
+      }
       finally { advancing.current = false; }
     };
     void advance();
@@ -141,6 +191,7 @@ export function StrategyGenerator({ slots, onRegistered }: Props) {
       const result = await response.json() as { error?: string; job?: Job };
       if (!response.ok) throw new Error(result.error ?? "요청을 처리하지 못했습니다.");
       if (body.action === "research" && result.job) { requestId.current = null; setSelectedJob(result.job.id); setProgress(""); }
+      if (body.action === "resume" || body.action === "resume_budget") { nextAdvanceAt.current = 0; setProgress("저장된 단계에서 재개합니다."); }
       if (body.action === "register") onRegistered();
       await load();
     } catch (cause) { setError(cause instanceof Error ? cause.message : "요청 실패"); }
@@ -167,17 +218,19 @@ export function StrategyGenerator({ slots, onRegistered }: Props) {
     {latest && <section className="research-run" aria-label="연구 진행과 결과">
       <header className="research-run-heading"><div><span className="research-eyebrow">{latest.status === "completed" ? "RESULTS" : "RESEARCH LOG"}</span><h3>{runLabel(latest)}</h3></div>{(data?.jobs.length ?? 0) > 1 && <select aria-label="연구 기록" value={latest.id} onChange={event => setSelectedJob(event.target.value)}>{data?.jobs.map(job => <option key={job.id} value={job.id}>{new Date(job.createdAt).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })} · {runLabel(job)}</option>)}</select>}</header>
       <div className="research-run-meta"><span>연구비 <strong>${latest.costUsd.toFixed(3)}</strong> / ${latest.budgetUsd}</span>{research && <span>{options.filter(option => ["passed", "rejected"].includes(option.status)).length} / {options.length || "—"}개 가설 검토</span>}{(latest.status === "running" || latest.status === "paused") && <button type="button" disabled={busy} onClick={() => void perform({ action: "cancel", id: latest.id })}>연구 취소</button>}</div>
+      <UsageMeter job={latest} streamed={meter} />
       {latest.status === "running" && <><ol className="research-phases">{["탐색", "자료 확보", "설계", "검증", "결과"].map((label, index) => <li key={label} className={index === phase ? "current" : index < phase ? "done" : ""} aria-current={index === phase ? "step" : undefined}><span>{index < phase ? <Check size={12} /> : index + 1}</span>{label}</li>)}</ol><p className="research-progress" role="status"><LoaderCircle size={13} className="spin" />{latest.id === activeId ? progress || runLabel(latest) : runLabel(latest)}</p><p className="research-caption">처음 확보하는 과거 데이터는 시간이 걸릴 수 있습니다. 실행 중인 러너가 있으면 탭을 닫아도 이어집니다.</p></>}
       {research?.summary && <p className="research-summary">{research.summary}</p>}
       {research?.discovery && <p className="research-caption">{research.discovery.source} · {research.discovery.asOf} 기준 {research.discovery.candidates.length}종목 탐색</p>}
       {latest.error && <p className="generator-error">{latest.error}</p>}{latest.nextAction && <p className="research-caption">{latest.nextAction}</p>}
+      {((latest.status === "paused" && latest.pauseReason === "interrupted") || (latest.status === "failed" && researchFailure(new Error(latest.error ?? "")).recoverable)) && <button type="button" className="research-secondary" disabled={busy || !!active} onClick={() => void perform({ action: "resume", id: latest.id })}>저장된 단계부터 이어서 연구 <ArrowRight size={14} /></button>}
       {latest.status === "paused" && latest.pauseReason === "budget" && <button type="button" className="research-secondary" disabled={busy || !!active} onClick={() => void perform({ action: "resume_budget", id: latest.id })}>예산 $8 추가하고 이어서 연구</button>}
       {research?.phase === "complete" && !options.some(option => option.status === "passed") && <div className="research-no-result"><strong>이번 연구에서 검증을 통과한 전략은 없습니다.</strong><p>아래 후보별 측정 결과와 보류 이유를 확인할 수 있습니다.</p></div>}
       {!!options.length && <><div className="research-options">{options.map(option => <OptionCard key={option.id} option={option} slotLabel={slots.find(item => item.id === option.slot)?.label ?? option.slot} registered={!!option.selected && !!data?.registeredIds?.includes(option.selected.id)} occupied={!!slots.find(item => item.id === option.slot)?.strategy} canRegister={latest.status === "completed"} busy={busy} onRegister={() => void perform({ action: "register", id: latest.id, optionId: option.id })} />)}</div><p className="research-caption">후보별 검증 기간이 다릅니다. 수익률과 함께 거래 수·낙폭·조건을 비교하세요. 과거 성과는 미래 수익을 보장하지 않습니다.</p></>}
       {!research && latest.selected && <div className="research-legacy"><strong>{latest.selected.candidate.name}</strong><p>{latest.report?.summary ?? latest.selected.candidate.hypothesis}</p>{latest.evidence && <EvidenceTable evidence={latest.evidence} />}</div>}
-      <details className="research-log"><summary>전체 연구 기록 <span>{latest.events.length}개 기록</span></summary><ol>{latest.events.slice(-80).map((event, index) => <li key={index}><span className={event.state}>{event.state === "done" ? "완료" : event.state === "error" ? "확인" : "시작"}</span><div>{event.detail}{event.role && <small>{GENERATION_MODELS[event.role].model}</small>}</div></li>)}</ol><a href={`data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(latest, null, 2))}`} download={`strategy-research-${latest.id}.json`}>연구 기록 다운로드</a></details>
+      <details className="research-log"><summary>전체 연구 기록 <span>{latest.events.length}개 기록</span></summary><ol>{latest.events.slice(-80).map((event, index) => <li key={index}><span className={event.state}>{event.state === "done" ? "완료" : event.state === "error" ? "확인" : "시작"}</span><div>{event.detail}{event.role && <small>{event.model ?? GENERATION_MODELS[event.role].model}</small>}</div></li>)}</ol><a href={`data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(latest, null, 2))}`} download={`strategy-research-${latest.id}.json`}>연구 기록 다운로드</a></details>
     </section>}
     {!latest && data && <div className="research-empty-state"><span>01 탐색</span><i aria-hidden="true">→</i><span>02 가설과 검증</span><i aria-hidden="true">→</i><span>03 옵션 비교</span><p>종목을 몰라도 시작할 수 있습니다. 결과를 확인한 뒤 실행할 전략을 고르세요.</p></div>}
-    <details className="research-method"><summary>연구 방식과 모델</summary><div className="generator-models">{Object.entries(GENERATION_MODELS).map(([key, model]) => <div key={key}><b>{model.label}</b><span>{model.model}{"effort" in model ? ` · ${model.effort}` : ""}</span><small>100만 토큰 입력 ${model.input} / 출력 ${model.output}</small></div>)}</div><p>가설을 적극적으로 탐색하고, 실제 측정 결과로 비교합니다. 종목·시간대 선택과 설계는 GPT-6.1 Sol, 자료·결과 정리는 GPT-6 Luna, 독립 검증은 Claude Opus가 담당합니다. 검증 기준은 코드로 고정되며 모든 후보가 연구 예산과 검증 기간 이력을 공유합니다.</p></details>
+    <details className="research-method"><summary>연구 방식과 모델</summary><div className="generator-models">{Object.entries(GENERATION_MODELS).map(([key, model]) => <div key={key}><b>{model.label}</b><span>{model.model}{"effort" in model ? ` · ${model.effort}` : ""}</span><small>100만 토큰 입력 ${model.input} / 출력 ${model.output}</small></div>)}</div><p>가설을 적극적으로 탐색하고, 실제 측정 결과로 비교합니다. 종목·시간대 선택과 설계는 GPT-6.1 Sol, 자료·결과 정리는 GPT-6 Luna, 독립 검증은 Claude Opus가 담당합니다. 검증 기준은 코드로 고정되며 모든 후보가 연구 예산과 검증 기간 이력을 공유합니다. 일시적 오류는 10초·30초 대기 후 재시도하며, Claude 오류가 반복되면 Sonnet 5로 독립 검증합니다. 총 3회 실패 시 기록을 보존하고 일시정지합니다.</p></details>
   </section>;
 }

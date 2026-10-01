@@ -14,6 +14,7 @@ import {
   nextGenerationJob,
   generationInventory,
   resumeGenerationBudget,
+  resumeGenerationFailure,
   registerResearchOption,
   registeredSpecs,
 } from "@/lib/strategy-generation-store";
@@ -31,7 +32,8 @@ export async function GET(request: Request) {
       {
         jobs: (await listGenerationJobs(owner)).map(publicJob),
         availability: generationAvailability(),
-        inventory: await generationInventory(),
+        // Expensive candle JSON aggregation is opt-in, never on every status poll.
+        inventory: new URL(request.url).searchParams.get("inventory") === "1" ? await generationInventory() : [],
         registeredIds: (await registeredSpecs()).map(spec => spec.id),
         models: GENERATION_MODELS,
         stages: GENERATION_STAGES,
@@ -116,6 +118,10 @@ export async function POST(request: Request) {
       await resumeGenerationBudget(job);
       return Response.json({ ok: true });
     }
+    if (body.action === "resume") {
+      await resumeGenerationFailure(job);
+      return Response.json({ ok: true });
+    }
     if (body.action === "register") {
       if (!body.optionId) throw new Error("배정할 후보를 선택해 주세요.");
       const strategyId = await registerResearchOption(job, body.optionId);
@@ -144,6 +150,7 @@ export async function POST(request: Request) {
           send({ type: "progress", message: "단계 실행" });
           const result = await advanceGeneration(id, (message) =>
             send({ type: "progress", message }),
+            (meter) => send({ type: "usage", meter }),
           );
           send({ type: "result", job: result ? publicJob(result) : null });
         } catch (error) {
@@ -163,7 +170,8 @@ export async function POST(request: Request) {
     return new Response(stream, {
       headers: {
         "content-type": "application/x-ndjson",
-        "cache-control": "no-store",
+        "cache-control": "no-store, no-transform",
+        "x-accel-buffering": "no",
       },
     });
   } catch (error) {

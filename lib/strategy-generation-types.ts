@@ -10,6 +10,31 @@ import type {
 } from "./strategy-generation-validation.ts";
 import type { GenerationRole } from "./strategy-generation-models.ts";
 import type { SlotId } from "./trade-slots.ts";
+import type { AnthropicUsage } from "./llm-usage.ts";
+export type ResearchCall = {
+  id: string;
+  key: string;
+  role: GenerationRole;
+  model: string;
+  provider: "OpenAI" | "Anthropic";
+  status: "started" | "completed" | "failed" | "interrupted";
+  startedAt: string;
+  updatedAt: string;
+  usage: AnthropicUsage;
+  estimated: boolean;
+  costUsd: number;
+  reserveUsd: number;
+  /** Missing final usage is budgeted at the reserved maximum, never treated as free. */
+  uncertainUsd?: number;
+  result?: unknown;
+  error?: string;
+};
+export type ResearchMeter = {
+  jobId: string;
+  call: Omit<ResearchCall, "result" | "key">;
+  costUsd: number;
+  uncertainUsd: number;
+};
 export const GENERATION_STAGES = [
   { id: "data", label: "선택 종목 데이터 · 자본 사전 점검", role: null },
   { id: "plan", label: "연구 계획", role: "orchestrator" },
@@ -63,6 +88,7 @@ export type GenerationEvent = {
   state: "started" | "done" | "error";
   detail: string;
   role: GenerationRole | null;
+  model?: string;
 };
 export type GenerationJob = {
   id: string;
@@ -80,6 +106,9 @@ export type GenerationJob = {
   budgetUsd: number;
   error: string | null;
   events: GenerationEvent[];
+  calls?: ResearchCall[];
+  liveMeter?: ResearchMeter;
+  recovery?: { failures: number; retryAt?: string; message: string };
   research?: StrategyResearch;
   universe?: string[];
   /** New research derives each strategy's resolution from minutes; legacy jobs retain 5m evidence. */
