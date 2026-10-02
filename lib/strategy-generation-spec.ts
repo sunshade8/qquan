@@ -198,7 +198,7 @@ function usableBars(context: SlotSessionContext, symbol: string) {
   return bars;
 }
 
-export function compileStrategy(value: unknown): SlotStrategy {
+export function compileStrategy(value: unknown, resolveFeature: typeof featureValue = featureValue): SlotStrategy {
   const spec = parseSpec(value),
     c = spec.candidate;
   const step = strategyBarMinutes(c);
@@ -258,7 +258,7 @@ export function compileStrategy(value: unknown): SlotStrategy {
           continue;
         if (
           !c.conditions.every((rule) => {
-            const n = featureValue(bars, rule.feature, rule.lookback);
+            const n = resolveFeature(bars, rule.feature, rule.lookback);
             return (
               n !== null &&
               Number.isFinite(n) &&
@@ -267,7 +267,7 @@ export function compileStrategy(value: unknown): SlotStrategy {
           })
         )
           continue;
-        const rank = featureValue(bars, c.rankBy, c.rankLookback);
+        const rank = resolveFeature(bars, c.rankBy, c.rankLookback);
         if (rank !== null && Number.isFinite(rank))
           ranked.push({ symbol, rank });
       }

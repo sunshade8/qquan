@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/deploy/auto-push.sh claude", "timeout": 120 }
+        ]
+      }
+    ]
+  }
+}

@@ -1,6 +1,7 @@
 "use client";
 
 import "./strategy-research.css";
+import { SlotResearchResults } from "./slot-research-results";
 import { useCallback, useEffect, useRef, useState } from "react";
 import ArrowRight from "lucide-react/dist/esm/icons/arrow-right";
 import Check from "lucide-react/dist/esm/icons/check";
@@ -22,10 +23,12 @@ type State = {
 const GOALS: Array<{ id: ResearchGoal; label: string; description: string }> = [
   { id: "discover", label: "자동 탐색", description: "종목과 시간대부터 알아서" },
   { id: "complement", label: "빈 시간대 보완", description: "현재 전략 구성을 참고해서" },
-  { id: "idea", label: "아이디어 검증", description: "떠오른 가설을 실제 데이터로" },
 ];
+const searchLabels = { data: "자료·시험 구간 동결", design: "에이전트 전략 일괄 설계", reflect: "실측 실패 진단·재설계", search: "학습·개발 반복 탐색", freeze: "최종 후보·결합 규칙 동결", review: "독립 위험 검토", final: "공통 최종 구간 검증", done: "실행 종료", blocked: "데이터·실행 장애" };
 const percent = (value: number | null | undefined) => value == null ? "—" : `${value.toFixed(2)}%`;
 function runLabel(job: Job) {
+  if (job.search) return job.status === "completed" ? (job.search.evaluation === "partial" ? "실행 종료 · 일부 슬롯 측정 미완료" : "연구 실행 종료 · 성과 판정 별도") : job.status === "failed" ? "측정 미완료 · 데이터/실행 장애" : job.status === "paused" ? "저장된 연구 일시정지" : `슬롯 연구 · ${searchLabels[job.search.phase]}`;
+  if (job.status === "completed" && job.research && !job.research.options.some(o => o.training || o.evidence)) return "연구 종료 · 실측 평가 없음";
   if (job.status === "completed") return job.research ? "연구 완료" : "슬롯 등록 완료";
   if (job.status === "paused") return job.pauseReason === "budget" ? "연구 예산 대기" : job.pauseReason === "interrupted" ? "연구 복구 대기" : "새 데이터 대기";
   if (job.recovery?.retryAt) return "일시적 오류 · 자동 복구 대기";
@@ -87,7 +90,7 @@ function UsageMeter({ job, streamed }: { job: Job; streamed: ResearchMeter | nul
   const liveCost = active ? current.costUsd : 0;
   const estimated = calls.some(call => call.estimated);
   return <div className="research-usage" aria-label="실시간 연구 사용량">
-    <div className="research-usage-title"><span><i className={active ? "live" : ""} aria-hidden="true" />{active ? "실시간 사용량" : "누적 사용량"}</span><span>{current?.model ?? "호출 대기"}{current && ` · ${GENERATION_MODELS[current.role].label}`}</span></div>
+    <div className="research-usage-title"><span><i className={active ? "live" : ""} aria-hidden="true" />{active ? "실시간 사용량" : "누적 사용량"}</span><span>{current?.model ?? (job.search ? "로컬 계산 · 모델 호출 없음" : "호출 대기")}{current && ` · ${GENERATION_MODELS[current.role].label}`}</span></div>
     <dl><div><dt>입력 토큰{estimated ? " (추정 포함)" : ""}</dt><dd>{totals.input.toLocaleString("ko-KR")}</dd></div><div><dt>출력 토큰{estimated ? " (추정 포함)" : ""}</dt><dd>{totals.output.toLocaleString("ko-KR")}</dd></div><div><dt>캐시 토큰</dt><dd>{totals.cache.toLocaleString("ko-KR")}</dd></div><div><dt>연구 비용 USD{active ? " (생성 중 포함)" : ""}</dt><dd>${(settled + liveCost).toFixed(5)}<small> / ${job.budgetUsd}</small></dd></div></dl>
     <p>확정 사용량 환산 ${settled.toFixed(5)}{active && ` · 현재 호출 ${current.estimated ? "추정 " : ""}$${liveCost.toFixed(5)}`}{uncertain > 0 && ` · 청구 미확인 한도 예약 $${uncertain.toFixed(5)}`}</p>
     <p>생성 중 토큰·비용은 수신된 응답 기준 추정이며, 완료 시 제공자 사용량으로 정산합니다. 숨겨진 추론은 완료 전 집계되지 않을 수 있습니다. 기존 기록에 없는 과거 토큰은 제외됩니다.</p>
@@ -102,6 +105,11 @@ export function StrategyGenerator({ slots, onRegistered }: Props) {
   const [symbols, setSymbols] = useState("");
   const [slot, setSlot] = useState("");
   const [budget, setBudget] = useState(8);
+  const [target, setTarget] = useState("");
+  const [targetSlots, setTargetSlots] = useState<string[]>([]);
+  const [sourceMinutes, setSourceMinutes] = useState(5);
+  const [maxPerSlot, setMaxPerSlot] = useState(16);
+  const [designMode, setDesignMode] = useState("agent");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -202,24 +210,29 @@ export function StrategyGenerator({ slots, onRegistered }: Props) {
   const invalidIdea = goal === "idea" && brief.trim().length < 5;
   const resetRequest = () => { requestId.current = null; };
   const research = latest?.research;
-  const phase = !latest || research?.phase === "discovery" ? 0 : latest.status === "completed" ? 4 : latest.stageIndex === 0 ? 1 : latest.stageIndex < 5 ? 2 : latest.stageIndex < 8 ? 3 : 4;
+  const phase = latest?.search ? ({data:0,design:1,reflect:2,search:2,freeze:3,review:3,final:3,done:4,blocked:0}[latest.search.phase]) : !latest || research?.phase === "discovery" ? 0 : latest.status === "completed" ? 4 : latest.stageIndex === 0 ? 1 : latest.stageIndex < 5 ? 2 : latest.stageIndex < 8 ? 3 : 4;
   const options = research?.options ?? [];
   return <section className="strategy-generator research-studio" aria-label="전략 연구">
-    <header className="research-heading"><div><span className="research-eyebrow">STRATEGY RESEARCH</span><h2>다음 전략을 찾아보세요.</h2><p>종목과 시간대 탐색부터 검증까지. 근거를 갖춘 전략 옵션을 비교하세요.</p></div><span className="research-capital">운용 예산 <strong>$1,000</strong></span></header>
-    <form onSubmit={event => { event.preventDefault(); if (busy || pending || !data?.availability.ready || !validSymbols || invalidIdea) return; requestId.current ??= crypto.randomUUID(); void perform({ action: "research", goal, brief, budgetUsd: budget, ...(universe.length ? { universe } : {}), ...(slot ? { slot } : {}), requestId: requestId.current }); }}>
+    <header className="research-heading"><div><span className="research-eyebrow">STRATEGY RESEARCH</span><h2>슬롯 목표를 향해 전략을 연구합니다.</h2><p>에이전트가 실행 규칙을 설계하고 보유 데이터로 시험하며, 실패 원인을 반영해 개선합니다.</p></div><span className="research-capital">운용 예산 <strong>$1,000</strong></span></header>
+    <form onSubmit={event => { event.preventDefault(); if (busy || pending || !data || !validSymbols || invalidIdea) return; requestId.current ??= crypto.randomUUID(); void perform({ action: "research", goal, brief, designMode, budgetUsd: budget, target: target ? { dailyTargetPct: Number(target), slots: targetSlots.length || (slot ? 1 : slots.filter(s => goal !== "complement" || !s.strategy).length) } : null, sourceMinutes, config: { maxPerSlot }, ...(targetSlots.length ? { slots: targetSlots } : {}), ...(universe.length ? { universe } : {}), ...(slot ? { slot } : {}), requestId: requestId.current }); }}>
       <fieldset className="research-goals" disabled={busy || !!pending}><legend className="sr-only">연구 방향</legend>{GOALS.map(item => <label key={item.id} aria-label={item.label} htmlFor={`research-goal-${item.id}`} className={goal === item.id ? "selected" : ""}><input id={`research-goal-${item.id}`} type="radio" name="research-goal" value={item.id} checked={goal === item.id} onChange={() => { setGoal(item.id); resetRequest(); }} /><span><strong>{item.label}</strong><small>{item.description}</small></span></label>)}</fieldset>
       <label className="research-brief"><span>{goal === "idea" ? "검증할 아이디어" : "반영할 생각이 있나요?"}<small>{goal === "idea" ? "필수" : "선택"}</small></span><textarea value={brief} maxLength={1500} disabled={busy || !!pending} required={goal === "idea"} minLength={goal === "idea" ? 5 : undefined} onChange={event => { setBrief(event.target.value); resetRequest(); }} placeholder={goal === "idea" ? "예: 개장 직후 크게 오른 종목은 잠시 조정한 뒤 다시 오를까?" : "예: 거래가 너무 잦지 않고, 급등을 추격하지 않는 전략이면 좋겠어요."} rows={2} /></label>
       <details className="research-settings"><summary>탐색 범위 직접 설정 <span>{universe.length || slot ? "직접 지정" : "종목·시간대 자동"}</span></summary><div className="research-fields"><label>종목 제한<input value={symbols} disabled={busy || !!pending} onChange={event => { setSymbols(event.target.value); resetRequest(); }} placeholder="비워두면 자동 · 예: AAPL, QQQ" maxLength={170} aria-invalid={!validSymbols} /></label><label>시간대 제한<select value={slot} disabled={busy || !!pending} onChange={event => { setSlot(event.target.value); resetRequest(); }}><option value="">자동으로 탐색</option>{slots.map(item => <option key={item.id} value={item.id}>{item.label}{item.strategy ? " · 기존 전략 있음" : ""}</option>)}</select></label></div>{!validSymbols && <p className="generator-error">올바른 종목코드를 최대 10개까지 입력해 주세요.</p>}<p>지정한 종목 안에서 후보별 종목군을 선택합니다. 기존 전략이 있는 시간대도 비교할 수 있습니다.</p></details>
-      <div className="research-submit"><label>연구 비용 한도<select aria-label="연구 비용 한도" value={budget} disabled={busy || !!pending} onChange={event => { setBudget(Number(event.target.value)); resetRequest(); }}><option value={8}>$8</option><option value={16}>$16</option><option value={24}>$24</option></select></label><span>최대 3개 가설 · 전체 연구가 한도를 공유</span><button className="research-primary" type="submit" disabled={busy || !!pending || !data?.availability.ready || !validSymbols || invalidIdea}>{busy ? "처리 중" : pending ? "연구 진행 중" : "연구 시작"}{busy ? <LoaderCircle size={15} className="spin" /> : <ArrowRight size={15} />}</button></div>
-      {data && !data.availability.ready && <p className="generator-error" role="status">연구 모델 연결이 필요합니다: {data.availability.missing.join(", ")}</p>}
+      <div className="research-fields"><label>설계 방식<select aria-label="설계 방식" value={designMode} disabled={busy || !!pending} onChange={e=>{setDesignMode(e.target.value);resetRequest();}}><option value="agent">에이전트 설계·실측 진단·재설계</option><option value="local">내장 규칙 비교 · 모델 설계 없음</option></select></label><label>저장할 목표<select aria-label="저장할 목표" value={target} disabled={busy || !!pending} onChange={e=>{setTarget(e.target.value);resetRequest();}}><option value="">미선택 · 기존 12개 시나리오 모두 비교</option><option value="1">계좌 일 1%</option><option value="1.5">계좌 일 1.5%</option><option value="2">계좌 일 2%</option></select></label><label>보유 원본 봉<select value={sourceMinutes} disabled={busy || !!pending} onChange={e=>{setSourceMinutes(Number(e.target.value));resetRequest();}}><option value={5}>5분봉 · 개발 연구 (실행 검증 별도)</option><option value={1}>1분봉 · 실행 검증 가능</option></select></label><label>슬롯당 후보 상한<select value={maxPerSlot} disabled={busy || !!pending} onChange={e=>{setMaxPerSlot(Number(e.target.value));resetRequest();}}><option value={8}>8개</option><option value={12}>12개</option><option value={16}>16개</option></select></label></div>
+      <fieldset disabled={busy || !!pending} className="research-settings"><legend>대상 슬롯 (미선택 시 가능한 전체 슬롯)</legend>{slots.filter(s=>goal!=="complement"||!s.strategy).map(s=><label key={s.id} style={{display:'inline-flex',gap:6,margin:8}}><input type="checkbox" checked={targetSlots.includes(s.id)} onChange={e=>{setTargetSlots(e.target.checked?[...targetSlots,s.id]:targetSlots.filter(id=>id!==s.id));setSlot("");resetRequest();}}/>{s.label}</label>)}</fieldset>
+      <p className="research-caption">목표는 정상 무거래일을 포함한 슬롯 일평균 순수익률입니다. 선택 시 계좌 목표를 대상 슬롯 수로 환산해 저장합니다. 에이전트는 입력한 생각과 학습 자료로 네 계열을 일괄 설계하고, 실측 진단으로 한 차례 재설계합니다. 각 배치의 여러 변형은 로컬 계산으로 비교합니다. 최종 시험 결과는 재설계에 사용하지 않습니다.</p>
+      <div className="research-submit"><label>연구 비용 한도<select aria-label="연구 비용 한도" value={budget} disabled={busy || !!pending} onChange={event => { setBudget(Number(event.target.value)); resetRequest(); }}><option value={8}>$8</option><option value={16}>$16</option><option value={24}>$24</option></select></label><span>슬롯당 8–16개 후보 · 네 계열 · 전체 연구 한도</span><button className="research-primary" type="submit" disabled={busy || !!pending || !data || !validSymbols || invalidIdea}>{busy ? "처리 중" : pending ? "연구 진행 중" : "연구 시작"}{busy ? <LoaderCircle size={15} className="spin" /> : <ArrowRight size={15} />}</button></div>
+      {data && !data.availability.ready && <p className="research-caption">에이전트 설계와 독립 검토에는 모델 연결이 필요합니다. 연결 오류는 기록을 보존하고 복구 대기로 표시합니다: {data.availability.missing.join(", ")}</p>}
       {!data && !loadError && <p className="research-caption" role="status">연구 환경을 확인하고 있습니다.</p>}
     </form>
     {(error || loadError) && <div className="research-error" role="alert"><p>{error ?? loadError}</p><button type="button" onClick={() => { setError(null); void load(); }}>다시 확인</button></div>}
     {latest && <section className="research-run" aria-label="연구 진행과 결과">
       <header className="research-run-heading"><div><span className="research-eyebrow">{latest.status === "completed" ? "RESULTS" : "RESEARCH LOG"}</span><h3>{runLabel(latest)}</h3></div>{(data?.jobs.length ?? 0) > 1 && <select aria-label="연구 기록" value={latest.id} onChange={event => setSelectedJob(event.target.value)}>{data?.jobs.map(job => <option key={job.id} value={job.id}>{new Date(job.createdAt).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })} · {runLabel(job)}</option>)}</select>}</header>
       <div className="research-run-meta"><span>연구비 <strong>${latest.costUsd.toFixed(3)}</strong> / ${latest.budgetUsd}</span>{research && <span>{options.filter(option => ["passed", "rejected"].includes(option.status)).length} / {options.length || "—"}개 가설 검토</span>}{(latest.status === "running" || latest.status === "paused") && <button type="button" disabled={busy} onClick={() => void perform({ action: "cancel", id: latest.id })}>연구 취소</button>}</div>
+      {latest.search && latest.status === "running" && <button type="button" className="research-secondary" onClick={() => void perform({ action: "pause", id: latest.id })}>연구 일시정지</button>}
+      {latest.search && <SlotResearchResults job={latest} />}
       <UsageMeter job={latest} streamed={meter} />
-      {latest.status === "running" && <><ol className="research-phases">{["탐색", "자료 확보", "설계", "검증", "결과"].map((label, index) => <li key={label} className={index === phase ? "current" : index < phase ? "done" : ""} aria-current={index === phase ? "step" : undefined}><span>{index < phase ? <Check size={12} /> : index + 1}</span>{label}</li>)}</ol><p className="research-progress" role="status"><LoaderCircle size={13} className="spin" />{latest.id === activeId ? progress || runLabel(latest) : runLabel(latest)}</p><p className="research-caption">처음 확보하는 과거 데이터는 시간이 걸릴 수 있습니다. 실행 중인 러너가 있으면 탭을 닫아도 이어집니다.</p></>}
+      {latest.status === "running" && <><ol className="research-phases">{(latest.search ? ["자료 동결", "개발 탐색", "규칙 동결", "최종 검증", "결과"] : ["탐색", "자료 확보", "설계", "검증", "결과"]).map((label, index) => <li key={label} className={index === phase ? "current" : index < phase ? "done" : ""} aria-current={index === phase ? "step" : undefined}><span>{index < phase ? <Check size={12} /> : index + 1}</span>{label}</li>)}</ol><p className="research-progress" role="status"><LoaderCircle size={13} className="spin" />{latest.id === activeId ? progress || runLabel(latest) : runLabel(latest)}</p><p className="research-caption">처음 확보하는 과거 데이터는 시간이 걸릴 수 있습니다. 실행 중인 러너가 있으면 탭을 닫아도 이어집니다.</p></>}
       {research?.summary && <p className="research-summary">{research.summary}</p>}
       {research?.discovery && <p className="research-caption">{research.discovery.source} · {research.discovery.asOf} 기준 {research.discovery.candidates.length}종목 탐색</p>}
       {latest.error && <p className="generator-error">{latest.error}</p>}{latest.nextAction && <p className="research-caption">{latest.nextAction}</p>}
@@ -231,6 +244,6 @@ export function StrategyGenerator({ slots, onRegistered }: Props) {
       <details className="research-log"><summary>전체 연구 기록 <span>{latest.events.length}개 기록</span></summary><ol>{latest.events.slice(-80).map((event, index) => <li key={index}><span className={event.state}>{event.state === "done" ? "완료" : event.state === "error" ? "확인" : "시작"}</span><div>{event.detail}{event.role && <small>{event.model ?? GENERATION_MODELS[event.role].model}</small>}</div></li>)}</ol><a href={`data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(latest, null, 2))}`} download={`strategy-research-${latest.id}.json`}>연구 기록 다운로드</a></details>
     </section>}
     {!latest && data && <div className="research-empty-state"><span>01 탐색</span><i aria-hidden="true">→</i><span>02 가설과 검증</span><i aria-hidden="true">→</i><span>03 옵션 비교</span><p>종목을 몰라도 시작할 수 있습니다. 결과를 확인한 뒤 실행할 전략을 고르세요.</p></div>}
-    <details className="research-method"><summary>연구 방식과 모델</summary><div className="generator-models">{Object.entries(GENERATION_MODELS).map(([key, model]) => <div key={key}><b>{model.label}</b><span>{model.model}{"effort" in model ? ` · ${model.effort}` : ""}</span><small>100만 토큰 입력 ${model.input} / 출력 ${model.output}</small></div>)}</div><p>가설을 적극적으로 탐색하고, 실제 측정 결과로 비교합니다. 종목·시간대 선택과 설계는 GPT-6.1 Sol, 자료·결과 정리는 GPT-6 Luna, 독립 검증은 Claude Opus가 담당합니다. 검증 기준은 코드로 고정되며 모든 후보가 연구 예산과 검증 기간 이력을 공유합니다. 일시적 오류는 10초·30초 대기 후 재시도하며, Claude 오류가 반복되면 Sonnet 5로 독립 검증합니다. 총 3회 실패 시 기록을 보존하고 일시정지합니다.</p></details>
+    <details className="research-method"><summary>연구 방식과 모델</summary><div className="generator-models">{Object.entries(GENERATION_MODELS).map(([key, model]) => <div key={key}><b>{model.label}</b><span>{model.model}{"effort" in model ? ` · ${model.effort}` : ""}</span><small>100만 토큰 입력 ${model.input} / 출력 ${model.output}</small></div>)}</div><p>새 연구는 보유 데이터로 네 전략 계열과 실패별 수정안을 로컬 비교합니다. 슬롯당 최소 8개·최대 16개, 백테스트 400회·계산 10분을 상한으로 두어 각 슬롯의 탐색 기회를 확보합니다. 최소 탐색 이후 최근 8회에서 0.005%p 초과 개선이 없으면 정체로 종료합니다. 독립 검토는 유망 후보에만 호출하며 전체 예산을 공유합니다. 기존 연구의 모델·비용 예약 기록도 유지됩니다. 검증 기준은 코드로 고정되며 모든 후보가 연구 예산과 검증 기간 이력을 공유합니다. 일시적 오류는 10초·30초 대기 후 재시도하며, Claude 오류가 반복되면 Sonnet 5로 독립 검증합니다. 총 3회 실패 시 기록을 보존하고 일시정지합니다.</p></details>
   </section>;
 }

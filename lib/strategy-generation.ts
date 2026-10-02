@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { advanceSlotResearch } from "@/lib/slot-research-store";
+import { designBatchSchema } from "./slot-research-agent.ts";
 import { researchFailure, uncertainResearchCost } from "./research-recovery.ts";
 import { usageCostUsd } from "@/lib/llm-usage";
 import { slotById, SLOTS, assertTradable } from "./trade-slots.ts";
@@ -45,7 +47,7 @@ import {
   summarizeResearch,
   candidateFeasibility,
 } from "./strategy-generation-research.ts";
-import { runRelay, type SessionBars } from "./relay-engine.ts";
+import { runRelay, ReplayDeadlineError, type SessionBars } from "./relay-engine.ts";
 import {
   GENERATION_STAGES,
   type GenerationJob,
@@ -235,6 +237,8 @@ function researchWindow(sessions: SessionBars[], slot: NonNullable<ReturnType<ty
 type ResearchRuntime = { token: string; onUsage: (meter: ResearchMeter) => void };
 const runtimes = new WeakMap<GenerationJob, ResearchRuntime>();
 async function ask<T extends z.ZodType>(job: GenerationJob, role: GenerationRole, schema: T, prompt: string) {
+  // Reject oversized input before reserving a paid call or recording uncertain spend.
+  if (prompt.length > 140_000) throw new Error("에이전트 입력이 예산을 초과했습니다.");
   const runtime = runtimes.get(job)!;
   const model = researchModel(role, job.recovery?.failures);
   const keyBytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify({
@@ -242,6 +246,15 @@ async function ask<T extends z.ZodType>(job: GenerationJob, role: GenerationRole
   })));
   const key = Array.from(new Uint8Array(keyBytes), value => value.toString(16).padStart(2, "0")).join("");
   job.calls ??= [];
+  for (const prior of job.calls) {
+    if (prior.status === "failed" && prior.error === "에이전트 입력이 예산을 초과했습니다.") {
+      // generationCall rejects this exact error before constructing any SDK request.
+      prior.uncertainUsd = 0;
+      prior.costUsd = 0;
+      prior.estimated = false;
+      prior.usage = {};
+    }
+  }
   const cached = job.calls.find(call => call.key === key && call.status === "completed");
   if (cached) return schema.parse(cached.result);
   // A killed worker may have incurred charges even if its final response was lost.
@@ -252,7 +265,8 @@ async function ask<T extends z.ZodType>(job: GenerationJob, role: GenerationRole
   }
   // Includes system/schema overhead and a conservative UTF token bound, including retries.
   const reserve = ((prompt.length + JSON.stringify(z.toJSONSchema(schema)).length + 4000) * 2 * model.input + researchMaxTokens(role) * model.output) / 1_000_000;
-  if (job.costUsd + uncertainResearchCost(job.calls) + reserve > job.budgetUsd)
+  const ceiling = job.search && job.search.phase !== "final" ? job.budgetUsd * (1 - job.search.config.reserveFraction) : job.budgetUsd;
+  if (job.costUsd + uncertainResearchCost(job.calls) + reserve > ceiling)
     throw new ResearchBudgetError(`연구 예산 $${job.budgetUsd} 내 추가 호출 여유가 없습니다. 미확인 호출 비용도 한도에 포함합니다.`);
   const now = new Date().toISOString();
   const call: ResearchCall = { id: crypto.randomUUID(), key, role, model: model.model, provider: model.provider,
@@ -373,6 +387,7 @@ export async function advanceGeneration(
 ) {
   let job = await getGenerationJob(id);
   if (
+    !job?.search &&
     job?.status === "paused" &&
     job.pauseReason === "data" &&
     job.to < lastCompleteDate()
@@ -402,6 +417,14 @@ export async function advanceGeneration(
     ? { id: "discovery" as const, label: "종목과 시간대 탐색", role: "orchestrator" as const }
     : GENERATION_STAGES[job.stageIndex];
   try {
+    if (job.search) {
+      onProgress(`슬롯 연구: ${job.search.phase} · ${job.search.trials.length}개 시도`);
+      await advanceSlotResearch(job, token, async (role, context) => ask(job!, role, reviewSchema,
+        `Independent empirical strategy review. Deterministic gates cannot be relaxed. Do not invent executions or approval. Return Korean findings. ${JSON.stringify(context)}`),
+        prompt => ask(job!, "designer", designBatchSchema, prompt));
+      await commit();
+      return (await getGenerationJob(id)) ?? job;
+    }
     if (!stage) throw new Error("알 수 없는 생성 단계");
     if (!job.universe?.length && stage.id !== "discovery")
       throw new Error(
@@ -782,7 +805,12 @@ export async function advanceGeneration(
     if (/작업 취소 또는 실행 잠금/.test(String(error))) return await getGenerationJob(id);
     if (committing) throw error;
     const failure = researchFailure(error);
-    if (error instanceof ResearchBudgetError) {
+    if (error instanceof ReplayDeadlineError && job.search) {
+      job.search.phase = "done";
+      job.search.endReason = "최종 검증 계산 시간 상한 · 검증 미완료";
+      job.search.computeMs = Math.max(job.search.computeMs, job.search.config.maxComputeMs);
+      job.status = "completed";
+    } else if (error instanceof ResearchBudgetError) {
       pause(
         job,
         "budget",
@@ -801,9 +829,11 @@ export async function advanceGeneration(
         job.recovery = { failures, message: failure.message };
         pause(job, "interrupted", failure.message, "자동 복구를 멈췄습니다. 저장된 단계에서 이어갈 수 있습니다. 인증·결제 오류는 해당 설정을 확인한 뒤 재개하세요.");
       }
+    } else if (job.search) {
+      job.search.endReason = "데이터/실행 장애 · 성과 평가 미완료";
+      pause(job, "interrupted", error instanceof Error ? error.message : "연구 실행 장애", "동결 기간과 시도 기록을 보존했습니다. 문제 복구 후 같은 단계에서 재개하세요.");
     } else if (job.research?.phase === "experiments" && stage?.id === "data") {
-      finishResearchOption(job, [error instanceof Error ? error.message : "데이터 확보 실패"]);
-      if (job.status === "running") job.stageIndex++;
+      pause(job, "interrupted", error instanceof Error ? error.message : "데이터 확보 실패", "백테스트 미실행 · 데이터 문제를 복구한 뒤 같은 구간에서 재개합니다.");
     } else {
       job.status = "failed";
       job.error = error instanceof Error ? error.message : "전략 생성 실패";

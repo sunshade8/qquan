@@ -91,6 +91,7 @@ export type GenerationEvent = {
   model?: string;
 };
 export type GenerationJob = {
+  search?: import("./slot-research.ts").SlotResearch;
   id: string;
   ownerId: string;
   slot: SlotId;

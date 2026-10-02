@@ -113,6 +113,14 @@ export async function cancelGenerationJob(job: GenerationJob) {
     .bind(JSON.stringify(job), Date.now(), job.id)
     .run();
 }
+export async function pauseGenerationJob(job: GenerationJob) {
+  if (job.status !== "running") throw new Error("실행 중인 연구만 일시정지할 수 있습니다.");
+  job.status = "paused";
+  job.pauseReason = "interrupted";
+  job.error = "사용자가 일시정지했습니다. 저장된 실험부터 이어갈 수 있습니다.";
+  await db().prepare("UPDATE strategy_generation_runs SET payload=?,status='paused',lease_owner=NULL,lease_until=NULL,updated_at=? WHERE id=? AND status='running'")
+    .bind(JSON.stringify(job), Date.now(), job.id).run();
+}
 export async function nextGenerationJob() {
   await ensureSchema();
   const row = await db()

@@ -372,7 +372,7 @@ export function QuantWorkspace() {
   const [history, setHistory] = useState<WorkspaceHistoryItem[]>([]);
   const [historyReady, setHistoryReady] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [marketSession, setMarketSession] = useState(resolveMarketSession);
+  const [marketSession, setMarketSession] = useState<MarketSession | null>(null);
   const [hypothesis, setHypothesis] = useState("");
   const [agentOpen, setAgentOpen] = useState(true);
   const [studies, setStudies] = useState<string[]>([]);
@@ -477,6 +477,7 @@ export function QuantWorkspace() {
   }, [history, historyReady, messages]);
 
   useEffect(() => {
+    queueMicrotask(() => setMarketSession(resolveMarketSession()));
     const timer = window.setInterval(() => setMarketSession(resolveMarketSession()), 30_000);
     return () => window.clearInterval(timer);
   }, []);
@@ -715,8 +716,8 @@ export function QuantWorkspace() {
               {labActivity && <button onClick={() => setView("lab")}><i /><span><strong>{labActivity.label}</strong><small>{labActivity.detail}</small></span><b>{labActivity.progress}</b></button>}
             </div>}
             <button className="history-toggle" onClick={() => setHistoryOpen(true)} aria-label={`Agent history ${history.length} items`}><HistoryIcon size={13} /><span>History</span>{history.length > 0 && <b>{history.length}</b>}</button>
-            <div className={`market-session ${marketSession.code}`} title={`America/New_York · ${marketSession.schedule} · DST 자동 반영`}>
-              <i /><div><strong>{marketSession.label}</strong><small>{marketSession.time} {marketSession.zone}</small></div>
+            <div className={`market-session ${marketSession?.code ?? "closed"}`} title={`America/New_York · ${marketSession?.schedule ?? "확인 중"} · DST 자동 반영`}>
+              <i /><div><strong>{marketSession?.label ?? "시간 확인 중"}</strong><small>{marketSession?.time ?? "—"} {marketSession?.zone ?? ""}</small></div>
             </div>
             <div className="connection-state"><span className="live-dot" />TradingView · {brokerSnapshot?.available ? "Toss" : "Yahoo"}{providers?.yahoo.status === "connected" ? " · Yahoo" : ""}</div>
           </div>

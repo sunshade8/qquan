@@ -2,15 +2,16 @@ import { env } from "cloudflare:workers";
 import { researchOwnerCookie, researchOwnerFrom } from "@/lib/research-owner";
 import {
   createGeneration,
-  createStrategyResearch,
   advanceGeneration,
   publicJob,
 } from "@/lib/strategy-generation";
+import { createSlotResearch, getArtifact } from "@/lib/slot-research-store";
 import { generationAvailability } from "@/lib/strategy-generation-llm";
 import {
   listGenerationJobs,
   getGenerationJob,
   cancelGenerationJob,
+  pauseGenerationJob,
   nextGenerationJob,
   generationInventory,
   resumeGenerationBudget,
@@ -28,6 +29,16 @@ export const dynamic = "force-dynamic";
 export async function GET(request: Request) {
   const owner = researchOwnerFrom(request);
   try {
+    const url = new URL(request.url);
+    if (url.searchParams.has("artifact")) {
+      const job = await getGenerationJob(url.searchParams.get("id") ?? "");
+      const hash = url.searchParams.get("artifact")!;
+      const allowed = job?.ownerId === owner && job.search && [
+        ...job.search.trials.map(t => t.artifact), ...Object.values(job.search.final).map(f => f.artifact), job.search.combinedArtifact,
+      ].includes(hash);
+      if (!allowed) return Response.json({ error: "산출물을 찾지 못했습니다." }, { status: 404 });
+      return Response.json(await getArtifact(hash), { headers: { "cache-control": "no-store" } });
+    }
     return Response.json(
       {
         jobs: (await listGenerationJobs(owner)).map(publicJob),
@@ -70,13 +81,24 @@ export async function POST(request: Request) {
       goal?: string;
       budgetUsd?: number;
       optionId?: string;
+      target?: unknown;
+      slots?: string[];
+      sourceMinutes?: number;
+      config?: unknown;
+      from?: string;
+      to?: string;
+      designMode?: string;
+      maxDesignBatches?: number;
     } | null;
   if (!body) return Response.json({ error: "JSON 요청 필요" }, { status: 400 });
   try {
     if (body.action === "research") {
-      const job = await createStrategyResearch(owner, {
+      const job = await createSlotResearch(owner, {
         goal: body.goal, brief: body.brief, universe: body.universe, slot: body.slot,
         budgetUsd: body.budgetUsd, requestId: body.requestId,
+        target: body.target, slots: body.slots, sourceMinutes: body.sourceMinutes,
+        config: body.config, from: body.from, to: body.to,
+        designMode: body.designMode, maxDesignBatches: body.maxDesignBatches,
       });
       return Response.json({ job: publicJob(job) }, { headers: { "set-cookie": researchOwnerCookie(owner) }, status: 202 });
     }
@@ -129,6 +151,10 @@ export async function POST(request: Request) {
     }
     if (body.action === "cancel") {
       await cancelGenerationJob(job);
+      return Response.json({ ok: true });
+    }
+    if (body.action === "pause") {
+      await pauseGenerationJob(job);
       return Response.json({ ok: true });
     }
     if (body.action !== "advance")

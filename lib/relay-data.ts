@@ -96,6 +96,7 @@ async function readDays(symbol: string, from: string, to: string, interval: Sour
     .orderBy(asc(intradayBarDays.tradingDate));
   const days = new Map<string, IntradayBar[]>();
   for (const row of rows) {
+    if (row.provider !== "Massive") throw new Error(`${symbol}: 보유 캐시 출처 ${row.provider} 불일치`);
     const compact = JSON.parse(row.payload) as Compact[];
     days.set(row.tradingDate, compact.map(([time, open, high, low, close, volume]) => ({ date: row.tradingDate, time, open, high, low, close, volume })));
   }
@@ -142,13 +143,9 @@ async function loadSymbol(symbol: string, from: string, to: string, onProgress: 
     return finish(groupByDate(points, from, end));
   };
 
-  if (!massiveConfigured()) return yahoo("MASSIVE_API_KEY 미설정.");
-  const availableFrom = massiveAvailableFrom();
-  if (end < availableFrom) throw new Error(`${symbol}: Massive는 ${availableFrom} 이후만 제공합니다.`);
-  const start = from > availableFrom ? from : availableFrom;
-  if (start > from) source.fallbackReason = `${from}–${shiftDate(start, -1)}은 Massive 제공 범위 밖이라 제외`;
-
   await ensureSchema();
+  // Entitlements constrain new downloads, never already acquired history.
+  const start = from;
   const months = monthsBetween(start, end);
   const coverage = await getDb().select().from(intradayBarCoverage).where(and(
     eq(intradayBarCoverage.symbol, symbol), eq(intradayBarCoverage.interval, interval),
@@ -162,6 +159,13 @@ async function loadSymbol(symbol: string, from: string, to: string, onProgress: 
     const cached = byMonth.get(month.month);
     const missing = missingIntradayRange(needFrom, needTo, cached);
     if (!missing) { source.cachedMonths = (source.cachedMonths ?? 0) + 1; continue; }
+
+    if (!massiveConfigured()) {
+      if (coverage.length) throw new Error(`${symbol}: 캐시는 보존했지만 ${missing.from}–${missing.to} 보충에 MASSIVE_API_KEY가 필요합니다.`);
+      return yahoo("MASSIVE_API_KEY 미설정.");
+    }
+    const availableFrom = massiveAvailableFrom();
+    if (missing.from < availableFrom) throw new Error(`${symbol}: 캐시 미확보 ${missing.from}–${missing.to}; 신규 다운로드는 ${availableFrom} 이후만 가능합니다. 보유 캐시는 보존됩니다.`);
 
     onProgress(`${symbol} ${month.month} ${label} 다운로드 (${index + 1}/${months.length})`);
     let history;
@@ -203,15 +207,17 @@ export async function loadRelaySessions(
   warmupSessions: number,
   onProgress: LoadProgress,
   step: 1 | 3 | 5 = 5,
+  sourceMinutes: 1 | 5 = 1,
 ): Promise<{ sessions: SessionBars[]; warmup: number; sources: RelayDataSource[]; warnings: string[] }> {
   const loadFrom = warmupSessions > 0 ? shiftDate(from, -Math.ceil(warmupSessions * 1.5) - 7) : from;
   const perSymbol = new Map<string, Map<string, IntradayBar[]>>();
   const sources: RelayDataSource[] = [];
   const warnings: string[] = [];
-  const interval: SourceInterval = "1m";
+  if (sourceMinutes === 5 && step !== 5) throw new Error("원본 5분봉은 1분/3분 실행 데이터로 변환할 수 없습니다.");
+  const interval: SourceInterval = `${sourceMinutes}m`;
   for (const symbol of symbols) {
     const { days, source } = await loadSymbol(symbol, loadFrom, to, onProgress, interval);
-    for (const [date, bars] of days) days.set(date, rollUpComplete(bars, step));
+    if (sourceMinutes === 1) for (const [date, bars] of days) days.set(date, rollUpComplete(bars, step));
     perSymbol.set(symbol, days);
     sources.push(source);
     if (!days.size) warnings.push(`${symbol}: 기간 내 ${step}분봉이 없습니다. 이 종목을 쓰는 규칙은 신호를 내지 못합니다.`);

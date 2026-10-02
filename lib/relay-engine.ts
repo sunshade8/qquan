@@ -407,10 +407,13 @@ export function sliceSession(bars: Record<string, IntradayBar[]>, universe: stri
   return { window, earlier };
 }
 
+export class ReplayDeadlineError extends Error {
+  constructor() { super("백테스트 계산 시간 상한 도달"); }
+}
 export function runRelay(
   strategies: SlotStrategy[],
   sessions: SessionBars[],
-  options: { capitalUsd: number; costMultiplier?: number; entryDelayBars?: number },
+  options: { capitalUsd: number; costMultiplier?: number; entryDelayBars?: number; deadlineAt?: number },
 ): RelayResult {
   if (!Number.isFinite(options.capitalUsd) || options.capitalUsd <= 0) throw new Error("유효한 시작 자본이 필요합니다.");
   for (const strategy of strategies) assertTradable(strategy.universe, strategy.name);
@@ -431,6 +434,7 @@ export function runRelay(
   const days: RelayDay[] = [];
 
   for (let index = warmup; index < sessions.length; index += 1) {
+    if (options.deadlineAt !== undefined && Date.now() >= options.deadlineAt) throw new ReplayDeadlineError();
     const session = sessions[index];
     const startEquity = equity;
     let dayPeak = equity;

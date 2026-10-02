@@ -134,3 +134,13 @@
 .research-usage dd small { font-size: 11px; color: var(--secondary); }
 .research-usage p { margin: 4px 0 0; }
 @media (max-width: 650px) { .research-usage dl { grid-template-columns: repeat(2, 1fr); } .research-usage-title { flex-direction: column; } }
+
+/* Results remain legible; wide ledgers scroll within the card on phones. */
+.slot-research-results { min-width: 0; font-size: 13px; line-height: 1.7; }
+.slot-research-results > p { margin: 12px 0; overflow-wrap: anywhere; }
+.slot-research-results .lab-table-wrap { max-width: 100%; overflow-x: auto; }
+.slot-research-results .lab-table { min-width: 900px; }
+.slot-research-results .lab-table th,
+.slot-research-results .lab-table td { font-size: 12px; line-height: 1.55; padding: 12px 10px; }
+.slot-research-results .research-option-detail p { overflow-wrap: anywhere; }
+.slot-research-results pre { font-size: 12px; }
