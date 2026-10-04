@@ -25,11 +25,24 @@ import {
 } from "@/lib/strategy-generation-models";
 import { GENERATION_STAGES } from "@/lib/strategy-generation-types";
 import { VALIDATION_POLICY } from "@/lib/strategy-generation-validation";
+import { journalPage } from "@/lib/research-memory-store";
 export const dynamic = "force-dynamic";
 export async function GET(request: Request) {
   const owner = researchOwnerFrom(request);
   try {
     const url = new URL(request.url);
+    if (url.searchParams.has("journal")) {
+      // Cross-owner export is reserved for the explicitly authenticated runner.
+      const runner = url.searchParams.get("source") === "runner";
+      const secret = (env as unknown as Record<string, string | undefined>).STRATEGY_RUNNER_SECRET ?? process.env.STRATEGY_RUNNER_SECRET;
+      const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+      if (runner && !(secret && request.headers.get("authorization") === `Bearer ${secret}`) && !local)
+        return Response.json({ error: "기록 내보내기 러너 인증 필요" }, { status: 403 });
+      const after = url.searchParams.get("after") ?? "";
+      if (after && !/^[a-f0-9-]{36}$/i.test(after))
+        return Response.json({ error: "잘못된 기록 커서" }, { status: 400 });
+      return Response.json(await journalPage(runner ? null : owner, after), { headers: { "cache-control": "no-store" } });
+    }
     if (url.searchParams.has("artifact")) {
       const job = await getGenerationJob(url.searchParams.get("id") ?? "");
       const hash = url.searchParams.get("artifact")!;

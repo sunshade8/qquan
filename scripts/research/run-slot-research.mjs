@@ -1,5 +1,7 @@
 /** Replays the actual app workflow through its API. No fixtures and no trading API. */
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { researchJournal } from "../../lib/research-memory.ts";
+import { writeJournal, loadResearchCookie, saveResearchCookie } from "./journal.mjs";
 const args = process.argv.slice(2),
   arg = (k) => args[args.indexOf(k) + 1];
 const base = process.env.RESEARCH_URL ?? "http://127.0.0.1:3010";
@@ -8,14 +10,15 @@ const out =
     ? arg("--out")
     : "outputs/slot-research";
 mkdirSync(out, { recursive: true });
-let cookie = process.env.RESEARCH_COOKIE ?? "";
+let cookie = process.env.RESEARCH_COOKIE ?? await loadResearchCookie(base);
 const post = async (body) => {
   const response = await fetch(`${base}/api/strategy-generation`, {
     method: "POST",
     headers: { "content-type": "application/json", cookie },
     body: JSON.stringify(body),
   });
-  cookie = response.headers.get("set-cookie")?.split(";")[0] ?? cookie;
+  const returnedCookie = response.headers.get("set-cookie")?.split(";")[0];
+  if (returnedCookie) { cookie = returnedCookie; await saveResearchCookie(base, cookie); }
   if (!response.ok) throw new Error(await response.text());
   const text = await response.text();
   if (body.action === "advance") {
@@ -73,9 +76,11 @@ if (args.includes("--replay")) {
   ).job;
 }
 writeFileSync(`${out}/request.json`, JSON.stringify(job, null, 2));
+await writeJournal(researchJournal(job));
 for (let n = 0; job.status === "running" && n < 250; n++) {
   job = (await post({ action: "advance", id: job.id })).job;
   writeFileSync(`${out}/run.json`, JSON.stringify(job, null, 2));
+  await writeJournal(researchJournal(job));
   console.log(
     JSON.stringify({
       id: job.id,

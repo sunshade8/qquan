@@ -121,6 +121,7 @@ export type SearchManifest = {
 };
 export type SlotResearch = {
   version: 1;
+  memory?: import("./research-memory.ts").ResearchMemory;
   phase: "data" | "design" | "reflect" | "search" | "freeze" | "review" | "final" | "done" | "blocked";
   agent?: ResearchAgent;
   evaluation?: "unmeasured" | "partial" | "measured";

@@ -255,6 +255,7 @@ test("program agent designs batches, uses measured failures, and resumes its sav
     assert.equal(role, "designer");
     prompts.push(prompt);
     return { summary: "합성 테스트 응답: 한 번의 설계 호출로 네 계열을 로컬 비교합니다.",
+      memoryUse: JSON.parse(prompt.split("Context: ")[1]).priorExperiments.slice(0, 1).map(r => ({ experimentId: r.id, action: "change", reason: "이전 실험에서 관측한 비용과 거래 수를 바탕으로 손절폭을 변경합니다." })),
       designs: FAMILIES.map(family => ({ family,
         mechanism: `${family} 계열의 원인과 완성 봉 신호를 시험하는 합성 테스트 가설입니다.`,
         change: prompts.length === 1 ? "학습 자료 기반의 첫 배치 설계" : "실측 실패 진단을 반영해 관측 길이와 진입 기준 수정",
@@ -271,6 +272,9 @@ test("program agent designs batches, uses measured failures, and resumes its sav
   job = await flow.advanceGeneration(job.id);
   assert.equal(job.search.agent.batches.length, 1);
   assert.match(prompts[0], /사용자 메모를 실제 설계에 반영/);
+  assert.ok(job.search.memory.records.length > 0, "prior durable runs must reach the next agent");
+  assert.ok(job.search.agent.batches[0].memoryUse.length > 0);
+  const frozenMemory = structuredClone(job.search.memory);
   await store.pauseGenerationJob(job);
   await store.resumeGenerationFailure(await store.getGenerationJob(job.id));
   job = await store.getGenerationJob(job.id);
@@ -287,6 +291,7 @@ test("program agent designs batches, uses measured failures, and resumes its sav
   assert.equal(job.costUsd, 0.02);
   assert.deepEqual(job.search.final, {});
   assert.equal(job.search.evaluation, "measured");
+  assert.deepEqual(job.search.memory, frozenMemory, "resume and reflection reuse the frozen evidence");
 });
 
 test("unavailable download cannot discard usable historical native rows", async () => {
@@ -306,4 +311,30 @@ test("unavailable download cannot discard usable historical native rows", async 
   job = await flow.advanceGeneration(job.id);
   assert.equal(job.search.trials[0].status, "measured");
   await store.cancelGenerationJob(job);
+});
+
+test("journal export includes historical pages and isolates owners; runner export requires authentication", async () => {
+  const { journalPage } = await import("../lib/research-memory-store.ts");
+  const template = (await store.listGenerationJobs(owner)).find(j => j.search.manifest);
+  const archiveOwner = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+  for (let i = 0; i < 25; i++) {
+    const j = structuredClone(template);
+    j.id = crypto.randomUUID(); j.ownerId = archiveOwner; j.status = "completed";
+    await store.createGenerationJob(j);
+  }
+  const first = await journalPage(archiveOwner);
+  assert.equal(first.journals.length, 20); assert.ok(first.next);
+  const second = await journalPage(archiveOwner, first.next);
+  assert.equal(second.journals.length, 5); assert.equal(second.next, null);
+  assert.equal(new Set([...first.journals, ...second.journals].map(j => j.id)).size, 25);
+  assert.equal((await journalPage("other-owner")).journals.length, 0);
+  const { GET } = await import("../app/api/strategy-generation/route.ts");
+  const denied = await GET(new Request("https://example.com/api/strategy-generation?journal=1&source=runner"));
+  assert.equal(denied.status, 403);
+  const own = await GET(new Request("https://example.com/api/strategy-generation?journal=1", { headers: { cookie: `qquant_research_device=${archiveOwner}` } }));
+  assert.equal((await own.json()).journals.length, 20);
+  globalThis.__strategyTestEnv.STRATEGY_RUNNER_SECRET = "test-runner-only";
+  const allowed = await GET(new Request("https://example.com/api/strategy-generation?journal=1&source=runner", { headers: { authorization: "Bearer test-runner-only" } }));
+  assert.equal(allowed.status, 200);
+  delete globalThis.__strategyTestEnv.STRATEGY_RUNNER_SECRET;
 });

@@ -12,7 +12,8 @@
     "test": "npm run build && node --experimental-strip-types --test tests/*.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
-    "trader": "node scripts/trading-runner.mjs"
+    "trader": "node scripts/trading-runner.mjs",
+    "research:logs": "node --experimental-strip-types scripts/research/sync-journal.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.123.0",

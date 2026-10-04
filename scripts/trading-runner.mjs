@@ -15,6 +15,8 @@
  * dashboard's 정지 button to stop, which cancels buys and sells holdings first.
  */
 
+import { syncJournals } from "./research/journal.mjs";
+
 const args = process.argv.slice(2);
 const option = (name, fallback) => {
   const index = args.indexOf(`--${name}`);
@@ -106,6 +108,19 @@ async function caseLoop() {
 }
 void caseLoop();
 void generationLoop();
+// Independent of trading and model calls. Export all pages, including completed work.
+async function journalLoop() {
+  while (!stopping) {
+    try {
+      const result = await syncJournals(base, { runner: true, secret: process.env.STRATEGY_RUNNER_SECRET ?? "" });
+      console.log(`[${stamp()}] 연구 기록 로컬 저장 ${result.runs}개 연구 / ${result.experiments}개 실험`);
+    } catch (error) {
+      console.error(`[${stamp()}] 연구 기록 저장 실패: ${error.message}`);
+    }
+    await new Promise(resolve => setTimeout(resolve, 60_000));
+  }
+}
+void journalLoop();
 console.log(`QQuant trading runner → ${base} · ${generationOnly ? "전략 생성만 (거래 틱 없음)" : `${intervalSeconds}s 간격`}`);
 while (!stopping && !generationOnly) {
   const started = Date.now();

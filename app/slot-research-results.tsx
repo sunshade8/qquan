@@ -257,9 +257,14 @@ export function SlotResearchResults({
         {search.agent.batches.map((batch, index) => <article key={batch.outputHash}>
           <h4>설계 배치 {index + 1} · 선행 개발 실험 {batch.basedOnTrialIds.length}개</h4>
           <p>{batch.summary}</p>
+          {batch.memoryUse?.map((use, i) => <p key={i}>이전 실험 {use.experimentId} · {use.action === "avoid" ? "회피" : use.action === "change" ? "수정" : "재시험"}: {use.reason}</p>)}
           {batch.designs.map(design => <p key={design.family}><strong>{design.candidate.name}</strong> · {design.mechanism}<br />변경: {design.change}</p>)}
           <p>설계 버전 {batch.outputHash.slice(0, 12)} · 최종 시험 성과는 설계 입력에서 제외</p>
         </article>)}
+      </details>}
+      {search.memory && <details className="research-log"><summary>이전 연구에서 가져온 기억 {search.memory.records.length}개</summary>
+        <p>최근 최대 100개 저장 연구에서 같은 소유자·종목·원본 주기·엔진·비용·자본의 실험을 비교합니다. 호환 실험 {search.memory.eligibleExperiments}개 중 최대 24개를 계열별로 골랐습니다. 중복 {search.memory.duplicateExperiments}개, 현재 최종 기간과 겹치는 기록 {search.memory.excludedFuture}개를 제외했습니다. 모델 재훈련이 아닌 근거 참조이며, 최종 시험 결과는 설계에 전달하지 않습니다.</p>
+        {search.memory.records.map(record => <p key={record.id}><strong>{record.slot} / {record.family}</strong> · {record.failure} · {record.status === "measured" ? `개발 평균 ${record.development?.meanDailyPct ?? "미확인"}% / ${record.development?.trades ?? 0}거래` : "미측정"}<br />{record.lesson}<br />근거: {record.id}</p>)}
       </details>}
       <p>
         슬롯 단독 일평균 순수익률 = 각 정상 세션의 시작 잔고 대비 비용 후 수익률

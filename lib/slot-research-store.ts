@@ -45,6 +45,7 @@ import {
 import { agentCandidate, designContext, designPrompt, validateDesignBatch, executableRule, type DesignBatch } from "./slot-research-agent.ts";
 import type { GenerationJob } from "./strategy-generation-types.ts";
 import type { GenerationReview } from "./strategy-generation-spec.ts";
+import { loadResearchMemory } from "./research-memory-store.ts";
 
 const db = () => (env as unknown as { DB: D1Database }).DB;
 export async function ensureSearchSchema() {
@@ -457,11 +458,15 @@ export async function advanceSlotResearch(
     );
   if (search.phase === "design" || search.phase === "reflect") {
     if (!design) throw new Error("연구 설계 에이전트가 연결되지 않았습니다.");
+    if (!search.memory) {
+      search.memory = await loadResearchMemory(job);
+      await generationProgress(job, token);
+    }
     const context = designContext(job, await snapshot(job));
     const prompt = designPrompt(context, search.phase === "reflect");
     const inputHash = await digest(prompt);
     // The model response is separately checkpointed by ask() before this commit.
-    const result = validateDesignBatch(await design(prompt), manifest.sourceMinutes, search.slots);
+    const result = validateDesignBatch(await design(prompt), manifest.sourceMinutes, search.slots, search.memory.records.map(r => r.id), search.memory.records);
     const outputHash = await digest(result);
     search.agent!.batches.push({ ...result, inputHash, outputHash,
       basedOnTrialIds: search.trials.map(t => t.id), createdAt: new Date().toISOString() });
