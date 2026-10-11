@@ -29,6 +29,7 @@ export type CTTradingDeps = {
   bars: (symbol: string) => Promise<CTBar[]>;
   checkpoint: (state: DashboardState) => Promise<void>;
   entryAllowed: () => Promise<boolean>;
+  evidence?: (trade: DashboardTrade, bars: CTBar[]) => Promise<void>;
 };
 const number = (value: Decimal.Value) => new Decimal(value).toNumber();
 const remaining = (t: DashboardTrade) =>
@@ -47,6 +48,18 @@ export async function tickCTDashboard(
   for (const rule of rules)
     if ((await ctHash(executableCT(rule.spec))) !== rule.hash)
       throw new Error("승인·실행 CT 해시 불일치");
+  const evidence = async (trade: DashboardTrade, bars: CTBar[] = []) => {
+    try {
+      await deps.evidence?.(trade, bars);
+    } catch (error) {
+      event(
+        state,
+        at,
+        "error",
+        `거래 차트 저장 실패: ${error instanceof Error ? error.message : "저장 오류"}`,
+      );
+    }
+  };
   const submit = async (
     trade: DashboardTrade,
     side: "buy" | "sell",
@@ -97,6 +110,22 @@ export async function tickCTDashboard(
     };
     state.orders.push(order);
     await deps.checkpoint(state);
+    if (
+      side === "buy" &&
+      (!trade.ctSignal ||
+        deps.now() >= trade.ctSignal.validUntil ||
+        !(await deps.entryAllowed()) ||
+        deps.now() >= trade.ctSignal.validUntil)
+    ) {
+      order.status = "rejected";
+      order.message = "주문 의도 저장 이후 신호 만료/진입 차단";
+      trade.status = "missed";
+      trade.violations = [order.message];
+      state.strategies[trade.strategyId].missed++;
+      await deps.checkpoint(state);
+      await evidence(trade);
+      return;
+    }
     try {
       const result = await deps.broker.submit({
         clientOrderId: order.clientOrderId,
@@ -221,6 +250,9 @@ export async function tickCTDashboard(
         (!trade.ctSignal ||
           Date.parse(trade.entryAt!) < trade.ctSignal.decidedAt) &&
           "신호 확정 전 체결",
+        trade.ctSignal &&
+          Date.parse(trade.entryAt!) > trade.ctSignal.validUntil &&
+          "신호 유효시간 이후 체결",
         trade.boughtQuantity >
           state.orders
             .filter((o) => o.tradeId === trade.id && o.side === "buy")
@@ -244,6 +276,7 @@ export async function tickCTDashboard(
       order.status = "cancel_requested";
       await deps.checkpoint(state);
     }
+    await evidence(trade);
   }
   if (state.status === "stopping") {
     state.stopPhase = "cancel_buys";
@@ -353,6 +386,7 @@ export async function tickCTDashboard(
         exit,
       );
     }
+    await evidence(trade, bars);
   }
   const equity = dashboardSummary(state).equityUsd;
   const date = ctDate(now, rules[0]?.contract.market ?? "stock");
@@ -495,6 +529,7 @@ export async function tickCTDashboard(
         ctHash: rule.hash,
       };
       state.trades.push(trade);
+      await evidence(trade, bars);
       state.strategies[rule.id].signals++;
       state.strategies[rule.id].entries++;
       daily.trades++;

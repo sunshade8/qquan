@@ -1,3 +1,5 @@
+import { saveCTTradeEvidence } from "./ct-trade-evidence.ts";
+import { ensureCTSchema } from "./ct-research-store.ts";
 import { feePerSidePct } from "./broker-costs.ts";
 import type {
   DashboardMode,
@@ -182,6 +184,7 @@ export async function ctTick(
   broker: DashboardBroker,
   checkpoint: (s: DashboardState) => Promise<void>,
 ) {
+  await ensureCTSchema();
   const dataCache = new Map<
     string,
     Promise<Awaited<ReturnType<typeof ctRecentBars>>>
@@ -193,6 +196,18 @@ export async function ctTick(
     id: () => crypto.randomUUID(),
     broker,
     checkpoint,
+    async evidence(trade, bars) {
+      const rule = state.ctRules?.find((r) => r.id === trade.strategyId);
+      if (rule)
+        await saveCTTradeEvidence(
+          book,
+          state.mode,
+          trade,
+          rule,
+          bars,
+          Date.now(),
+        );
+    },
     bars: (symbol) => {
       if (!dataCache.has(symbol))
         dataCache.set(symbol, ctRecentBars(contract, symbol, Date.now()));

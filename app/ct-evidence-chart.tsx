@@ -7,26 +7,57 @@ export function CTEvidenceChart({
   trade,
   currency,
   spec,
+  outcome,
+  observedAt,
 }: {
   bars: CTBar[];
   trade: CTTrade;
   currency: string;
   spec: CTSpec;
+  outcome?: string;
+  observedAt?: number;
 }) {
-  const [cursor, setCursor] = useState(bars.length - 1);
+  const [cursor, setCursor] = useState(
+    observedAt ? bars.length : bars.length - 1,
+  );
   const visible = bars.slice(0, cursor + 1),
-    now = visible.at(-1)?.endMs ?? 0;
+    now =
+      observedAt && cursor >= bars.length
+        ? observedAt
+        : (visible.at(-1)?.endMs ?? 0);
   if (!visible.length) return <p>차트 데이터 없음</p>;
+  const knownLevels = [
+    ...(now >= trade.entryAt
+      ? [
+          trade.entry,
+          Math.max(
+            trade.entry * (1 - spec.exit.stopPct / 100),
+            spec.exit.invalidation === "last_stage_low"
+              ? trade.signal.patternLow
+              : 0,
+          ),
+          trade.entry * (1 + spec.exit.targetPct / 100),
+        ]
+      : []),
+    ...(now >= trade.exitAt ? [trade.exit] : []),
+    ...(now >= trade.signal.decidedAt
+      ? [
+          trade.signal.support,
+          trade.signal.resistance,
+          ...(trade.signal.references ?? []).map((r) => r.price),
+        ]
+      : []),
+  ];
   const width = 900,
     height = 320,
     pad = 30,
-    min = Math.min(...visible.map((b) => b.low)),
-    max = Math.max(...visible.map((b) => b.high)),
+    min = Math.min(...visible.map((b) => b.low), ...knownLevels),
+    max = Math.max(...visible.map((b) => b.high), ...knownLevels),
     span = max - min || 1;
   const x = (ms: number) =>
     pad +
     ((ms - visible[0].startMs) /
-      Math.max(1, visible.at(-1)!.endMs - visible[0].startMs)) *
+      Math.max(1, Math.max(now, visible.at(-1)!.endMs) - visible[0].startMs)) *
       (width - pad * 2);
   const y = (p: number) => pad + (1 - (p - min) / span) * 210;
   const volume = Math.max(...visible.map((b) => b.volume), 1),
@@ -64,7 +95,10 @@ export function CTEvidenceChart({
         <b>{trade.symbol} · 엔진 신호 근거</b>
         <span>
           {currency} · {new Date(now).toLocaleString("ko-KR")} ·{" "}
-          {trade.pnl >= 0 ? "수익" : "손실"} 사례
+          {outcome ??
+            (now >= trade.exitAt
+              ? `${trade.pnl >= 0 ? "수익" : "손실"} 사례`
+              : "청산 결과 미확정")}
         </span>
       </figcaption>
       <svg
@@ -182,7 +216,7 @@ export function CTEvidenceChart({
         <input
           type="range"
           min={0}
-          max={bars.length - 1}
+          max={observedAt ? bars.length : bars.length - 1}
           value={cursor}
           onChange={(e) => setCursor(Number(e.target.value))}
         />

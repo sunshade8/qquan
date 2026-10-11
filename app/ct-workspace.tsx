@@ -79,28 +79,30 @@ function TradeEvidence({
     [index, setIndex] = useState(0),
     [bars, setBars] = useState<CTBar[] | null>(null),
     [error, setError] = useState<string | null>(null);
-  const trade = trades[index];
+  const trade = trades[index] ?? trades[0],
+    chartSymbol = trade?.symbol,
+    chartExit = trade?.exitAt;
   useEffect(() => {
-    if (!trade) return;
+    if (!chartSymbol || chartExit === undefined) return;
     const controller = new AbortController();
     queueMicrotask(() => {
       setBars(null);
       setError(null);
     });
     fetch(
-      `/api/invest/ct?chart=1&id=${encodeURIComponent(jobId)}&symbol=${encodeURIComponent(trade.symbol)}&at=${trade.exitAt}`,
+      `/api/invest/ct?chart=1&id=${encodeURIComponent(jobId)}&symbol=${encodeURIComponent(chartSymbol)}&at=${chartExit}`,
       { signal: controller.signal },
     )
       .then(async (r) => {
         const p = (await r.json()) as { error?: string; bars: CTBar[] };
         if (!r.ok) throw new Error(p.error);
-        setBars(p.bars);
+        if (!controller.signal.aborted) setBars(p.bars);
       })
       .catch((e) => {
         if (!controller.signal.aborted) setError(String(e));
       });
     return () => controller.abort();
-  }, [jobId, trade]);
+  }, [jobId, chartSymbol, chartExit]);
   if (!trades.length)
     return (
       <p className="strategy-note">
@@ -112,7 +114,7 @@ function TradeEvidence({
       <h3>차트 판단 근거 · 대표 수익·손실 사례</h3>
       <select
         aria-label="거래 사례"
-        value={index}
+        value={trades[index] ? index : 0}
         onChange={(e) => setIndex(Number(e.target.value))}
       >
         {trades.map((t, i) => (

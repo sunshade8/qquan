@@ -222,3 +222,46 @@ test("CT trading path contains no model or research-runtime imports", () => {
       /generationCall|openaiClient|claudeClient|ask\(/,
     );
 });
+
+test("CT stores engine trade evidence before entry and after actual reconciled close; evidence outage cannot suppress stop monitoring", async () => {
+  const f = await fixture(),
+    snapshots = [];
+  f.deps.evidence = async (trade, rows) =>
+    snapshots.push(structuredClone({ trade, rows }));
+  await f.tick();
+  assert.ok(snapshots[0].rows.length);
+  assert.equal(snapshots[0].trade.ctHash, f.state.ctRules[0].hash);
+  const q = f.state.orders[0].quantity;
+  f.fill(q, 101.1);
+  f.orders.values().next().value.status = "filled";
+  await f.tick();
+  assert.ok(snapshots.some((s) => s.trade.entryAt));
+  f.deps.evidence = async () => {
+    throw new Error("fixture chart storage outage");
+  };
+  f.setQuote(95);
+  await f.tick();
+  assert.equal(f.submitted.length, 2);
+  f.deps.evidence = async (trade, rows) =>
+    snapshots.push(structuredClone({ trade, rows }));
+  const sell = [...f.orders.values()][1];
+  Object.assign(sell, {
+    status: "filled",
+    filledQuantity: q,
+    averageFillPrice: 95,
+    commissionUsd: q * 95 * 0.001,
+  });
+  await f.tick();
+  assert.ok(
+    snapshots.some(
+      (s) => s.trade.status === "closed" && s.trade.exitPrice === 95,
+    ),
+  );
+});
+test("CT signal expiring while evidence/intent is persisted never reaches the broker", async () => {
+  const f = await fixture();
+  f.deps.evidence = async () => f.advance(600000);
+  await f.tick();
+  assert.equal(f.submitted.length, 0);
+  assert.equal(f.state.orders[0].status, "rejected");
+});

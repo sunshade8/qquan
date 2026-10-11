@@ -1,5 +1,6 @@
 "use client";
 
+import { CTTradeChart } from "./ct-trade-chart";
 import { CTBacktestDialog } from "./ct-backtest-dialog";
 import CircleStop from "lucide-react/dist/esm/icons/circle-stop";
 import Download from "lucide-react/dist/esm/icons/download";
@@ -348,9 +349,9 @@ function Kpi({ label, value, hint, tone: toneClass = "" }: { label: string; valu
 
 // ---------------------------------------------------------------- dashboard
 
-function DashboardPanel({ view, data, now, busy, book, onStart, onStop, onBacktest }: {
+function DashboardPanel({ view, data, now, busy, book, onStart, onStop, onBacktest, onTradeChart }: {
   view: TradingDashboardView; data: TradingDashboardResponse; now: number; busy: boolean; book: TradingBookId;
-  onStart: () => void; onStop: () => void; onBacktest: () => void;
+  onStart: () => void; onStop: () => void; onBacktest: () => void; onTradeChart:(id:string)=>void;
 }) {
   const usd=useMoney();
   const today = view.daily.at(-1);
@@ -442,7 +443,7 @@ function DashboardPanel({ view, data, now, busy, book, onStart, onStop, onBackte
         <thead><tr><th>구분</th><th>전략</th><th>종목</th><th>수량</th><th>가격</th><th>현재가 / 지정가</th><th>손절 / 목표</th><th>상태</th></tr></thead>
         <tbody>
           {view.positions.map((trade) => <tr key={trade.id}>
-            <td>보유</td><td>{trade.strategyName}</td><td><strong>{trade.symbol}</strong></td><td>{trade.boughtQuantity - trade.soldQuantity}</td>
+            <td>보유</td><td>{trade.strategyName}</td><td><strong>{trade.symbol}</strong>{book.startsWith("ct-")&&<button className="ghost" onClick={()=>onTradeChart(trade.id)}>차트</button>}</td><td>{trade.boughtQuantity - trade.soldQuantity}</td>
             <td>{trade.entryPrice?.toLocaleString("ko-KR",{maximumFractionDigits:8}) ?? "—"}</td><td>{trade.markPrice?.toLocaleString("ko-KR",{maximumFractionDigits:8}) ?? "—"}</td>
             <td>−{trade.stopPct}% / {trade.targetPct === null ? "시간 청산" : `+${trade.targetPct}%`}</td>
             <td>{trade.pendingExit ? `${EXIT_TEXT[trade.pendingExit]} 매도 중` : trade.status === "entering" ? "진입 중" : `~${new Date(trade.slotEndsAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false })} 청산`}</td>
@@ -461,7 +462,7 @@ function DashboardPanel({ view, data, now, busy, book, onStart, onStop, onBackte
       {view.trades.length ? <div className="lab-table-wrap trading-scroll"><table className="lab-table">
         <thead><tr><th>날짜</th><th>전략</th><th>종목</th><th>신호봉</th><th>진입</th><th>청산</th><th>수량</th><th>손익</th><th>진입 괴리</th><th>준수</th></tr></thead>
         <tbody>{view.trades.map((trade: DashboardTrade) => <tr key={trade.id}>
-          <td>{trade.date}</td><td>{trade.strategyName}</td><td><strong>{trade.symbol}</strong></td><td>{trade.signalTime}</td>
+          <td>{trade.date}</td><td>{trade.strategyName}</td><td><strong>{trade.symbol}</strong>{book.startsWith("ct-")&&<button className="ghost" onClick={()=>onTradeChart(trade.id)}>차트</button>}</td><td>{trade.signalTime}</td>
           <td>{trade.entryPrice ? `${trade.entryPrice.toLocaleString("ko-KR",{maximumFractionDigits:8})} · ${clock(trade.entryAt)}` : "—"}</td>
           <td>{trade.exitPrice ? `${trade.exitPrice.toLocaleString("ko-KR",{maximumFractionDigits:8})} · ${trade.exit ? EXIT_TEXT[trade.exit] : ""}` : "—"}</td>
           <td>{trade.boughtQuantity}</td>
@@ -469,7 +470,7 @@ function DashboardPanel({ view, data, now, busy, book, onStart, onStop, onBackte
           <td>{trade.entrySlippagePct === null ? "—" : pct(trade.entrySlippagePct, 3)}</td>
           <td className={trade.compliant ? "positive" : "negative"} title={trade.violations.join("\n")}>{trade.status === "missed" ? `미체결 — ${trade.violations[0]?.replace("신호 미체결: ", "") ?? ""}` : trade.compliant ? "준수" : trade.violations.join(" · ")}</td>
         </tr>)}</tbody>
-      </table></div> : <p className="strategy-note">아직 거래가 없습니다. 준수 기준: 기준가 대비 진입가 괴리, 전략 봉 한 개 안 진입, 손절폭 초과 손실 없음, 청산 시각 후 2분 안 청산.</p>}
+      </table></div> : <p className="strategy-note">{book.startsWith("ct-")?"아직 거래가 없습니다. CT 준수 기준: 승인 해시, 신호 확정·유효시간, 진입 괴리, 요청·소유 수량, 청산 판단 근거.":"아직 거래가 없습니다. 준수 기준: 기준가 대비 진입가 괴리, 전략 봉 한 개 안 진입, 손절폭 초과 손실 없음, 청산 시각 후 2분 안 청산."}</p>}
     </section>
 
     <details className="trading-log">
@@ -514,6 +515,7 @@ export function TradingDashboards({ book = "relay" }: { book?: TradingBookId } =
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<null | "start" | "stop" | "backtest">(null);
+  const [tradeChart,setTradeChart]=useState<string|null>(null);
   const [now, setNow] = useState(() => Date.now());
   const ticking = useRef(false);
 
@@ -602,8 +604,9 @@ export function TradingDashboards({ book = "relay" }: { book?: TradingBookId } =
     {actionError && <div className="strategy-warning error"><TriangleAlert size={15} /><div><strong>요청이 거절됐습니다</strong><p>{actionError}</p></div></div>}
 
     <DashboardPanel view={view} data={data} now={now} busy={busy} book={book}
-      onStart={() => setDialog("start")} onStop={() => setDialog("stop")} onBacktest={() => setDialog("backtest")} />
+      onTradeChart={setTradeChart} onStart={() => setDialog("start")} onStop={() => setDialog("stop")} onBacktest={() => setDialog("backtest")} />
 
+    {tradeChart&&(book==="ct-stock"||book==="ct-crypto")&&<Modal eyebrow="CT EXECUTION EVIDENCE" title="운용 거래 차트 근거" onClose={()=>setTradeChart(null)}><CTTradeChart key={`${book}:${mode}:${tradeChart}`} id={tradeChart} mode={mode} book={book}/></Modal>}
     {dialog === "start" && <StartDialog mode={mode} book={book} data={data} busy={busy} onClose={() => setDialog(null)} onConfirm={(confirm) => act("start", confirm)} />}
     {dialog === "stop" && <StopDialog mode={mode} view={view} busy={busy} onClose={() => setDialog(null)} onConfirm={() => act("stop")} />}
     {dialog === "backtest" && BOOK_COPY[book].backtest && (book==="ct-stock"||book==="ct-crypto"?<CTBacktestDialog book={book} onClose={()=>setDialog(null)}/>:<BacktestDialog mode={mode} onClose={() => setDialog(null)} />)}

@@ -1,3 +1,4 @@
+import { getCTTradeEvidence } from "@/lib/ct-trade-evidence";
 import { env } from "cloudflare:workers";
 import { researchOwnerCookie, researchOwnerFrom } from "@/lib/research-owner";
 import { advanceGeneration, publicJob } from "@/lib/strategy-generation";
@@ -41,6 +42,29 @@ export async function GET(request: Request) {
     market = url.searchParams.get("market") === "crypto" ? "crypto" : "stock";
   try {
     await ensureCTSchema();
+    if (url.searchParams.has("tradeChart")) {
+      const id = url.searchParams.get("tradeChart") ?? "",
+        mode = url.searchParams.get("mode");
+      if (
+        !/^[a-zA-Z0-9-]{1,100}$/.test(id) ||
+        (mode !== "live" && mode !== "paper")
+      )
+        return Response.json({ error: "거래 차트 입력 오류" }, { status: 400 });
+      const packet = await getCTTradeEvidence(
+        market === "crypto" ? "ct-crypto" : "ct-stock",
+        mode,
+        id,
+      );
+      return packet
+        ? Response.json(packet, { headers: headers(owner) })
+        : Response.json(
+            {
+              error:
+                "저장된 운용 차트 없음 · 해당 거래의 수집 상태를 확인하세요.",
+            },
+            { status: 404 },
+          );
+    }
     if (url.searchParams.has("artifact")) {
       const job = await getGenerationJob(url.searchParams.get("id") ?? "");
       if (!job?.ct || job.ownerId !== owner)

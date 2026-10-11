@@ -54,6 +54,9 @@ export async function ensureCTSchema() {
   await ensureSchema();
   await ctDb().batch([
     ctDb().prepare(
+      "CREATE TABLE IF NOT EXISTS ct_trade_charts (book TEXT NOT NULL,mode TEXT NOT NULL,trade_id TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(book,mode,trade_id))",
+    ),
+    ctDb().prepare(
       "CREATE TABLE IF NOT EXISTS ct_runtime (id TEXT PRIMARY KEY,heartbeat_at INTEGER NOT NULL)",
     ),
     ctDb().prepare(
