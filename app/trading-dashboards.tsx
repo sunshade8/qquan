@@ -1,5 +1,6 @@
 "use client";
 
+import { CTBacktestDialog } from "./ct-backtest-dialog";
 import CircleStop from "lucide-react/dist/esm/icons/circle-stop";
 import Download from "lucide-react/dist/esm/icons/download";
 import FlaskConical from "lucide-react/dist/esm/icons/flask-conical";
@@ -7,7 +8,7 @@ import Play from "lucide-react/dist/esm/icons/play";
 import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw";
 import TriangleAlert from "lucide-react/dist/esm/icons/triangle-alert";
 import X from "lucide-react/dist/esm/icons/x";
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import type { DashboardMode, DashboardTrade, StopPhase, TradingDashboardResponse, TradingDashboardView } from "@/lib/dashboard-types";
 import type { RelayBacktestReport } from "@/lib/relay-report";
 
@@ -25,10 +26,12 @@ const STOP_STEPS: Array<{ phase: StopPhase; label: string }> = [
 ];
 const EXIT_TEXT: Record<string, string> = { stop: "손절", target: "목표", slot_end: "시간 청산", shutdown: "정지 청산" };
 
-function usd(value: number | null | undefined, signed = false) {
+const MoneyContext=createContext<"USD"|"KRW">("USD");
+function useMoney(){const currency=useContext(MoneyContext);return (value:number|null|undefined,signed=false)=>formatMoney(value,signed,currency);}
+function formatMoney(value: number | null | undefined, signed = false,currency:"USD"|"KRW"="USD") {
   if (value === null || value === undefined || !Number.isFinite(value)) return "—";
   const sign = value < 0 ? "−" : signed && value > 0 ? "+" : "";
-  return `${sign}$${Math.abs(value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `${sign}${currency==="KRW"?"₩":"$"}${Math.abs(value).toLocaleString("ko-KR", { minimumFractionDigits: currency==="KRW"?0:2, maximumFractionDigits: currency==="KRW"?0:2 })}`;
 }
 
 function pct(value: number | null | undefined, digits = 2, signed = true) {
@@ -68,6 +71,7 @@ type Point = { label: string; value: number };
 
 /** Equity over time against the starting capital, with a crosshair readout. */
 function EquityChart({ points, base, caption }: { points: Point[]; base: number; caption: string }) {
+  const usd=useMoney();
   const [hover, setHover] = useState<number | null>(null);
   const width = 640, height = 150, padX = 6, padY = 12;
   if (points.length < 2) return null;
@@ -142,18 +146,19 @@ function Modal({ title, eyebrow, subtitle, onClose, children, footer, compact }:
 }
 
 function StartDialog({ mode, book, data, onClose, onConfirm, busy }: { mode: DashboardMode; book: TradingBookId; data: TradingDashboardResponse; onClose: () => void; onConfirm: (confirm: string) => void; busy: boolean }) {
+  const usd=useMoney();
   const [phrase, setPhrase] = useState("");
   const live = mode === "live";
-  return <Modal compact eyebrow={live ? "LIVE ORDERS" : "PAPER TRADING"} title={`${MODE_TITLE[mode]} 시작`} subtitle={MODE_SUB[mode]} onClose={onClose}
+  return <Modal compact eyebrow={live ? "LIVE ORDERS" : "PAPER TRADING"} title={`${MODE_TITLE[mode]} 시작`} subtitle={data.broker==="Upbit"?"Upbit KRW 현물 · 소수 수량 · KST 24시간":MODE_SUB[mode]} onClose={onClose}
     footer={<><span>{live ? "실제 돈으로 주문이 나갑니다." : "주문은 나가지 않습니다."}</span><div className="trading-dialog-actions"><button className="ghost" onClick={onClose}>취소</button><button className={live ? "danger" : "primary"} disabled={busy || (live && phrase !== LIVE_CONFIRM)} onClick={() => onConfirm(phrase)}>{busy ? <RefreshCw size={13} className="spin" /> : <Play size={13} />}시작</button></div></>}>
     <dl className="trading-dialog-facts">
       <div><dt>시작 자본</dt><dd>{usd(data.capitalUsd)}</dd></div>
       <div><dt>{BOOK_COPY[book].source}</dt><dd>{data.registeredStrategies}개</dd></div>
-      {live && <div><dt>토스 계좌</dt><dd>{data.toss.accountNo ?? "—"}</dd></div>}
-      {live && <div><dt>USD 매수가능</dt><dd>{usd(data.toss.buyingPowerUsd)}</dd></div>}
+      {live && <div><dt>{data.broker??"토스"} 계좌</dt><dd>{data.toss.accountNo ?? "—"}</dd></div>}
+      {live && <div><dt>{data.currency??"USD"} 매수가능</dt><dd>{usd(data.toss.buyingPowerUsd)}</dd></div>}
     </dl>
     <ul className="trading-dialog-notes">
-      <li>{book === "surge" ? "급등주 규칙은 오늘 관측된 급등락 사건을 보고, 규칙이 정한 봉(1·3·5분)이 완성될 때마다 판단합니다" : "현재 슬롯에 배정된 전략이 자기 봉 주기(1·3·5분)의 완성된 봉을 보고 판단합니다"}. 신호가 나면 다음 봉에 {live ? "지정가(호가 +밴드) 매수 주문을 냅니다" : "토스 현재가로 가상 체결합니다"}. {book === "surge" ? "최대 보유 시간이나 15:55 ET에 청산합니다." : "슬롯이 끝나면 청산합니다."}</li>
+      <li>{book.startsWith("ct-") ? "등록 당시 동결한 CT 규칙이 완성된 봉의 패턴을 판단합니다. 진입·청산에는 LLM을 호출하지 않습니다" : book === "surge" ? "급등주 규칙은 오늘 관측된 급등락 사건을 보고, 규칙이 정한 봉(1·3·5분)이 완성될 때마다 판단합니다" : "현재 슬롯에 배정된 전략이 자기 봉 주기(1·3·5분)의 완성된 봉을 보고 판단합니다"}. 신호가 나면 다음 봉에 {live ? "지정가(호가 +밴드) 매수 주문을 냅니다" : `${data.broker??"토스"} 현재 호가로 가상 체결합니다`}. {book.startsWith("ct-") ? "동결된 손절·목표·최대 보유 규칙으로 청산합니다." : book === "surge" ? "최대 보유 시간이나 15:55 ET에 청산합니다." : "슬롯이 끝나면 청산합니다."}</li>
       {book === "surge" && <li>이 대시보드는 <strong>급등주 규칙만</strong> 거래합니다. 전략 탭의 슬롯 전략은 여기서 실행되지 않고, 두 계좌의 잔고·기록도 분리돼 있습니다.</li>}
       {data.registeredStrategies === 0 && <li><strong>오늘 거래할 규칙이 0개입니다.</strong> {BOOK_COPY[book].empty}</li>}
       <li>대시보드는 자신이 매수한 수량만 매도합니다. {live ? "계좌의 다른 보유 종목에는 손대지 않습니다." : ""}</li>
@@ -180,6 +185,7 @@ type BacktestState =
   | { step: "result"; report: RelayBacktestReport };
 
 function BacktestDialog({ mode, onClose }: { mode: DashboardMode; onClose: () => void }) {
+  const usd=useMoney();
   const latest = useMemo(() => yesterdayEt(), []);
   const earliest = useMemo(() => shift(latest, -729), [latest]);
   const [from, setFrom] = useState(() => shift(latest, -29));
@@ -272,6 +278,7 @@ function BacktestDialog({ mode, onClose }: { mode: DashboardMode; onClose: () =>
 }
 
 function BacktestReportView({ report }: { report: RelayBacktestReport }) {
+  const usd=useMoney();
   const m = report.metrics;
   return <div className="trading-report">
     <section className="trading-kpis">
@@ -345,6 +352,7 @@ function DashboardPanel({ view, data, now, busy, book, onStart, onStop, onBackte
   view: TradingDashboardView; data: TradingDashboardResponse; now: number; busy: boolean; book: TradingBookId;
   onStart: () => void; onStop: () => void; onBacktest: () => void;
 }) {
+  const usd=useMoney();
   const today = view.daily.at(-1);
   const phaseIndex = view.stopPhase ? STOP_STEPS.findIndex((step) => step.phase === view.stopPhase) : -1;
   const blocked = view.status === "stopped" && !view.readiness.ready;
@@ -354,7 +362,7 @@ function DashboardPanel({ view, data, now, busy, book, onStart, onStop, onBackte
       <div>
         <span className={`trading-status ${view.status}`}><i />{STATUS_TEXT[view.status]}{view.status === "stopping" && phaseIndex >= 0 ? ` · ${phaseIndex + 1}/3 ${STOP_STEPS[phaseIndex].label}` : ""}</span>
         <h2>{MODE_TITLE[view.mode]}</h2>
-        <p>{MODE_SUB[view.mode]} · {BOOK_COPY[book].source} · 운용 예산 {usd(view.initialCapitalUsd)}{view.startedAt ? ` · 시작 ${clock(view.startedAt)}` : ""}{view.lastTickAt ? ` · 마지막 틱 ${ago(view.lastTickAt, now)}` : ""}</p>
+        <p>{data.broker==="Upbit"?(view.mode==="live"?"Upbit 계좌 · 실제 KRW 주문":"Upbit 실시간 호가 · 가상 체결"):MODE_SUB[view.mode]} · {BOOK_COPY[book].source} · 운용 예산 {usd(view.initialCapitalUsd)}{view.startedAt ? ` · 시작 ${clock(view.startedAt)}` : ""}{view.lastTickAt ? ` · 마지막 틱 ${ago(view.lastTickAt, now)}` : ""}</p>
       </div>
       <div className="trading-actions">
         <button className="start" disabled={busy || view.status !== "stopped" || blocked} onClick={onStart} title={blocked ? view.readiness.reasons.join("\n") : undefined}><Play size={14} />시작</button>
@@ -364,8 +372,8 @@ function DashboardPanel({ view, data, now, busy, book, onStart, onStop, onBackte
     </header>
 
     {view.mode === "live" && <div className="strategy-account">
-      <span><i className={toss.ready ? "" : "off"} />토스 계좌 <strong>{view.brokerBalance?.accountNo ?? toss.accountNo ?? "—"}</strong></span>
-      <span>토스 실제 USD 주문 가능 <strong>{usd(toss.buyingPowerUsd)}</strong></span>
+      <span><i className={toss.ready ? "" : "off"} />{data.broker??"토스"} 계좌 <strong>{view.brokerBalance?.accountNo ?? toss.accountNo ?? "—"}</strong></span>
+      <span>{data.broker??"토스"} 실제 {data.currency??"USD"} 주문 가능 <strong>{usd(toss.buyingPowerUsd)}</strong></span>
       <span>계좌 보유 평가액 <strong>{usd(view.brokerBalance?.holdingsValueUsd)}</strong></span>
       <span>잔고 조회 <strong>{view.brokerBalance ? ago(view.brokerBalance.fetchedAt, now) : toss.ready ? "실행 시 1분마다" : "—"}</strong></span>
       {view.brokerBalance?.error && <span className="negative">조회 오류: {view.brokerBalance.error}</span>}
@@ -392,7 +400,7 @@ function DashboardPanel({ view, data, now, busy, book, onStart, onStop, onBackte
       <Kpi label="실현 / 미실현" value={usd(view.realizedPnlUsd, true)} tone={tone(view.realizedPnlUsd)} hint={`미실현 ${usd(view.unrealizedPnlUsd, true)}`} />
       <Kpi label="최대 낙폭" value={view.maxDrawdownPct ? `−${view.maxDrawdownPct.toFixed(2)}%` : "0.00%"} tone={view.maxDrawdownPct ? "negative" : ""} hint="장중 틱 기준" />
       <Kpi label="전략 준수율" value={view.adherencePct === null ? "—" : `${view.adherencePct.toFixed(1)}%`} hint={`신호 ${view.signals} · 미체결 ${view.missedSignals}`} />
-      <Kpi label={view.mode === "live" ? "수수료" : "수수료·스프레드"} value={usd(view.commissionUsd)} />
+      <Kpi label={view.mode === "live" ? "수수료" : "체결 수수료"} value={usd(view.commissionUsd)} />
       <Kpi label="보유 / 주문" value={`${view.positions.length} / ${view.orders.length}`} hint={data.runner.online ? `러너 온라인 · ${ago(data.runner.lastHeartbeatAt, now)}` : "러너 오프라인 · 탭이 틱 구동"} />
     </section>
 
@@ -419,7 +427,7 @@ function DashboardPanel({ view, data, now, busy, book, onStart, onStop, onBackte
       <section>
         <h3>날짜별 수익(률)</h3>
         {view.daily.length ? <div className="lab-table-wrap trading-scroll"><table className="lab-table">
-          <thead><tr><th>날짜 (ET)</th><th>시작</th><th>종료</th><th>손익</th><th>수익률</th><th>거래</th></tr></thead>
+          <thead><tr><th>날짜 ({data.currency==="KRW"?"KST":"ET"})</th><th>시작</th><th>종료</th><th>손익</th><th>수익률</th><th>거래</th></tr></thead>
           <tbody>{[...view.daily].reverse().map((day) => <tr key={day.date}>
             <td>{day.date}</td><td>{usd(day.startEquityUsd)}</td><td>{usd(day.equityUsd)}</td>
             <td className={tone(day.pnlUsd)}>{usd(day.pnlUsd, true)}</td><td className={tone(day.returnPct)}>{pct(day.returnPct)}</td><td>{day.trades}</td>
@@ -435,13 +443,13 @@ function DashboardPanel({ view, data, now, busy, book, onStart, onStop, onBackte
         <tbody>
           {view.positions.map((trade) => <tr key={trade.id}>
             <td>보유</td><td>{trade.strategyName}</td><td><strong>{trade.symbol}</strong></td><td>{trade.boughtQuantity - trade.soldQuantity}</td>
-            <td>{trade.entryPrice?.toFixed(2) ?? "—"}</td><td>{trade.markPrice?.toFixed(2) ?? "—"}</td>
+            <td>{trade.entryPrice?.toLocaleString("ko-KR",{maximumFractionDigits:8}) ?? "—"}</td><td>{trade.markPrice?.toLocaleString("ko-KR",{maximumFractionDigits:8}) ?? "—"}</td>
             <td>−{trade.stopPct}% / {trade.targetPct === null ? "시간 청산" : `+${trade.targetPct}%`}</td>
             <td>{trade.pendingExit ? `${EXIT_TEXT[trade.pendingExit]} 매도 중` : trade.status === "entering" ? "진입 중" : `~${new Date(trade.slotEndsAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false })} 청산`}</td>
           </tr>)}
           {view.orders.map((order) => <tr key={order.id}>
             <td>{order.side === "buy" ? "매수 주문" : "매도 주문"}</td><td>{order.purpose === "entry" ? "진입" : EXIT_TEXT[order.purpose]}</td><td><strong>{order.symbol}</strong></td>
-            <td>{order.filledQuantity}/{order.quantity}</td><td>{order.averageFillPrice?.toFixed(2) ?? "—"}</td><td>{order.limitPrice ?? "—"}</td><td>—</td>
+            <td>{order.filledQuantity}/{order.quantity}</td><td>{order.averageFillPrice?.toLocaleString("ko-KR",{maximumFractionDigits:8}) ?? "—"}</td><td>{order.limitPrice ?? "—"}</td><td>—</td>
             <td>{order.status === "cancel_requested" ? "취소 요청됨" : order.status === "submitting" ? "응답 대기" : "체결 대기"} · {ago(order.submittedAt, now)}</td>
           </tr>)}
         </tbody>
@@ -454,14 +462,14 @@ function DashboardPanel({ view, data, now, busy, book, onStart, onStop, onBackte
         <thead><tr><th>날짜</th><th>전략</th><th>종목</th><th>신호봉</th><th>진입</th><th>청산</th><th>수량</th><th>손익</th><th>진입 괴리</th><th>준수</th></tr></thead>
         <tbody>{view.trades.map((trade: DashboardTrade) => <tr key={trade.id}>
           <td>{trade.date}</td><td>{trade.strategyName}</td><td><strong>{trade.symbol}</strong></td><td>{trade.signalTime}</td>
-          <td>{trade.entryPrice ? `${trade.entryPrice.toFixed(2)} · ${clock(trade.entryAt)}` : "—"}</td>
-          <td>{trade.exitPrice ? `${trade.exitPrice.toFixed(2)} · ${trade.exit ? EXIT_TEXT[trade.exit] : ""}` : "—"}</td>
+          <td>{trade.entryPrice ? `${trade.entryPrice.toLocaleString("ko-KR",{maximumFractionDigits:8})} · ${clock(trade.entryAt)}` : "—"}</td>
+          <td>{trade.exitPrice ? `${trade.exitPrice.toLocaleString("ko-KR",{maximumFractionDigits:8})} · ${trade.exit ? EXIT_TEXT[trade.exit] : ""}` : "—"}</td>
           <td>{trade.boughtQuantity}</td>
           <td className={tone(trade.pnlUsd)}>{trade.pnlUsd === null ? "—" : usd(trade.pnlUsd, true)}</td>
           <td>{trade.entrySlippagePct === null ? "—" : pct(trade.entrySlippagePct, 3)}</td>
           <td className={trade.compliant ? "positive" : "negative"} title={trade.violations.join("\n")}>{trade.status === "missed" ? `미체결 — ${trade.violations[0]?.replace("신호 미체결: ", "") ?? ""}` : trade.compliant ? "준수" : trade.violations.join(" · ")}</td>
         </tr>)}</tbody>
-      </table></div> : <p className="strategy-note">아직 거래가 없습니다. 준수 기준: 기준가 대비 진입가 괴리, 전략 봉 한 개(1·3·5분) 안 진입, 손절폭 초과 손실 없음, 청산 시각 후 2분 안 청산.</p>}
+      </table></div> : <p className="strategy-note">아직 거래가 없습니다. 준수 기준: 기준가 대비 진입가 괴리, 전략 봉 한 개 안 진입, 손절폭 초과 손실 없음, 청산 시각 후 2분 안 청산.</p>}
     </section>
 
     <details className="trading-log">
@@ -482,9 +490,11 @@ function DashboardPanel({ view, data, now, busy, book, onStart, onStop, onBackte
  * question the whole split exists to prevent, which is "whose strategy did that
  * number come from?"
  */
-export type TradingBookId = "relay" | "surge";
+export type TradingBookId = "relay" | "surge" | "ct-stock" | "ct-crypto";
 
 const BOOK_COPY: Record<TradingBookId, { source: string; empty: string; backtest: boolean }> = {
+  "ct-stock": {source:"CT 주식 동결 규칙",empty:"CT 연구에서 통과한 규칙을 등록하세요.",backtest:true},
+  "ct-crypto": {source:"CT 코인 동결 규칙",empty:"CT 연구에서 통과한 규칙을 등록하세요.",backtest:true},
   relay: {
     source: "전략 탭의 슬롯 전략",
     empty: "위의 ‘전략 연구’에서 검증된 후보를 비교하고 슬롯에 배정하세요. 실행을 시작할 때 등록된 전략으로 거래합니다.",
@@ -500,7 +510,7 @@ const BOOK_COPY: Record<TradingBookId, { source: string; empty: string; backtest
 export function TradingDashboards({ book = "relay" }: { book?: TradingBookId } = {}) {
   const [data, setData] = useState<TradingDashboardResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [mode, setMode] = useState<DashboardMode>("live");
+  const [mode, setMode] = useState<DashboardMode>(book.startsWith("ct-")?"paper":"live");
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<null | "start" | "stop" | "backtest">(null);
@@ -535,7 +545,7 @@ export function TradingDashboards({ book = "relay" }: { book?: TradingBookId } =
       if (ticking.current) return;
       ticking.current = true;
       try {
-        const response = await fetch("/api/trading", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "tick" }) });
+        const response = await fetch("/api/trading", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "tick", book }) });
         if (response.ok) setData(await response.json() as TradingDashboardResponse);
       } catch {
         // the next poll shows the state either way
@@ -546,7 +556,7 @@ export function TradingDashboards({ book = "relay" }: { book?: TradingBookId } =
     void tick();
     const timer = setInterval(() => { void tick(); }, TICK_MS);
     return () => clearInterval(timer);
-  }, [active]);
+  }, [active,book]);
 
   const act = async (action: "start" | "stop", confirm?: string) => {
     setBusy(true);
@@ -573,7 +583,8 @@ export function TradingDashboards({ book = "relay" }: { book?: TradingBookId } =
   }
 
   const view = data.dashboards[mode];
-  return <section className="trading-dashboards">
+  const usd=(v:number|null|undefined,signed=false)=>formatMoney(v,signed,data.currency??"USD");
+  return <MoneyContext.Provider value={data.currency??"USD"}><section className="trading-dashboards">
     <div className="trading-tabs" role="tablist" aria-label="트레이딩 대시보드">
       {(["live", "paper"] as const).map((item) => {
         const dashboard = data.dashboards[item];
@@ -595,6 +606,6 @@ export function TradingDashboards({ book = "relay" }: { book?: TradingBookId } =
 
     {dialog === "start" && <StartDialog mode={mode} book={book} data={data} busy={busy} onClose={() => setDialog(null)} onConfirm={(confirm) => act("start", confirm)} />}
     {dialog === "stop" && <StopDialog mode={mode} view={view} busy={busy} onClose={() => setDialog(null)} onConfirm={() => act("stop")} />}
-    {dialog === "backtest" && BOOK_COPY[book].backtest && <BacktestDialog mode={mode} onClose={() => setDialog(null)} />}
-  </section>;
+    {dialog === "backtest" && BOOK_COPY[book].backtest && (book==="ct-stock"||book==="ct-crypto"?<CTBacktestDialog book={book} onClose={()=>setDialog(null)}/>:<BacktestDialog mode={mode} onClose={() => setDialog(null)} />)}
+  </section></MoneyContext.Provider>;
 }

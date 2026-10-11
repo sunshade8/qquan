@@ -54,7 +54,7 @@ export async function GET(request: Request) {
     }
     return Response.json(
       {
-        jobs: (await listGenerationJobs(owner)).map(publicJob),
+        jobs: (await listGenerationJobs(owner)).filter(job=>!job.ct).map(publicJob),
         availability: generationAvailability(),
         // Expensive candle JSON aggregation is opt-in, never on every status poll.
         inventory: new URL(request.url).searchParams.get("inventory") === "1" ? await generationInventory() : [],

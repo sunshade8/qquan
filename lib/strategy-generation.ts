@@ -13,7 +13,7 @@ import {
   generationCall,
 } from "@/lib/strategy-generation-llm";
 import {
-  GENERATION_MODELS,
+  GENERATION_MODELS, RESEARCH_WEB_SEARCH,
   researchModel,
   researchMaxTokens,
   assertDifferentProvider,
@@ -242,7 +242,7 @@ async function ask<T extends z.ZodType>(job: GenerationJob, role: GenerationRole
   const runtime = runtimes.get(job)!;
   const model = researchModel(role, job.recovery?.failures);
   const keyBytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify({
-    role, prompt, schema: z.toJSONSchema(schema), option: job.research?.current, attempt: job.attempt, stage: job.stageIndex,
+    ct: job.ct?.phase, role, prompt, schema: z.toJSONSchema(schema), option: job.research?.current, attempt: job.attempt, stage: job.stageIndex,
   })));
   const key = Array.from(new Uint8Array(keyBytes), value => value.toString(16).padStart(2, "0")).join("");
   job.calls ??= [];
@@ -264,8 +264,9 @@ async function ask<T extends z.ZodType>(job: GenerationJob, role: GenerationRole
     old.error = "연결 중단으로 최종 사용량 미확인";
   }
   // Includes system/schema overhead and a conservative UTF token bound, including retries.
-  const reserve = ((prompt.length + JSON.stringify(z.toJSONSchema(schema)).length + 4000) * 2 * model.input + researchMaxTokens(role) * model.output) / 1_000_000;
-  const ceiling = job.search && job.search.phase !== "final" ? job.budgetUsd * (1 - job.search.config.reserveFraction) : job.budgetUsd;
+  const webSearch = Boolean(job.ct && job.ct.phase === "sources");
+  const reserve = (webSearch ? RESEARCH_WEB_SEARCH.maxCalls*RESEARCH_WEB_SEARCH.usdPerCall : 0) + ((prompt.length + JSON.stringify(z.toJSONSchema(schema)).length + 4000) * 2 * model.input + researchMaxTokens(role) * model.output) / 1_000_000;
+  const ceiling = job.search && job.search.phase !== "final" ? job.budgetUsd * (1 - job.search.config.reserveFraction) : job.ct && !["risk_review","final","evidence_review"].includes(job.ct.phase) ? job.budgetUsd * (1-job.ct.contract.policy.reserveFraction) : job.budgetUsd;
   if (job.costUsd + uncertainResearchCost(job.calls) + reserve > ceiling)
     throw new ResearchBudgetError(`연구 예산 $${job.budgetUsd} 내 추가 호출 여유가 없습니다. 미확인 호출 비용도 한도에 포함합니다.`);
   const now = new Date().toISOString();
@@ -284,7 +285,7 @@ async function ask<T extends z.ZodType>(job: GenerationJob, role: GenerationRole
   };
   try {
     const result = await generationCall(job.ownerId, role, schema, prompt, {
-      failures: job.recovery?.failures,
+      failures: job.recovery?.failures, ct: Boolean(job.ct), webSearch,
       onUsage: async (usage, estimated) => {
         call.usage = usage;
         call.estimated = estimated;
@@ -302,6 +303,8 @@ async function ask<T extends z.ZodType>(job: GenerationJob, role: GenerationRole
         }
       },
     });
+    call.sources = result.sources;
+    call.searchCalls = result.searchCalls;
     call.result = result.data;
     call.status = "completed";
     call.estimated = false;
@@ -387,7 +390,7 @@ export async function advanceGeneration(
 ) {
   let job = await getGenerationJob(id);
   if (
-    !job?.search &&
+    !job?.ct && !job?.search &&
     job?.status === "paused" &&
     job.pauseReason === "data" &&
     job.to < lastCompleteDate()
@@ -417,6 +420,14 @@ export async function advanceGeneration(
     ? { id: "discovery" as const, label: "종목과 시간대 탐색", role: "orchestrator" as const }
     : GENERATION_STAGES[job.stageIndex];
   try {
+    if (job.ct) {
+      onProgress(`CT 연구: ${job.ct.phase}`);
+      const { advanceCTResearch } = await import("@/lib/ct-research-store");
+      await advanceCTResearch(job, token, (role, schema, prompt) => ask(job!, role, schema, prompt));
+      delete job.recovery;
+      await commit();
+      return (await getGenerationJob(id)) ?? job;
+    }
     if (job.search) {
       onProgress(`슬롯 연구: ${job.search.phase} · ${job.search.trials.length}개 시도`);
       await advanceSlotResearch(job, token, async (role, context) => ask(job!, role, reviewSchema,
@@ -810,6 +821,8 @@ export async function advanceGeneration(
       job.search.endReason = "최종 검증 계산 시간 상한 · 검증 미완료";
       job.search.computeMs = Math.max(job.search.computeMs, job.search.config.maxComputeMs);
       job.status = "completed";
+    } else if (job.ct && (error instanceof ResearchBudgetError || /CT 계산 시간 상한|백테스트 한도|CT 연구 권한·시간 한도/.test(String(error)))) {
+      job.ct.phase="done";job.ct.passed=false;job.ct.endReason=`연구 한도 종료 · 통과 전략 없음 · ${error instanceof Error?error.message:"한도"}`;job.status="completed";
     } else if (error instanceof ResearchBudgetError) {
       pause(
         job,
@@ -829,6 +842,8 @@ export async function advanceGeneration(
         job.recovery = { failures, message: failure.message };
         pause(job, "interrupted", failure.message, "자동 복구를 멈췄습니다. 저장된 단계에서 이어갈 수 있습니다. 인증·결제 오류는 해당 설정을 확인한 뒤 재개하세요.");
       }
+    } else if (job.ct) {
+      pause(job, "interrupted", error instanceof Error ? error.message : "CT 실행 장애", "자료·API·모델 연결 복구 후 저장된 단계에서 재개하세요.");
     } else if (job.search) {
       job.search.endReason = "데이터/실행 장애 · 성과 평가 미완료";
       pause(job, "interrupted", error instanceof Error ? error.message : "연구 실행 장애", "동결 기간과 시도 기록을 보존했습니다. 문제 복구 후 같은 단계에서 재개하세요.");

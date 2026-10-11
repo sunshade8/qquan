@@ -1,0 +1,123 @@
+{
+  "runId": "705489fc-030b-467c-8a2c-ecd40b7b8d7c",
+  "status": "completed",
+  "market": "crypto",
+  "symbols": [
+    "KRW-BTC",
+    "KRW-ETH"
+  ],
+  "minutes": 60,
+  "inventory": {
+    "KRW-BTC": {
+      "bars": 4317,
+      "invalid": 0,
+      "duplicate": 0,
+      "gaps": 1,
+      "fromMs": 1776038400000,
+      "toMs": 1791590400000
+    },
+    "KRW-ETH": {
+      "bars": 4317,
+      "invalid": 0,
+      "duplicate": 0,
+      "gaps": 1,
+      "fromMs": 1776038400000,
+      "toMs": 1791590400000
+    }
+  },
+  "budgetUsd": 8,
+  "costUsd": 0.5062536,
+  "dataPages": 44,
+  "backtests": 30,
+  "candidates": 5,
+  "completedModelCalls": 7,
+  "endReason": "개선 정체 · 통과 전략 없음 · 최종 기간 미개봉",
+  "finalConsumed": false,
+  "registered": false,
+  "ordersSent": 0,
+  "sourceURLs": [
+    "https://www.youtube.com/watch?v=inqHN8q57X4",
+    "https://adamhgrimes.com/pullback-trade-works/"
+  ],
+  "trials": [
+    {
+      "id": "705489fc-030b-467c-8a2c-ecd40b7b8d7c:0",
+      "parentId": null,
+      "hash": "8085819dfa0f0796eba8e4fddda0489ec57687595b64a58dd4d3ac7468c29143",
+      "developmentTrades": 8,
+      "developmentNetReturnPct": -0.4247420110752964,
+      "reasons": [
+        "종목 집중",
+        "거래 표본 부족",
+        "비용 후 수익 기준 미달",
+        "시기 집중",
+        "비용 2배 스트레스 실패",
+        "진입 지연 스트레스 실패",
+        "손절 민감도 실패"
+      ]
+    },
+    {
+      "id": "705489fc-030b-467c-8a2c-ecd40b7b8d7c:1",
+      "parentId": "705489fc-030b-467c-8a2c-ecd40b7b8d7c:0",
+      "hash": "d9df10dcb5a3064b3285c40ec8611750d16491de756fba28a5d5bcab05c852e0",
+      "developmentTrades": 4,
+      "developmentNetReturnPct": -0.8765076993705323,
+      "reasons": [
+        "비용 후 수익 기준 미달",
+        "거래 표본 부족",
+        "종목 집중",
+        "시기 집중",
+        "비용 2배 스트레스 실패",
+        "진입 지연 스트레스 실패",
+        "손절 민감도 실패"
+      ]
+    },
+    {
+      "id": "705489fc-030b-467c-8a2c-ecd40b7b8d7c:2",
+      "parentId": "705489fc-030b-467c-8a2c-ecd40b7b8d7c:1",
+      "hash": "95de0f30ec0fde4a341cbd320f303f95b6f0733f9d713724533df9e1fc8f9e9e",
+      "developmentTrades": 5,
+      "developmentNetReturnPct": 0.12985562827074748,
+      "reasons": [
+        "비용 후 수익 기준 미달",
+        "종목 집중",
+        "거래 표본 부족",
+        "시기 집중",
+        "비용 2배 스트레스 실패",
+        "진입 지연 스트레스 실패"
+      ]
+    },
+    {
+      "id": "705489fc-030b-467c-8a2c-ecd40b7b8d7c:3",
+      "parentId": "705489fc-030b-467c-8a2c-ecd40b7b8d7c:2",
+      "hash": "e6efc99d4b0edca0631ebf7cc5d43c2ecd9338f67ceef33599ad4c1c44e3ba4f",
+      "developmentTrades": 6,
+      "developmentNetReturnPct": -0.2840317337175602,
+      "reasons": [
+        "비용 후 수익 기준 미달",
+        "거래 표본 부족",
+        "종목 집중",
+        "시기 집중",
+        "비용 2배 스트레스 실패",
+        "진입 지연 스트레스 실패",
+        "손절 민감도 실패"
+      ]
+    },
+    {
+      "id": "705489fc-030b-467c-8a2c-ecd40b7b8d7c:4",
+      "parentId": "705489fc-030b-467c-8a2c-ecd40b7b8d7c:3",
+      "hash": "7b4378008aef94d7922a9512856d900c8e1c53b5f72d32f875f8f9066cf49c98",
+      "developmentTrades": 8,
+      "developmentNetReturnPct": -0.3915779719467771,
+      "reasons": [
+        "거래 표본 부족",
+        "비용 후 수익 기준 미달",
+        "종목 집중",
+        "시기 집중",
+        "비용 2배 스트레스 실패",
+        "진입 지연 스트레스 실패",
+        "손절 민감도 실패"
+      ]
+    }
+  ]
+}

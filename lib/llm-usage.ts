@@ -48,8 +48,9 @@ export function usageCostUsd(model: string, usage: AnthropicUsage) {
   return Number((((input * price.input + cacheWrite * price.cacheWrite + cacheRead * price.cacheRead) * inputMultiplier + output * price.output * outputMultiplier) / 1_000_000).toFixed(8));
 }
 
-export async function recordLlmUsage(ownerId: string, model: string, feature: string, usage: AnthropicUsage, provider: "Anthropic" | "OpenAI" = "Anthropic", role: string | null = null) {
-  const costUsd = usageCostUsd(model, usage);
+export async function recordLlmUsage(ownerId: string, model: string, feature: string, usage: AnthropicUsage, provider: "Anthropic" | "OpenAI" = "Anthropic", role: string | null = null, toolCostUsd = 0) {
+  const tokenCost = usageCostUsd(model, usage);
+  const costUsd = tokenCost===null?null:tokenCost+Math.max(0,Number.isFinite(toolCostUsd)?toolCostUsd:0);
   try {
     await ensureSchema();
     await getDb().insert(llmUsage).values({

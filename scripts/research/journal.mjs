@@ -49,7 +49,7 @@ export async function syncJournals(base, { cookie = "", secret = "", runner = fa
     url.searchParams.set("journal", "1");
     if (runner) url.searchParams.set("source", "runner");
     if (after) url.searchParams.set("after", after);
-    const response = await fetch(url, { headers: { cookie, ...(secret ? { authorization: `Bearer ${secret}` } : {}) }, signal: AbortSignal.timeout(60_000) });
+    const response = await fetch(url, { headers: { cookie, ...(secret ? { authorization: `Bearer ${secret}` } : {}), ...(process.env.VERCEL_AUTOMATION_BYPASS_SECRET ? { "x-vercel-protection-bypass": process.env.VERCEL_AUTOMATION_BYPASS_SECRET } : {}) }, signal: AbortSignal.timeout(60_000) });
     if (!response.ok) throw new Error(`Research journal export HTTP ${response.status}`);
     const page = await response.json();
     if (!Array.isArray(page.journals)) throw new Error("Server does not support research journal export");

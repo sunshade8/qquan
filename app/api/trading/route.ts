@@ -1,4 +1,4 @@
-import { waitUntil } from "cloudflare:workers";
+import { env, waitUntil } from "cloudflare:workers";
 import { refreshSurgeObservationsIfRunning, startTrading, stopTrading, tickDashboards, tradingDashboards, TradingUserError, type TradingBook } from "@/lib/trading-runner";
 
 export const dynamic = "force-dynamic";
@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
  * strategy lists, so this is never inferred — an unrecognised value is the 전략
  * book, never a surge order.
  */
-const bookOf = (value: string | null | undefined): TradingBook => (value === "surge" ? "surge" : "relay");
+const bookOf = (value: string | null | undefined): TradingBook => (value === "ct-stock" || value === "ct-crypto" || value === "surge" ? value : "relay");
 
 /** One book's two dashboards: state, readiness, and whether the runner is alive. */
 export async function GET(request: Request) {
@@ -28,7 +28,12 @@ export async function GET(request: Request) {
  * dashboards can show the runner is alive.
  */
 export async function POST(request: Request) {
+  const origin=request.headers.get("origin");if(origin&&origin!==new URL(request.url).origin)return Response.json({error:"요청 출처 거부"},{status:403});
   const body = await request.json().catch(() => ({})) as { action?: string; mode?: string; confirm?: string; source?: string; book?: string };
+  if(body.source==="runner" && !["localhost","127.0.0.1","[::1]"].includes(new URL(request.url).hostname)){
+    const secret=(env as unknown as Record<string,string|undefined>).STRATEGY_RUNNER_SECRET ?? process.env.STRATEGY_RUNNER_SECRET;
+    if(!secret||request.headers.get("authorization")!==`Bearer ${secret}`)return Response.json({error:"러너 인증 필요"},{status:403});
+  }
   const mode = body.mode === "live" || body.mode === "paper" ? body.mode : null;
   const book = bookOf(body.book);
   try {

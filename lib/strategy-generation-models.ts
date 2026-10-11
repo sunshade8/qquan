@@ -73,3 +73,6 @@ export const MODEL_SOURCES = [
   "https://platform.claude.com/docs/en/models/overview",
   "https://platform.claude.com/docs/en/about-claude/pricing",
 ];
+
+/** Provider tool tariff; kept with the existing research model/cost configuration. */
+export const RESEARCH_WEB_SEARCH={maxCalls:3,usdPerCall:0.01,source:"https://openai.com/api/pricing/"} as const;

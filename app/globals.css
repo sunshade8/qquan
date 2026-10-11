@@ -1,4 +1,5 @@
-@import "tailwindcss";
+@import "tailwindcss/index.css";
+@import "./ct.css";
 
 :root {
   --bg: #f2f2f4;

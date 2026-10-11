@@ -12,6 +12,8 @@ import type { GenerationRole } from "./strategy-generation-models.ts";
 import type { SlotId } from "./trade-slots.ts";
 import type { AnthropicUsage } from "./llm-usage.ts";
 export type ResearchCall = {
+  sources?: Array<{url: string; title: string}>;
+  searchCalls?: number;
   id: string;
   key: string;
   role: GenerationRole;
@@ -91,6 +93,7 @@ export type GenerationEvent = {
   model?: string;
 };
 export type GenerationJob = {
+  ct?: import("./ct-research.ts").CTResearch;
   search?: import("./slot-research.ts").SlotResearch;
   id: string;
   ownerId: string;

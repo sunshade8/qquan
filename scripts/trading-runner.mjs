@@ -27,6 +27,7 @@ const base = option("url", process.env.TRADING_RUNNER_URL ?? "http://localhost:3
 const intervalSeconds = Math.max(5, Number(option("interval", process.env.TRADING_RUNNER_INTERVAL ?? "15")) || 15);
 const generationOnly = args.includes("--generation-only");
 let stopping = false;
+const runnerHeaders = () => ({ "content-type": "application/json", ...(process.env.STRATEGY_RUNNER_SECRET ? { authorization: `Bearer ${process.env.STRATEGY_RUNNER_SECRET}` } : {}), ...(process.env.VERCEL_AUTOMATION_BYPASS_SECRET ? { "x-vercel-protection-bypass": process.env.VERCEL_AUTOMATION_BYPASS_SECRET } : {}) });
 
 const stamp = () => new Date().toTimeString().slice(0, 8);
 
@@ -35,7 +36,7 @@ async function tick() {
   try {
     const response = await fetch(`${base}/api/trading`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: runnerHeaders(),
       body: JSON.stringify({ action: "tick", source: "runner" }),
       signal: AbortSignal.timeout(170_000),
     });
@@ -54,11 +55,12 @@ process.on("SIGINT", () => { stopping = true; console.log("\n러너 종료 — �
 const GENERATORS = [
   { name: "전략", path: "/api/strategy-generation" },
   { name: "급등주", path: "/api/invest/surge" },
+  { name: "CT", path: "/api/invest/ct" },
 ];
 
 async function advance(generator) {
   const response = await fetch(`${base}${generator.path}`, {
-    method: "POST", headers: { "content-type": "application/json", ...(process.env.STRATEGY_RUNNER_SECRET ? { authorization: `Bearer ${process.env.STRATEGY_RUNNER_SECRET}` } : {}) },
+    method: "POST", headers: runnerHeaders(),
     body: JSON.stringify({ action: "advance", source: "runner" }), signal: AbortSignal.timeout(300_000),
   });
   if (!response.ok) {
@@ -94,7 +96,7 @@ async function caseLoop() {
   while (!stopping) {
     try {
       const response = await fetch(`${base}/api/invest/surge/cases`, {
-        method: "POST", headers: { "content-type": "application/json", ...(process.env.STRATEGY_RUNNER_SECRET ? { authorization: `Bearer ${process.env.STRATEGY_RUNNER_SECRET}` } : {}) },
+        method: "POST", headers: runnerHeaders(),
         body: JSON.stringify({ action: "collect", source: "runner" }), signal: AbortSignal.timeout(170_000),
       });
       const result = await response.json().catch(() => ({}));

@@ -11,12 +11,30 @@ that would build the same commit twice.
 
 ## Current runtime prerequisite
 
-The application currently builds a Cloudflare Worker through vinext and uses a
-Cloudflare D1 `DB` binding throughout its stores. This output cannot run directly
-as a Vercel Function. Before Vercel can serve the application, configure a Node
-build (vinext + Nitro) and a database adapter with access to the existing data,
-or migrate the database. The existing private Sites deployment remains at
+The default build retains the vinext Cloudflare Worker and D1 `DB` binding used by
+private Sites. Vercel now uses `npm run build:vercel` (vinext + Nitro, Node 24,
+`.vercel/output`, 300-second maximum function duration, icn1). The `cloudflare:workers`
+import is aliased to the Node environment adapter for this build only.
+
+The Node adapter accesses the **existing** D1 database through parameterized D1 REST
+queries and atomic batches. Configure these server-only variables first:
+
+- `CLOUDFLARE_ACCOUNT_ID`
+- `CLOUDFLARE_D1_DATABASE_ID`
+- `CLOUDFLARE_D1_API_TOKEN` with access to that database
+
+These credentials were unavailable during CT implementation. The private Sites
+binding does not expose a transferable REST token. There is no ephemeral or empty
+DB fallback: data APIs return a clear 503 when the connection is unconfigured.
+A READY deployment alone is therefore not confirmation that research or account
+APIs work. The existing private Sites deployment remains at
 https://qquant-research.stevenpark119.chatgpt.site.
+
+D1 REST shares the Cloudflare global API limit and is primarily an administrative
+interface. Measure production read/write load before continuous multi-book trading;
+a scoped authenticated Worker proxy is a possible follow-up if the REST limit is
+insufficient. Long-running research/trading still needs the independent runner;
+Vercel function timers are not permanent workers. See [CT](ct.md).
 
 Do not call a successful Cloudflare build a successful Vercel deployment. Verify
 that the production deployment is READY and its data APIs work. Keep Vercel's

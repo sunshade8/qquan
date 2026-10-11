@@ -1,0 +1,286 @@
+/* CT uses the investment workspace's existing panels, typography and trading tables. */
+.ct-workspace {
+  padding: 22px;
+  display: grid;
+  gap: 22px;
+  min-width: 0;
+}
+.ct-title h1 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 25px;
+  margin: 8px 0;
+}
+.ct-title > div > span {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--secondary, #8a929e);
+}
+.ct-title p,
+.ct-section-head p {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--secondary, #8a929e);
+}
+.ct-research-card {
+  border: 1px solid var(--line, #30343e);
+  border-radius: 14px;
+  padding: 22px;
+  display: grid;
+  gap: 20px;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+.ct-section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.ct-section-head h2 {
+  font-size: 16px;
+  margin: 0;
+}
+.ct-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  background: var(--blue, #626fe6);
+  color: white;
+  border: 0;
+  border-radius: 8px;
+  padding: 11px 15px;
+  font-weight: 600;
+}
+.ct-primary:disabled {
+  opacity: 0.45;
+}
+.ct-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+.ct-form label,
+.ct-section-head label {
+  display: grid;
+  gap: 7px;
+  font-size: 11px;
+  color: var(--secondary, #9298a5);
+}
+.ct-form label:first-child {
+  grid-column: 1/-1;
+}
+.ct-workspace input,
+.ct-workspace select,
+.ct-workspace textarea {
+  max-width: 100%;
+  min-width: 0;
+  background: var(--panel-alt, #161922);
+  color: inherit;
+  border: 1px solid var(--line, #343946);
+  border-radius: 7px;
+  padding: 10px;
+  font: inherit;
+}
+.ct-form textarea {
+  min-height: 70px;
+  resize: vertical;
+}
+.ct-workspace summary {
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.ct-workspace pre {
+  max-height: 340px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 10px;
+  line-height: 1.65;
+  padding: 12px;
+  border-radius: 7px;
+  background: var(--panel-alt, #161922);
+}
+.ct-progress {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  background: var(--panel-alt, #161922);
+  border-radius: 9px;
+  font-size: 11px;
+}
+.ct-progress strong {
+  font-size: 14px;
+}
+.ct-controls {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ct-controls button:not(.ct-primary),
+.ct-workspace details button {
+  padding: 7px 10px;
+  border: 1px solid var(--line, #343946);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+}
+.ct-source {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line, #343946);
+  font-size: 12px;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
+.ct-source small {
+  display: block;
+  color: var(--secondary, #9298a5);
+  font-size: 10px;
+}
+.ct-source blockquote {
+  border-left: 2px solid var(--blue, #626fe6);
+  margin: 10px 0;
+  padding-left: 12px;
+  color: var(--secondary, #9298a5);
+}
+.ct-workspace h3 {
+  font-size: 13px;
+  margin: 12px 0;
+}
+.ct-trial {
+  border: 1px solid var(--line, #343946);
+  border-radius: 8px;
+  padding: 13px;
+  margin: 10px 0;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.ct-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.ct-metrics {
+  display: grid;
+  gap: 5px;
+  padding: 13px;
+  background: var(--panel-alt, #161922);
+  border-radius: 8px;
+  font-size: 11px;
+}
+.ct-metrics strong {
+  font-size: 21px;
+}
+.ct-metrics span {
+  color: var(--secondary, #9298a5);
+}
+.ct-result {
+  padding: 16px;
+  border: 1px solid var(--line, #343946);
+  border-radius: 8px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.ct-evidence-chart {
+  margin: 14px 0;
+  min-width: 0;
+}
+.ct-evidence-chart figcaption {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 11px;
+}
+.ct-evidence-chart svg {
+  width: 100%;
+  height: auto;
+  max-height: 400px;
+  display: block;
+  margin-top: 12px;
+}
+.ct-evidence-chart label {
+  display: grid;
+  font-size: 10px;
+  gap: 8px;
+}
+.ct-evidence-chart input {
+  width: 100%;
+  padding: 0;
+}
+.ct-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  font-size: 10px;
+}
+.ct-values dd {
+  margin: 4px 0;
+}
+.ct-tools {
+  max-height: 450px;
+  overflow: auto;
+  padding-left: 20px;
+  font-size: 11px;
+}
+.ct-tools pre {
+  max-height: 130px;
+}
+.ct-workspace code {
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+.invest-tabs {
+  flex-wrap: wrap;
+}
+@media (max-width: 640px) {
+  .ct-research-card {
+    padding: 14px;
+  }
+  .ct-form,
+  .ct-metric-grid {
+    grid-template-columns: 1fr;
+  }
+  .ct-title h1 {
+    font-size: 22px;
+  }
+  .ct-section-head {
+    align-items: stretch;
+  }
+  .ct-section-head > label {
+    width: 100%;
+  }
+  .ct-progress {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .ct-workspace .trading-tabs {
+    flex-wrap: wrap;
+  }
+  .ct-workspace .ct-source {
+    font-size: 11px;
+  }
+}
+
+.ct-research-card > *,
+.ct-section-head > * {
+  min-width: 0;
+  max-width: 100%;
+}
+@media (max-width: 640px) {
+  .ct-workspace {
+    padding: 12px;
+  }
+  .ct-section-head select {
+    width: 100%;
+  }
+}

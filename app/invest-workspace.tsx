@@ -8,16 +8,19 @@
  * ways of trading are added. The sub-tab is the only new thing on this screen.
  */
 
+import ChartCandlestick from "lucide-react/dist/esm/icons/chart-candlestick";
+import { CTWorkspace } from "./ct-workspace";
 import Layers from "lucide-react/dist/esm/icons/layers";
 import Flame from "lucide-react/dist/esm/icons/flame";
 import { useEffect, useState } from "react";
 import { StrategyWorkspace } from "./strategy-workspace";
 import { SurgeWorkspace } from "./surge-workspace";
 
-export type InvestFeature = "strategy" | "surge";
+export type InvestFeature = "strategy" | "ct" | "surge";
 
 const FEATURES = [
   { id: "strategy" as const, label: "전략", icon: Layers, blurb: "자동 전략 연구 · 모의/실전 운용" },
+  { id: "ct" as const, label: "CT", icon: ChartCandlestick, blurb: "차트 전략 연구 · 주식/코인 운용" },
   { id: "surge" as const, label: "급등주", icon: Flame, blurb: "당일 급등락 이후 패턴 · 손익비 고정" },
 ];
 
@@ -35,7 +38,7 @@ export function InvestWorkspace() {
     } catch {
       // Storage may be unavailable in private browsing or when the quota is full.
     }
-    if (stored === "strategy" || stored === "surge") queueMicrotask(() => setFeature(stored));
+    if (stored === "strategy" || stored === "ct" || stored === "surge") queueMicrotask(() => setFeature(stored));
   }, []);
 
   const select = (next: InvestFeature) => {
@@ -61,6 +64,6 @@ export function InvestWorkspace() {
         </button>
       ))}
     </nav>
-    {feature === "strategy" ? <StrategyWorkspace /> : <SurgeWorkspace />}
+    {feature === "strategy" ? <StrategyWorkspace /> : feature === "ct" ? <CTWorkspace /> : <SurgeWorkspace />}
   </div>;
 }

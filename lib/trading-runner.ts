@@ -1,3 +1,6 @@
+import { accountLock, releaseAccountLock, renewAccountLock, accountHasUncertainOrders, otherBookReservations } from "./trading-account-lock.ts";
+import { ctBroker, ctDecorateView, ctMarketOf, ctReadiness, ctStartState, ctTick, type CTBook } from "./ct-trading.ts";
+import { ctPackages } from "./ct-research-store.ts";
 /**
  * Wires the trading engine to the world: D1 for state, Toss for quotes, minute
  * candles and orders, Massive for warm-up sessions.
@@ -52,9 +55,10 @@ const MODES: DashboardMode[] = ["live", "paper"];
  * which is the whole reason the 급등주 dashboard is not the 전략 dashboard with a
  * different heading.
  */
-export type TradingBook = "relay" | "surge";
-export const TRADING_BOOKS: TradingBook[] = ["relay", "surge"];
-const rowId = (book: TradingBook, mode: DashboardMode) => (book === "relay" ? mode : `surge-${mode}`);
+export type TradingBook = "relay" | "surge" | CTBook;
+const isCTBook = (book:TradingBook):book is CTBook=>book === "ct-stock" || book === "ct-crypto";
+export const TRADING_BOOKS: TradingBook[] = ["relay", "surge", "ct-stock", "ct-crypto"];
+const rowId = (book: TradingBook, mode: DashboardMode) => (book === "relay" ? mode : `${book}-${mode}`);
 const LEASE_MS = 120_000;
 /** The page and the runner both tick; closer than this, the second one is skipped. */
 const MIN_TICK_GAP_MS = 8_000;
@@ -294,7 +298,13 @@ const paperBroker: DashboardBroker = { ...createPaperBroker((symbol) => fetchTos
 
 /** The rules a book may trade. Nothing else can reach its engine. */
 async function bookStrategies(book: TradingBook): Promise<SlotStrategy[]> {
-  return book === "relay" ? registeredRelayStrategies() : todaysSurgeStrategies();
+  return isCTBook(book) ? [] : book === "relay" ? registeredRelayStrategies() : todaysSurgeStrategies();
+}
+
+async function guardedBroker(broker:DashboardBroker,book:TradingBook,owner:string):Promise<DashboardBroker>{
+  if(broker.mode!=="live")return broker;
+  const account=book==="ct-crypto"?"upbit":"toss";
+  return {...broker,async buyingPowerUsd(){const available=await broker.buyingPowerUsd?.();if(available===undefined||available===null||!Number.isFinite(available))return NaN;return Math.max(0,available-await otherBookReservations(rowId(book,"live")));},async submit(request){await renewAccountLock(account,owner);if(request.side==="buy"&&await accountHasUncertainOrders(rowId(book,"live")))throw new BrokerRejection("타 장부 응답 미확정 주문 대사 필요","account-uncertain");return broker.submit(request);},async cancel(order){await renewAccountLock(account,owner);return broker.cancel(order);}};
 }
 
 async function engineDeps(book: TradingBook, mode: DashboardMode, state: DashboardState, leaseOwner: string): Promise<EngineDeps> {
@@ -304,7 +314,7 @@ async function engineDeps(book: TradingBook, mode: DashboardMode, state: Dashboa
     now: () => Date.now(),
     id: () => crypto.randomUUID(),
     strategies: registered.filter(strategy => (state.strategyIds ?? []).includes(strategy.id)),
-    broker: mode === "live" ? await tossLiveBroker() : paperBroker,
+    broker: mode === "live" ? await guardedBroker(await tossLiveBroker(),book,leaseOwner) : paperBroker,
     market: tossMarket,
     limitBandPct: limitBandPct(),
   };
@@ -333,21 +343,25 @@ async function tickOne(book: TradingBook, mode: DashboardMode, options: { force?
   if (!options.force && row.lastTickAt && Date.now() - row.lastTickAt < MIN_TICK_GAP_MS) return "recent";
   const owner = crypto.randomUUID();
   if (!(await acquireLease(book, mode, owner))) return "busy";
+  let accountHeld = false;
+  const accountBroker = book === "ct-crypto" ? "upbit" : "toss";
   try {
+    if (mode === "live") { accountHeld = await accountLock(accountBroker,owner); if(!accountHeld) return "account_busy"; }
     const { state } = await readRow(book, mode);
     if (state.status === "stopped") return "idle";
     let next: DashboardState;
     try {
-      next = await tickDashboard(state, await engineDeps(book, mode, state, owner));
+      next = isCTBook(book) ? await ctTick(book,state,await guardedBroker(await ctBroker(book,mode,tossLiveBroker),book,owner),next=>saveState(book,mode,owner,next)) : await tickDashboard(state, await engineDeps(book, mode, state, owner));
     } catch (error) {
       next = structuredClone((await readRow(book, mode)).state);
       next.lastTickAt = new Date().toISOString();
       event(next, next.lastTickAt, "error", `틱 실패: ${error instanceof Error ? error.message : "알 수 없음"}`);
     }
-    if (mode === "live") next.brokerBalance = await refreshBalance(next.brokerBalance);
+    if (mode === "live" && book !== "ct-crypto") next.brokerBalance = await refreshBalance(next.brokerBalance);
     await saveState(book, mode, owner, next);
     return "ticked";
   } finally {
+    if(accountHeld) await releaseAccountLock(accountBroker,owner).catch(()=>undefined);
     await releaseLease(book, mode, owner).catch(() => undefined);
   }
 }
@@ -406,6 +420,17 @@ async function tossQuotesReachable(force = false) {
 }
 
 export async function startTrading(book: TradingBook, mode: DashboardMode, confirm: string | undefined) {
+  if(isCTBook(book)) {
+    const data=await tradingDashboards(book);const ready=data.dashboards[mode].readiness;
+    if(!ready.ready)throw new TradingUserError(ready.reasons.join(" · "));
+    if(mode === "live" && confirm !== LIVE_CONFIRM_PHRASE)throw new TradingUserError("실거래 시작 확인 필요");
+    const packages=await ctPackages(ctMarketOf(book));
+    await withLease(book,mode,async state=>{
+      if(state.status!=="stopped"||state.orders.some(isActiveOrder)||state.trades.some(t=>heldQuantity(t)>1e-8))throw new TradingUserError("실행 중이거나 정지 청산 미완료");
+      const next=startDashboard(state,{now:()=>Date.now(),id:()=>crypto.randomUUID()},"CT 동결 버전");
+      return ctStartState(book,next,packages);
+    });return;
+  }
   if (mode === "live") {
     if (confirm !== LIVE_CONFIRM_PHRASE) throw new TradingUserError(`실거래를 시작하려면 확인 문구 “${LIVE_CONFIRM_PHRASE}”를 정확히 입력하세요.`);
     const toss = await cachedTossStatus(true);
@@ -470,6 +495,16 @@ function view(state: DashboardState, readiness: { ready: boolean; reasons: strin
 export async function tradingDashboards(book: TradingBook = "relay"): Promise<TradingDashboardResponse> {
   const RELAY_STRATEGIES = await bookStrategies(book);
   const [live, paper] = await Promise.all([readRow(book, "live"), readRow(book, "paper")]);
+  if(isCTBook(book)) {
+    const packages=await ctPackages(ctMarketOf(book));
+    const heartbeat=Math.max(live.runnerHeartbeatAt??0,paper.runnerHeartbeatAt??0),online=Date.now()-heartbeat<RUNNER_ONLINE_MS;
+    const readiness=await ctReadiness(book,live.state,paper.state,packages,online);
+    let toss:TradingDashboardResponse["toss"]={ready:readiness.liveReasons.length===0,reason:readiness.error,cause:null,egressIp:null,accountNo:book==="ct-crypto"?"Upbit":null,buyingPowerUsd:readiness.balance};
+    if(book==="ct-stock") { const status=await cachedTossStatus();toss={ready:status.ready,reason:status.reason,cause:status.cause,egressIp:status.egressIp,accountNo:status.account?.accountNo??null,buyingPowerUsd:status.buyingPowerUsd};if(!status.ready)readiness.liveReasons.push(status.reason??"토스 연결 실패");if((status.buyingPowerUsd??0)<(packages.at(-1)?.contract.capital??Infinity))readiness.liveReasons.push("실제 USD 주문 가능 잔고가 CT 예산보다 적습니다."); }
+    const capital=packages.at(-1)?.contract.capital??(book==="ct-crypto"?1000000:1000);
+    for(const row of [live,paper])if(!row.state.startedAt){row.state.initialCapitalUsd=capital;row.state.cashUsd=capital;row.state.peakEquityUsd=capital;}
+    return {book,currency:book==="ct-crypto"?"KRW":"USD",broker:book==="ct-crypto"?"Upbit":"Toss",timezone:book==="ct-crypto"?"Asia/Seoul":"America/New_York",now:new Date().toISOString(),dashboards:{live:ctDecorateView(view(live.state,{ready:!readiness.liveReasons.length,reasons:readiness.liveReasons},[]),live.state,packages),paper:ctDecorateView(view(paper.state,{ready:!readiness.paperReasons.length,reasons:readiness.paperReasons},[]),paper.state,packages)},runner:{online,lastHeartbeatAt:heartbeat?new Date(heartbeat).toISOString():null,intervalSeconds:RUNNER_INTERVAL_SECONDS},registeredStrategies:packages.length,toss,capitalUsd:capital};
+  }
   const [toss, quotes] = await Promise.all([cachedTossStatus(), tossQuotesReachable()]);
   const liveReasons: string[] = [];
   if (!toss.ready) liveReasons.push(`토스 계좌 연결 안 됨: ${toss.reason ?? toss.cause ?? "원인 불명"}`);
