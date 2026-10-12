@@ -123,8 +123,8 @@ export function CTEvidenceChart({
           return (
             <g
               key={b.startMs}
-              fill={up ? "#2bb58a" : "#e26969"}
-              stroke={up ? "#2bb58a" : "#e26969"}
+              fill={up ? "var(--up)" : "var(--down)"}
+              stroke={up ? "var(--up)" : "var(--down)"}
             >
               <line x1={cx} x2={cx} y1={y(b.high)} y2={y(b.low)} />
               <rect
@@ -146,12 +146,12 @@ export function CTEvidenceChart({
             </g>
           );
         })}
-        {line(signal.resistance, "참고 20봉 고점", signal.decidedAt, "#9b8ee5")}
-        {line(signal.support, "참고 20봉 저점", signal.decidedAt, "#9b8ee5")}
+        {line(signal.resistance, "참고 20봉 고점", signal.decidedAt, "var(--secondary)")}
+        {line(signal.support, "참고 20봉 저점", signal.decidedAt, "var(--secondary)")}
         {signal.references?.map((r, i) =>
-          line(r.price, `${r.feature} (${i + 1})`, signal.decidedAt, "#9b8ee5"),
+          line(r.price, `${r.feature} (${i + 1})`, signal.decidedAt, "var(--secondary)"),
         )}
-        {line(trade.entry, "진입", trade.entryAt, "#389ad8")}
+        {line(trade.entry, "진입", trade.entryAt, "var(--accent)")}
         {line(
           Math.max(
             trade.entry * (1 - spec.exit.stopPct / 100),
@@ -159,15 +159,15 @@ export function CTEvidenceChart({
           ),
           "손절·무효화",
           trade.entryAt,
-          "#e26969",
+          "var(--down)",
         )}
         {line(
           trade.entry * (1 + spec.exit.targetPct / 100),
           "목표",
           trade.entryAt,
-          "#2bb58a",
+          "var(--up)",
         )}
-        {line(trade.exit, "청산", trade.exitAt, "#d5993d")}
+        {line(trade.exit, "청산", trade.exitAt, "var(--warn)")}
         {signal.stages
           .filter((s) => now >= signal.decidedAt && s.at <= now)
           .map((s, i) => (
@@ -177,7 +177,7 @@ export function CTEvidenceChart({
                 x2={x(s.at)}
                 y1={pad}
                 y2={240}
-                stroke="#9b8ee5"
+                stroke="var(--secondary)"
                 opacity=".5"
               />
               <text
@@ -194,7 +194,7 @@ export function CTEvidenceChart({
           .filter((s) => s.confirmedAt <= now && s.at >= visible[0].startMs)
           .map((s) => (
             <g key={`${s.kind}${s.at}`}>
-              <circle cx={x(s.at)} cy={y(s.price)} r={3} fill="#d5993d" />
+              <circle cx={x(s.at)} cy={y(s.price)} r={3} fill="var(--warn)" />
               <title>
                 {s.kind} · 사용 가능 {new Date(s.confirmedAt).toISOString()}
               </title>
