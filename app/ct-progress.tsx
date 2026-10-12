@@ -10,6 +10,7 @@ import { memo, useEffect, useRef, useState } from "react";
 import Check from "lucide-react/dist/esm/icons/check";
 import ChevronDown from "lucide-react/dist/esm/icons/chevron-down";
 import Download from "lucide-react/dist/esm/icons/download";
+import Minus from "lucide-react/dist/esm/icons/minus";
 import Pause from "lucide-react/dist/esm/icons/pause";
 import Play from "lucide-react/dist/esm/icons/play";
 import Repeat from "lucide-react/dist/esm/icons/repeat";
@@ -258,7 +259,7 @@ export function PhaseStepper({ job }: { job: CTJob }) {
           return (
             <li key={id} className="ct-step" data-state={state} data-loop={inLoop || undefined} data-loop-first={first || undefined} aria-current={state === "active" ? "step" : undefined}>
               <span className="ct-step-mark" aria-hidden="true">
-                {state === "done" ? <Check size={12} strokeWidth={2.4} /> : state === "failed" ? "!" : state === "stopped" ? "–" : state === "skipped" ? "·" : <span className="ct-step-num ui-num">{i + 1}</span>}
+                {state === "done" ? <Check size={12} strokeWidth={2.4} /> : state === "failed" ? "!" : state === "stopped" ? <Minus size={12} strokeWidth={2.4} /> : state === "skipped" ? "·" : <span className="ct-step-num ui-num">{i + 1}</span>}
               </span>
               <span className="ct-step-body">
                 <span className="ct-step-name">{CT_PHASES[id]}</span>

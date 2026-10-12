@@ -24,7 +24,7 @@
   font-family: var(--font-mono); font-size: var(--fs-1); line-height: var(--lh-read);
   white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal;
 }
-.ct-workspace a { color: var(--accent); text-underline-offset: 3px; }
+.ct-workspace a { color: var(--accent-text); text-underline-offset: 3px; }
 .ct-workspace .positive { color: var(--up); }
 .ct-workspace .negative { color: var(--down); }
 
@@ -100,7 +100,7 @@
 .ct-step-hint { color: var(--secondary); font-size: var(--fs-2); line-height: var(--lh-ui); }
 .ct-step[data-state="done"] .ct-step-mark { border-color: var(--text); background: var(--text); color: var(--bg); }
 .ct-step[data-state="done"] .ct-step-name { color: var(--text); }
-.ct-step[data-state="active"] .ct-step-mark { border: 1.5px solid var(--accent); background: var(--accent-soft); color: var(--accent); }
+.ct-step[data-state="active"] .ct-step-mark { border: 1.5px solid var(--accent); background: var(--accent-soft); color: var(--accent-text); }
 .ct-step[data-state="active"] .ct-step-name { color: var(--text); font-weight: 650; }
 .ct-step[data-state="failed"] .ct-step-mark { border-color: var(--danger); background: var(--danger-soft); color: var(--danger); }
 .ct-step[data-state="failed"] .ct-step-name { color: var(--danger); font-weight: 650; }
@@ -283,4 +283,12 @@
   .ct-step-bar::after { animation: none; width: 38%; }
   .ct-feed-item.is-new, .ct-feed-item.is-new .ct-feed-inner, .ct-picker-pop { animation: none; }
   .ct-live-rail > i, .ct-feed-chevron { transition: none; }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .ct-sticky { background: var(--bg); backdrop-filter: none; }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .ct-feed-details > summary:hover, .ct-trial > summary:hover { background: var(--panel-alt); }
 }
