@@ -67,7 +67,7 @@
   border-radius: var(--r-1); background: var(--surface-sunken); color: var(--secondary);
   font-size: var(--fs-1); font-weight: 600; line-height: 1; white-space: nowrap;
 }
-.ui-badge[data-tone="accent"] { background: var(--accent-soft); color: var(--accent); }
+.ui-badge[data-tone="accent"] { background: var(--accent-soft); color: var(--accent-text); }
 .ui-badge[data-tone="warn"] { background: var(--warn-soft); color: var(--warn-text); }
 .ui-badge[data-tone="danger"] { background: var(--danger-soft); color: var(--danger); }
 .ui-badge[data-tone="strong"] { background: var(--text); color: var(--bg); }
@@ -129,7 +129,7 @@
 .ui-alert[data-tone="danger"] { border-color: color-mix(in srgb, var(--danger) 34%, transparent); background: var(--danger-soft); }
 .ui-alert[data-tone="danger"] > svg { color: var(--danger); }
 .ui-alert[data-tone="info"] { border-color: color-mix(in srgb, var(--accent) 28%, transparent); background: var(--accent-soft); }
-.ui-alert[data-tone="info"] > svg { color: var(--accent); }
+.ui-alert[data-tone="info"] > svg { color: var(--accent-text); }
 .ui-alert[data-tone="quiet"] { border-color: var(--line); background: var(--panel-alt); }
 .ui-alert[data-tone="quiet"] > svg { color: var(--secondary); }
 
