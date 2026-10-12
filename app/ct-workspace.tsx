@@ -1,4 +1,6 @@
 "use client";
+// Styles travel with the components so hot reload never pairs new markup with an old stylesheet.
+import "./ct.css";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import ChartCandlestick from "lucide-react/dist/esm/icons/chart-candlestick";
 import CircleAlert from "lucide-react/dist/esm/icons/circle-alert";

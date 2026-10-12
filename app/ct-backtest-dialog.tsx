@@ -1,4 +1,5 @@
 "use client";
+import "./ct.css";
 import { useEffect, useState } from "react";
 import type { CTPackage } from "@/lib/ct-research-store";
 import type { CTResult } from "@/lib/ct-engine";

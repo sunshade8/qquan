@@ -8,6 +8,7 @@
  *  - NowPanel: 지금 일하는 주체(모델 호출 · 서버 도구 · 재시도 대기), 실시간 토큰, 에이전트별 상태
  * "지금"의 판정은 lib/ct-activity.ts의 순수 함수가 한다.
  */
+import "./ct.css";
 import { memo, useEffect, useRef, useState, type ComponentType } from "react";
 import BookOpenText from "lucide-react/dist/esm/icons/book-open-text";
 import Check from "lucide-react/dist/esm/icons/check";

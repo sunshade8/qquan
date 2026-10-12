@@ -1,6 +1,5 @@
 @import "tailwindcss/index.css";
 @import "./ui.css";
-@import "./ct.css";
 
 /* ==========================================================================
    Design tokens: the single source for color, type, space, radius and motion.

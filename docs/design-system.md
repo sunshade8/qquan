@@ -34,6 +34,7 @@ gpt-taste, stitch-design-taste와 랜딩/포트폴리오 전용 규칙(히어로
 ## CT 진행 추적 (`app/ct-progress.tsx`)
 
 이미 폴링하는 `job`/`ct`(+ 실행 중 작업의 `liveMeter`)에서 파생한다. 파생 규칙은 `lib/ct-activity.ts`.
+스타일 `app/ct.css`는 `globals.css`의 `@import`가 아니라 `app/ct-*.tsx`가 직접 import한다(전략 탭 `strategy-research.css`와 같은 방식). `@import`로 넣으면 dev 핫리로드 때 새 마크업이 이전 스타일시트와 짝지어져 레이아웃이 풀린 채 보일 수 있다.
 
 - `LiveStatusBar`: 상태 점, 단계 n/11, 경과, 후보 n/최대, 백테스트, 비용 미터(80% 이상 앰버), 러너, 일시정지/재개/취소.
   running/paused에서는 `position: sticky`. 낭독용 `aria-live`는 단계·상태 문구가 바뀔 때만 바뀐다.

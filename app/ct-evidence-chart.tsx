@@ -1,4 +1,5 @@
 "use client";
+import "./ct.css";
 import { useState } from "react";
 import type { CTSpec } from "@/lib/ct-spec";
 import type { CTBar, CTTrade } from "@/lib/ct-engine";

@@ -1,4 +1,5 @@
 "use client";
+import "./ct.css";
 import { useEffect, useState } from "react";
 import type { CTTradeEvidence } from "@/lib/ct-trade-evidence";
 import type { CTTrade } from "@/lib/ct-engine";
