@@ -7,7 +7,8 @@ import Info from "lucide-react/dist/esm/icons/info";
 import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw";
 import TriangleAlert from "lucide-react/dist/esm/icons/triangle-alert";
 import X from "lucide-react/dist/esm/icons/x";
-import type { GenerationJob } from "@/lib/strategy-generation-types";
+import type { GenerationJob, ResearchMeter } from "@/lib/strategy-generation-types";
+import { mergeCalls, pickMeter } from "@/lib/ct-activity";
 import type { ActiveGeneration } from "@/lib/strategy-generation-store";
 import type { CTPackage } from "@/lib/ct-research-store";
 import type { CTBar, CTResult } from "@/lib/ct-engine";
@@ -20,6 +21,7 @@ import {
   CT_PHASES,
   LatestTrialCard,
   LiveStatusBar,
+  NowPanel,
   PhaseStepper,
   isLive,
   trialPassed,
@@ -52,6 +54,11 @@ const pct = (n: number) => `${n > 0 ? "+" : ""}${n.toFixed(2)}%`;
 const money = (n: number) => n.toLocaleString("ko-KR", { maximumFractionDigits: 4 });
 const BLOCKING_KIND = { "ct-stock": "CT 주식 연구", "ct-crypto": "CT 코인 연구", slot: "전략 탭 슬롯 연구" } as const;
 const clockTime = (iso: string) => new Date(iso).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
+const RUNNER_COMMAND = "node --env-file=.dev.vars scripts/trading-runner.mjs --generation-only";
+/** No checkpoint for this long while running: whoever was advancing it has gone away. */
+const BLOCKING_STALE_MS = 2 * 60_000;
+const quietFor = (ms: number) =>
+  ms < 3_600_000 ? `${Math.floor(ms / 60_000)}분` : `${Math.floor(ms / 3_600_000)}시간 ${Math.floor((ms % 3_600_000) / 60_000)}분`;
 
 /** 동결 규칙 최종 평가 요약. */
 function FinalMetrics({ result }: { result: CTResult }) {
@@ -291,7 +298,9 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
     [minutes, setMinutes] = useState(""),
     [budget, setBudget] = useState(8),
     [capital, setCapital] = useState(""),
-    [ready, setReady] = useState(false);
+    [ready, setReady] = useState(false),
+    [streamed, setStreamed] = useState<ResearchMeter | null>(null),
+    [clock, setClock] = useState(() => Date.now());
   const advancing = useRef(false),
     loading = useRef(false),
     lastRaw = useRef(""),
@@ -367,9 +376,34 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
       setData(null);
       void load();
     });
-    const timer = setInterval(() => void load(), 5000);
-    return () => clearInterval(timer);
   }, [load]);
+  const anyRunning = Boolean(data?.jobs.some((j) => j.status === "running") || data?.blocking);
+  useEffect(() => {
+    // The usage snapshot is written every ~2s during a model call; poll at that pace only while
+    // something runs, and not at all in a background tab (it catches up on return).
+    const timer = setInterval(() => {
+      if (!document.hidden) void load();
+    }, anyRunning ? 2000 : 5000);
+    const back = () => {
+      if (!document.hidden) void load();
+    };
+    document.addEventListener("visibilitychange", back);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", back);
+    };
+  }, [load, anyRunning]);
+  useEffect(() => {
+    if (!data?.blocking) return;
+    queueMicrotask(() => setClock(Date.now()));
+    const id = setInterval(() => setClock(Date.now()), 15_000);
+    return () => clearInterval(id);
+  }, [data?.blocking]);
+  const runningId = data?.jobs.find((j) => j.status === "running")?.id;
+  useEffect(() => {
+    // A research that starts (here or from a resumed one) takes the stage once; picking another later sticks.
+    if (runningId) queueMicrotask(() => setSelected(runningId));
+  }, [runningId]);
   const job = data?.jobs.find((j) => j.id === selected) ?? data?.jobs[0],
     ct = job?.ct;
   const cj = job && ct ? (job as CTJob) : undefined;
@@ -403,14 +437,41 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
       if (advancing.current) return;
       advancing.current = true;
       try {
-        await fetch("/api/invest/ct", {
+        const r = await fetch("/api/invest/ct", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ action: "advance", id: job.id }),
-        }).then(async (r) => {
-          const body = await r.text();
-          if (!r.ok) throw new Error(body);
         });
+        if (!r.ok || !r.body) throw new Error(await r.text());
+        // NDJSON: usage lines arrive with every streamed model chunk. Coalesce them to
+        // at most ~4 renders a second; the last one always lands.
+        const reader = r.body.getReader(),
+          decoder = new TextDecoder();
+        let buffer = "",
+          pending: ResearchMeter | null = null,
+          flushAt = 0;
+        const flush = () => {
+          if (pending && !disposed) setStreamed(pending);
+          pending = null;
+        };
+        for (;;) {
+          const { value, done } = await reader.read();
+          buffer += decoder.decode(value, { stream: !done });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            const m = JSON.parse(line) as { type: string; meter?: ResearchMeter; message?: string };
+            if (m.type === "usage" && m.meter) pending = m.meter;
+            if (m.type === "error" && !disposed) setError(m.message ?? "CT 단계 실행 실패");
+          }
+          if (pending && Date.now() >= flushAt) {
+            flush();
+            flushAt = Date.now() + 250;
+          }
+          if (done) break;
+        }
+        flush();
       } catch (e) {
         if (!disposed) setError(String(e));
       } finally {
@@ -447,7 +508,10 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
   const live = cj ? isLive(cj.status) : false;
   const registeredThis = Boolean(job && data?.registered.some((p) => p.runId === job.id));
   const blocking = data?.blocking ?? null;
-  const startBlocked = busy || data?.availability.ready === false || job?.status === "running" || Boolean(blocking);
+  const startBlocked = busy || data?.availability.ready === false || Boolean(runningId) || Boolean(blocking);
+  const calls = cj ? mergeCalls(cj.calls, cj.status === "running" ? pickMeter(cj.id, cj.liveMeter, streamed) : null) : [];
+  const blockingQuiet = blocking ? clock - Date.parse(blocking.updatedAt) : 0;
+  const blockingStale = Boolean(blocking && !data?.runnerOnline && blockingQuiet > BLOCKING_STALE_MS);
   const summary = [
     symbols.trim() ? symbols.trim().toUpperCase().split(/[,\s]+/).join(", ") : market === "stock" ? "NVDA" : "BTCUSDT",
     minutes ? `${minutes}분봉` : "시장 기본 봉",
@@ -509,23 +573,50 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
           <p className="ui-sub">진행 중인 연구가 끝나거나 취소되면 새 연구를 시작할 수 있습니다.</p>
         ) : null}
         {blocking ? (
-          <div className="ui-alert" data-tone="info" role="alert">
-            <Info size={16} aria-hidden="true" />
+          <div className="ui-alert ct-blocking" data-tone={blockingStale ? undefined : "info"} role="alert">
+            {blockingStale ? <TriangleAlert size={16} aria-hidden="true" /> : <Info size={16} aria-hidden="true" />}
             <div>
-              <strong>실행 중인 연구가 있어 새로 시작할 수 없습니다</strong>
+              <strong>
+                {blockingStale
+                  ? `실행 중인 연구가 ${quietFor(blockingQuiet)}째 멈춰 있어 새로 시작할 수 없습니다`
+                  : "실행 중인 연구가 있어 새로 시작할 수 없습니다"}
+              </strong>
               <p>
                 {BLOCKING_KIND[blocking.kind]}
                 {blocking.phase ? ` · ${CT_PHASES[blocking.phase as keyof typeof CT_PHASES] ?? blocking.phase}` : ""} · {clockTime(blocking.createdAt)} 시작 · 마지막 갱신 {clockTime(blocking.updatedAt)} · 비용 ${blocking.costUsd.toFixed(2)} / ${blocking.budgetUsd}
-                {blocking.mine ? "" : " · 다른 브라우저 세션에서 시작되어 이 화면의 연구 목록에는 보이지 않습니다."}
               </p>
+              <p>
+                {blocking.mine
+                  ? blocking.kind === "slot"
+                    ? "전략 탭에서 진행 상황을 볼 수 있습니다."
+                    : `${blocking.kind === "ct-crypto" ? "코인" : "주식"} 시장을 선택하면 진행 상황을 볼 수 있습니다.`
+                  : "다른 브라우저 세션에서 시작한 연구라 이 화면에서는 세부 진행을 볼 수 없습니다. 시작한 브라우저 창에서 단계별 진행을 볼 수 있습니다."}
+                {blockingStale
+                  ? " 진행시키던 화면이 닫혔고 러너도 꺼져 있습니다. 그 창을 다시 열거나 연구 러너를 켜면 저장된 단계에서 이어집니다."
+                  : ""}
+              </p>
+              {blockingStale ? <code className="ct-blocking-cmd">{RUNNER_COMMAND}</code> : null}
             </div>
-            <button
-              className="ui-btn sm"
-              disabled={busy}
-              onClick={() => void act("cancel_blocking", { id: blocking.id })}
-            >
-              <X size={13} aria-hidden="true" />이 연구 취소
-            </button>
+            <div className="ct-blocking-actions">
+              {blocking.mine && blocking.kind !== "slot" && blocking.kind !== `ct-${market}` ? (
+                <button
+                  className="ui-btn sm"
+                  onClick={() => {
+                    setMarket(blocking.kind === "ct-crypto" ? "crypto" : "stock");
+                    setSelected(blocking.id);
+                  }}
+                >
+                  {blocking.kind === "ct-crypto" ? "코인" : "주식"} 연구 보기
+                </button>
+              ) : null}
+              <button
+                className="ui-btn sm"
+                disabled={busy}
+                onClick={() => void act("cancel_blocking", { id: blocking.id })}
+              >
+                <X size={13} aria-hidden="true" />이 연구 취소
+              </button>
+            </div>
           </div>
         ) : null}
         <details className="ui-disclosure ct-options">
@@ -621,6 +712,9 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
         {cj ? (
           <>
             {!live ? <LiveStatusBar job={cj} runnerOnline={runnerOnline} busy={busy} onAct={(a) => void act(a)} /> : null}
+            {live ? (
+              <NowPanel job={cj} calls={calls} driver={runnerOnline ? "runner" : "here"} />
+            ) : null}
             {cj.status === "running" && !runnerOnline ? (
               <div className="ui-alert" data-tone="info" role="status">
                 <Info size={16} aria-hidden="true" />
@@ -630,7 +724,8 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
                 </div>
               </div>
             ) : null}
-            {cj.error ? (
+            {/* A transient error with a scheduled retry is shown in the now panel, not as a failure. */}
+            {cj.error && !(cj.status === "running" && cj.recovery?.retryAt) ? (
               <div className="ui-alert" data-tone="danger" role="alert">
                 <CircleAlert size={16} aria-hidden="true" />
                 <div>
@@ -648,7 +743,7 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
                   key={cj.id}
                   jobId={cj.id}
                   tools={cj.ct.tools}
-                  modelCalls={cj.calls?.length ?? 0}
+                  calls={calls}
                   live={live}
                   onDownload={download}
                   onError={reportError}

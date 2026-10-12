@@ -164,6 +164,21 @@ export async function activeGeneration(ownerId: string): Promise<ActiveGeneratio
     budgetUsd: row.budget ?? 0,
   };
 }
+/** Attach the latest usage snapshot to running jobs (written every ~2s by whoever drives them). */
+export async function attachLiveMeters<T extends { id: string; status: string; liveMeter?: ResearchMeter }>(jobs: T[]) {
+  const ids = jobs.filter((j) => j.status === "running").map((j) => j.id);
+  if (!ids.length) return jobs;
+  await ensureSchema();
+  const rows = await db()
+    .prepare(`SELECT run_id, payload FROM strategy_generation_meters WHERE run_id IN (${ids.map(() => "?").join(",")})`)
+    .bind(...ids)
+    .all<{ run_id: string; payload: string }>();
+  for (const row of rows.results) {
+    const job = jobs.find((j) => j.id === row.run_id);
+    if (job) job.liveMeter = JSON.parse(row.payload) as ResearchMeter;
+  }
+  return jobs;
+}
 /** Cancels the running job only if it is still the one the caller was shown. */
 export async function cancelActiveGeneration(expectedId: string) {
   const job = await getGenerationJob(expectedId);

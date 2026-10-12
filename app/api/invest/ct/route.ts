@@ -4,6 +4,7 @@ import { researchOwnerCookie, researchOwnerFrom } from "@/lib/research-owner";
 import { advanceGeneration, publicJob } from "@/lib/strategy-generation";
 import {
   activeGeneration,
+  attachLiveMeters,
   cancelActiveGeneration,
   cancelGenerationJob,
   getGenerationJob,
@@ -129,7 +130,8 @@ export async function GET(request: Request) {
       )
       .bind(owner, market)
       .all<{ payload: string }>();
-    const jobs = rows.results.map((r) => publicJob(JSON.parse(r.payload)));
+    // Running jobs carry the ~2s usage snapshot so the screen can show the model call in flight.
+    const jobs = await attachLiveMeters(rows.results.map((r) => publicJob(JSON.parse(r.payload))));
     // The account runs one job at a time. If the one holding it is not in this
     // device's list, say so instead of leaving a disabled button unexplained.
     const active = await activeGeneration(owner);

@@ -5,18 +5,44 @@
  *  - PhaseStepper: 11단계 타임라인과 후보 수정 루프 표시, 남은 한도
  *  - ActivityFeed: ct.tools 최신순 타임라인
  *  - LatestTrialCard: 가장 최근 후보 요약
+ *  - NowPanel: 지금 일하는 주체(모델 호출 · 서버 도구 · 재시도 대기), 실시간 토큰, 에이전트별 상태
+ * "지금"의 판정은 lib/ct-activity.ts의 순수 함수가 한다.
  */
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState, type ComponentType } from "react";
+import BookOpenText from "lucide-react/dist/esm/icons/book-open-text";
 import Check from "lucide-react/dist/esm/icons/check";
 import ChevronDown from "lucide-react/dist/esm/icons/chevron-down";
+import Cpu from "lucide-react/dist/esm/icons/cpu";
 import Download from "lucide-react/dist/esm/icons/download";
+import FileCheck from "lucide-react/dist/esm/icons/file-check";
 import Minus from "lucide-react/dist/esm/icons/minus";
 import Pause from "lucide-react/dist/esm/icons/pause";
+import PencilRuler from "lucide-react/dist/esm/icons/pencil-ruler";
 import Play from "lucide-react/dist/esm/icons/play";
 import Repeat from "lucide-react/dist/esm/icons/repeat";
+import RotateCw from "lucide-react/dist/esm/icons/rotate-cw";
+import ScanSearch from "lucide-react/dist/esm/icons/scan-search";
+import ShieldCheck from "lucide-react/dist/esm/icons/shield-check";
+import TriangleAlert from "lucide-react/dist/esm/icons/triangle-alert";
 import X from "lucide-react/dist/esm/icons/x";
 import type { GenerationJob } from "@/lib/strategy-generation-types";
 import type { CTResearch, CTToolTrace, CTTrial } from "@/lib/ct-research";
+import {
+  agentOf,
+  backtestKind,
+  callDoing,
+  ctAgents,
+  ctNow,
+  ctTimeline,
+  hostOf,
+  phaseContext,
+  stalledFor,
+  toolDoing,
+  type CTAgentId,
+  type CTAgentRow,
+  type CTCall,
+  type CTNow,
+} from "@/lib/ct-activity";
 
 export type CTJob = Omit<GenerationJob, "ownerId"> & { ct: CTResearch };
 export type CTPhaseId = CTResearch["phase"];
@@ -123,36 +149,23 @@ export function deriveSteps(job: CTJob) {
 export const revisionCount = (ct: CTResearch) => ct.trials.filter((t) => t.parentId).length;
 
 /** Plain-language one-liner for a raw tool trace. */
-const BACKTEST_KIND: Record<string, string> = {
-  training: "학습 구간",
-  development: "개발 구간",
-  development_stress: "개발 · 비용 2배",
-  development_delay: "개발 · 진입 1봉 지연",
-  "sensitivity_0.9": "민감도 · 손절 ×0.9",
-  "sensitivity_1.1": "민감도 · 손절 ×1.1",
-  final: "최종 구간",
-  final_stress: "최종 · 비용 2배",
-  final_delay: "최종 · 진입 1봉 지연",
-};
-const host = (u: unknown) => {
-  try { return new URL(String(u)).hostname.replace(/^www\./, ""); } catch { return String(u ?? ""); }
-};
 export function describeTool(t: CTToolTrace) {
   const i = (t.input ?? {}) as Record<string, unknown>;
   switch (t.name) {
     case "collect_market_data": return `시세 수집 · ${i.symbol ?? ""}`;
+    case "inspect_data": return "데이터 스냅샷 확인";
     case "allowed_research_memory": return "이전 연구 기억 조회";
     case "search_public_approaches": {
       const q = Array.isArray(i.queries) ? (i.queries as string[]) : [];
       return `공개 접근법 검색 · 질의 ${q.length}개`;
     }
-    case "read_public_source": return `원문 읽기 · ${host(i.url)}`;
-    case "read_source_failure": return `원문 읽기 실패 · ${host(i.url)}`;
+    case "read_public_source": return `원문 읽기 · ${hostOf(i.url)}`;
+    case "read_source_failure": return `원문 읽기 실패 · ${hostOf(i.url)}`;
     case "compile_strategy": {
       const name = ((i.candidate as { spec?: { name?: string } } | undefined)?.spec?.name) ?? "후보";
       return `후보 컴파일 · ${name}`;
     }
-    case "backtest": return `백테스트 · ${BACKTEST_KIND[String(i.kind)] ?? String(i.kind ?? "")}`;
+    case "backtest": return `백테스트 · ${backtestKind(i.kind)}`;
     case "failure_diagnosis": {
       const n = Number(String(i.trialId ?? "").split(":").at(-1));
       return `실패 진단 · 후보 ${Number.isFinite(n) ? n + 1 : ""}`;
@@ -298,11 +311,11 @@ function ToolItem({ trace, jobId, now, fresh, onDownload, onError }: { trace: CT
   const tone = trace.status === "started" ? "accent" : bad ? "warn" : undefined;
   const label = trace.status === "started" ? "실행 중" : trace.status === "failed" ? "실패" : trace.error ? "경고" : "완료";
   return (
-    <li className={`ct-feed-item${fresh ? " is-new" : ""}`}>
+    <li className={`ct-feed-item${fresh ? " is-new" : ""}`} data-kind="tool">
       <div className="ct-feed-inner">
         <details className="ct-feed-details">
           <summary>
-            <span className="ct-feed-text">{describeTool(trace)}</span>
+            <span className="ct-feed-text"><span className="ct-feed-kind" aria-hidden="true">도구</span>{describeTool(trace)}</span>
             <time className="ct-feed-time ui-num" dateTime={trace.at}>{relativeTime(trace.at, now)}</time>
             <span className="ui-badge" data-tone={tone}>{label}</span>
             <ChevronDown size={14} className="ct-feed-chevron" aria-hidden="true" />
@@ -332,27 +345,79 @@ function ToolItem({ trace, jobId, now, fresh, onDownload, onError }: { trace: CT
     </li>
   );
 }
-type FeedProps = { jobId: string; tools: CTToolTrace[]; modelCalls: number; live: boolean; onDownload: (v: unknown, name: string) => void; onError: (m: string) => void };
-function FeedBase({ jobId, tools, modelCalls, live, onDownload, onError }: FeedProps) {
+const CALL_STATUS: Record<CTCall["status"], string> = { started: "응답 중", completed: "완료", failed: "실패", interrupted: "중단" };
+const tokens = (n: number) => n.toLocaleString("ko-KR");
+function CallItem({ call, now, fresh }: { call: CTCall; now: number; fresh: boolean }) {
+  const agent = agentOf(call.role as CTAgentId);
+  const live = call.status === "started";
+  const tone = live ? "accent" : call.status === "completed" ? undefined : "warn";
+  const out = call.usage.output_tokens ?? 0;
+  const input = (call.usage.input_tokens ?? 0) + (call.usage.cache_read_input_tokens ?? 0);
+  const seconds = Math.max(0, Math.round((Date.parse(call.updatedAt) - Date.parse(call.startedAt)) / 1000));
+  return (
+    <li className={`ct-feed-item${fresh ? " is-new" : ""}`} data-kind="call">
+      <div className="ct-feed-inner">
+        <details className="ct-feed-details">
+          <summary>
+            <span className="ct-feed-text">
+              <span className="ct-feed-kind" aria-hidden="true">모델</span>
+              {agent?.name ?? call.role} · {call.model}
+              {out ? <span className="ct-feed-aside ui-num"> · 출력 {tokens(out)}</span> : null}
+            </span>
+            <time className="ct-feed-time ui-num" dateTime={call.startedAt}>{relativeTime(call.startedAt, now)}</time>
+            <span className="ui-badge" data-tone={tone}>{CALL_STATUS[call.status]}</span>
+            <ChevronDown size={14} className="ct-feed-chevron" aria-hidden="true" />
+          </summary>
+          <div className="ct-feed-raw">
+            <p className="ct-feed-meta">
+              {call.provider} · <code>{call.model}</code> · {agent?.duty} · {new Date(call.startedAt).toLocaleString("ko-KR")} 시작 · {seconds}초
+            </p>
+            <dl className="ct-feed-usage ui-num">
+              <div><dt>입력</dt><dd>{tokens(input)}</dd></div>
+              <div><dt>출력</dt><dd>{tokens(out)}</dd></div>
+              <div><dt>비용{call.estimated ? " (추정)" : ""}</dt><dd>${call.costUsd.toFixed(4)}</dd></div>
+              {call.searchCalls ? <div><dt>웹 검색</dt><dd>{call.searchCalls}회</dd></div> : null}
+            </dl>
+            {call.error ? <p className="ct-feed-error">{call.error}</p> : null}
+            {call.sources?.length ? (
+              <ul className="ct-feed-sources">
+                {call.sources.map((s) => (
+                  <li key={s.url}><a href={s.url} target="_blank" rel="noreferrer">{s.title || hostOf(s.url)}</a></li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        </details>
+      </div>
+    </li>
+  );
+}
+type FeedProps = { jobId: string; tools: CTToolTrace[]; calls: CTCall[]; live: boolean; onDownload: (v: unknown, name: string) => void; onError: (m: string) => void };
+function FeedBase({ jobId, tools, calls, live, onDownload, onError }: FeedProps) {
   const now = useNow(10_000, live);
   const [shown, setShown] = useState(PAGE);
-  const [initial] = useState(tools.length);
-  const ordered = tools.map((t, i) => ({ t, i })).reverse();
+  const ordered = ctTimeline(tools, calls).reverse();
+  // Rows present at mount are history; only rows that arrive while watching animate in.
+  const [initial] = useState(() => new Set(ordered.map((e) => e.key)));
   const visible = ordered.slice(0, shown);
   return (
     <section className="ct-feed" aria-label="활동 피드">
       <header className="ui-card-head">
         <h3 className="ui-title">활동 피드</h3>
-        <span className="ui-sub ui-num">도구 호출 {tools.length}건 · 모델 호출 {modelCalls}건</span>
+        <span className="ui-sub ui-num">도구 호출 {tools.length}건 · 모델 호출 {calls.length}건</span>
       </header>
-      {tools.length ? (
+      {ordered.length ? (
         <ol className="ct-feed-list">
-          {visible.map(({ t, i }) => (
-            <ToolItem key={`${t.id}:${i}`} trace={t} jobId={jobId} now={now} fresh={i >= initial} onDownload={onDownload} onError={onError} />
-          ))}
+          {visible.map((e) =>
+            e.kind === "call" ? (
+              <CallItem key={e.key} call={e.call} now={now} fresh={!initial.has(e.key)} />
+            ) : (
+              <ToolItem key={e.key} trace={e.trace} jobId={jobId} now={now} fresh={!initial.has(e.key)} onDownload={onDownload} onError={onError} />
+            ),
+          )}
         </ol>
       ) : (
-        <p className="ui-sub">아직 도구 호출이 없습니다. 첫 단계가 시작되면 여기에 기록됩니다.</p>
+        <p className="ui-sub">아직 기록이 없습니다. 첫 단계가 시작되면 도구와 모델 호출이 여기에 쌓입니다.</p>
       )}
       {ordered.length > shown ? (
         <button className="ui-btn sm ghost" onClick={() => setShown((n) => n + 20)}>이전 {Math.min(20, ordered.length - shown)}건 더 보기</button>
@@ -362,7 +427,10 @@ function FeedBase({ jobId, tools, modelCalls, live, onDownload, onError }: FeedP
 }
 export const ActivityFeed = memo(FeedBase, (a, b) => {
   const la = a.tools.at(-1), lb = b.tools.at(-1);
-  return a.jobId === b.jobId && a.live === b.live && a.modelCalls === b.modelCalls && a.tools.length === b.tools.length && la?.id === lb?.id && la?.status === lb?.status && a.onDownload === b.onDownload && a.onError === b.onError;
+  const ca = a.calls.at(-1), cb = b.calls.at(-1);
+  return a.jobId === b.jobId && a.live === b.live && a.tools.length === b.tools.length && la?.id === lb?.id && la?.status === lb?.status
+    && a.calls.length === b.calls.length && ca?.status === cb?.status && ca?.updatedAt === cb?.updatedAt
+    && a.onDownload === b.onDownload && a.onError === b.onError;
 });
 
 /* -------------------------------------------------------- LatestTrialCard */
@@ -409,3 +477,179 @@ function LatestBase({ trial, index, total }: { trial: CTTrial | undefined; index
   );
 }
 export const LatestTrialCard = memo(LatestBase, (a, b) => a.trial?.id === b.trial?.id && a.index === b.index && a.total === b.total);
+
+/* --------------------------------------------------------------- NowPanel */
+
+type Icon = ComponentType<{ size?: number; strokeWidth?: number; "aria-hidden"?: boolean | "true" }>;
+const AGENT_ICON: Record<CTAgentId, Icon> = {
+  engine: Cpu,
+  orchestrator: ScanSearch,
+  dataAnalyst: BookOpenText,
+  designer: PencilRuler,
+  riskReviewer: ShieldCheck,
+  evidenceReviewer: FileCheck,
+};
+const AGENT_STATE: Record<CTAgentRow["state"], string> = {
+  working: "작업 중",
+  retry: "재시도 대기",
+  waiting: "준비 중",
+  done: "완료",
+  failed: "실패",
+  idle: "대기",
+};
+export type CTDriver = "here" | "runner";
+const DRIVER: Record<CTDriver, string> = { here: "이 화면이 진행", runner: "백그라운드 러너가 진행" };
+const minutes = (ms: number) => (ms < 60_000 ? `${Math.round(ms / 1000)}초` : `${Math.floor(ms / 60_000)}분`);
+
+function headline(now: CTNow, job: CTJob) {
+  const { ct } = job;
+  switch (now.kind) {
+    case "model": return callDoing(now.call.role, ct);
+    case "tool": return toolDoing(now.trace);
+    case "retry": return "일시적 오류 · 같은 단계를 자동으로 다시 시도합니다";
+    case "between": return `${CT_PHASES[ct.phase]} 단계를 준비하고 있습니다`;
+    case "paused": return "일시정지됨 · 저장된 단계에서 재개할 수 있습니다";
+    case "ended":
+      return job.status === "completed" ? (ct.passed ? "연구가 끝났습니다 · 검증 통과 전략이 있습니다" : "연구가 끝났습니다 · 통과 전략 없음")
+        : job.status === "cancelled" ? "취소된 연구입니다"
+        : job.status === "failed" ? "연구가 오류로 멈췄습니다"
+        : "연구가 종료되었습니다";
+  }
+}
+
+function Roster({ agents, job }: { agents: CTAgentRow[]; job: CTJob }) {
+  return (
+    <ol className="ct-agents" aria-label="연구 에이전트">
+      {agents.map((a) => {
+        const Icon = AGENT_ICON[a.id];
+        const tone = a.state === "working" ? "accent" : a.state === "retry" || a.state === "failed" ? "warn" : a.state === "done" ? "done" : undefined;
+        return (
+          <li key={a.id} className="ct-agent" data-state={a.state}>
+            <span className="ct-agent-icon" aria-hidden="true"><Icon size={15} strokeWidth={1.9} /></span>
+            <span className="ct-agent-body">
+              <span className="ct-agent-top">
+                <b>{a.name}</b>
+                <span className="ct-agent-state"><span className="ui-dot" data-tone={tone} aria-hidden="true" />{AGENT_STATE[a.state]}</span>
+              </span>
+              <span className="ct-agent-duty">{a.duty}</span>
+              <span className="ct-agent-stat ui-num">
+                {a.id === "engine"
+                  ? `도구 ${a.tools}회 · 백테스트 ${job.ct.backtests}회`
+                  : a.calls
+                    ? `호출 ${a.calls}회 · 출력 ${tokens(a.outputTokens)} · $${a.costUsd.toFixed(3)}`
+                    : "아직 호출 없음"}
+              </span>
+              <code className="ct-agent-model">{a.model}</code>
+            </span>
+            {a.state === "working" && job.status === "running" ? <span className="ct-step-bar ct-agent-bar" aria-hidden="true" /> : null}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+/**
+ * 지금 누가 무엇을 하고 있는지: 현재 모델 호출(실시간 토큰) 또는 서버 도구, 재시도 대기,
+ * 멈춤 감지, 그리고 연구에 참여하는 에이전트별 상태.
+ */
+export function NowPanel({ job, calls, driver }: { job: CTJob; calls: CTCall[]; driver: CTDriver | null }) {
+  const running = job.status === "running";
+  const nowMs = useNow(1000, running);
+  const now = ctNow(job, calls);
+  const stalled = stalledFor(now, nowMs);
+  const agents = ctAgents(job, calls, now);
+  const actor = now.agent ? agentOf(now.agent) : null;
+  const ActorIcon = now.agent ? AGENT_ICON[now.agent] : running ? RotateCw : Check;
+  const live = running && !stalled;
+  const quiet = nowMs - Date.parse(now.signalAt);
+  const title = headline(now, job);
+  // Changes only when the work itself changes, so a poll or the clock never re-announces it.
+  const workKey = `${now.kind}:${now.kind === "model" ? now.call.id : now.kind === "tool" ? now.trace.id : job.ct.phase}:${job.status}`;
+  const retryLeft = now.kind === "retry" ? Date.parse(now.retryAt) - nowMs : 0;
+  return (
+    <section className="ct-now ui-card" data-kind={now.kind} data-stalled={stalled ? "true" : undefined} aria-labelledby="ct-now-h">
+      <header className="ct-now-head">
+        <h3 className="ui-label" id="ct-now-h">{running || job.status === "paused" ? "지금 하는 일" : "에이전트 작업 기록"}</h3>
+        {running ? (
+          <span className="ct-now-signal" data-tone={stalled ? "warn" : undefined}>
+            <span className={`ui-dot${live ? " ct-live-dot pulse" : ""}`} data-tone={stalled ? "warn" : "accent"} aria-hidden="true" />
+            {stalled ? `${minutes(stalled)}째 새 기록 없음` : `실시간 · 마지막 기록 ${relativeTime(now.signalAt, nowMs)}`}
+          </span>
+        ) : null}
+        {running && driver ? <span className="ct-now-driver">{DRIVER[driver]}</span> : null}
+      </header>
+
+      <div className="ct-now-body">
+        <span className="ct-now-icon" data-busy={now.kind === "model" || now.kind === "tool" ? "true" : undefined} aria-hidden="true">
+          <ActorIcon size={20} strokeWidth={1.8} />
+        </span>
+        <div className="ct-now-text">
+          <p className="ct-now-actor">
+            {actor ? <b>{actor.name}</b> : <b>{CT_PHASES[job.ct.phase]}</b>}
+            {now.kind === "model" ? <> · <code>{now.call.model}</code> · {now.call.provider}</> : null}
+            {now.kind === "tool" ? <> · 로컬 계산 · <code>{now.trace.name}</code></> : null}
+            {now.kind === "retry" ? <> · {now.failures}회차 재시도</> : null}
+          </p>
+          {/* key: the sentence cross-fades in when the work changes, never on a mere poll. */}
+          <p className="ct-now-title" key={workKey}>{title}</p>
+          <p className="ct-now-detail">
+            {now.kind === "retry"
+              ? `${now.error}${now.truncatedAt ? ` · 출력 한도 ${tokens(now.truncatedAt)}토큰을 모두 써서 응답이 잘렸습니다.` : ""}`
+              : now.kind === "ended" ? (job.ct.endReason ?? job.error ?? phaseContext(job.ct)) : now.kind === "paused" ? (job.error ?? job.nextAction ?? phaseContext(job.ct)) : phaseContext(job.ct)}
+          </p>
+        </div>
+        {now.kind === "model" || now.kind === "tool" ? (
+          <div className="ct-now-clock">
+            <b className="ui-mono">{formatClock(nowMs - Date.parse(now.since))}</b>
+            <small>{now.kind === "model" ? "응답 대기" : "실행 중"}</small>
+          </div>
+        ) : now.kind === "retry" ? (
+          <div className="ct-now-clock" data-tone="warn">
+            <b className="ui-mono">{retryLeft > 0 ? formatClock(retryLeft) : "—"}</b>
+            <small>{retryLeft > 0 ? "재시도까지" : "재시도 시각 지남"}</small>
+          </div>
+        ) : null}
+      </div>
+      <span className="ui-sr-only" role="status" aria-live="polite">{running ? `${actor?.name ?? CT_PHASES[job.ct.phase]}: ${title}` : ""}</span>
+
+      {now.kind === "model" ? (() => {
+        const out = now.call.usage.output_tokens ?? 0;
+        const input = (now.call.usage.input_tokens ?? 0) + (now.call.usage.cache_read_input_tokens ?? 0);
+        const ratio = out / now.maxTokens;
+        return (
+          <dl className="ct-now-usage ui-num">
+            <div><dt>입력 토큰</dt><dd>{tokens(input)}</dd></div>
+            <div className="ct-now-out" data-tone={ratio >= 0.8 ? "warn" : undefined}>
+              <dt>출력 토큰{ratio >= 0.8 ? " · 한도 임박" : ""}</dt>
+              <dd>
+                <span>{tokens(out)} <small>/ {tokens(now.maxTokens)}</small></span>
+                <span className="ui-meter" data-tone={ratio >= 0.8 ? "warn" : undefined} style={{ "--v": Math.min(1, ratio) } as React.CSSProperties} role="img" aria-label={`출력 한도 ${Math.round(ratio * 100)}% 사용`}><i /></span>
+              </dd>
+            </div>
+            <div><dt>이번 호출{now.call.estimated ? " (추정)" : ""}</dt><dd>${now.call.costUsd.toFixed(4)}</dd></div>
+            <div><dt>마지막 수신</dt><dd>{out || input ? relativeTime(now.call.updatedAt, nowMs) : "추론 중 · 아직 없음"}</dd></div>
+          </dl>
+        );
+      })() : null}
+
+      {stalled ? (
+        <div className="ui-alert" role="status">
+          <TriangleAlert size={16} aria-hidden="true" />
+          <div>
+            <strong>{minutes(quiet)}째 진행 기록이 없습니다</strong>
+            <p>
+              {now.kind === "model"
+                ? "모델 응답이 길어지고 있거나 진행 연결이 끊겼을 수 있습니다. 완료된 응답과 도구 결과는 저장되어 있어 같은 단계에서 이어집니다."
+                : driver === "here"
+                  ? "이 화면이 3.5초마다 다음 단계를 요청하고 있습니다. 계속 멈춰 있으면 위의 오류 표시나 서버 로그를 확인하세요."
+                  : "진행하는 화면이나 러너가 없을 수 있습니다. 저장된 단계에서 이어집니다."}
+            </p>
+          </div>
+        </div>
+      ) : null}
+
+      <Roster agents={agents} job={job} />
+    </section>
+  );
+}
