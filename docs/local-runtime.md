@@ -30,6 +30,32 @@ npm run start:local
 
 `.dev.vars`의 기존 `MASSIVE_API_KEY` 또는 `POLYGON_API_KEY`를 재사용한다. Toss 토큰을 다운로드용으로 발급하지 않는다. Binance에는 계좌 키가 필요 없다. 모델 연구에는 기존 모델 키가 필요하며 원본 데이터 다운로드에는 필요 없다.
 
+## 배포 사이트에서 로컬 저장소 사용
+
+Sites는 사용자 컴퓨터의 파일을 직접 읽거나 Python을 실행할 수 없다. 호스팅 빌드는
+공통 데이터 RPC를 D1 작업 전달 큐로 교체하고, `npm run data:bridge`가 인증된 HTTPS
+요청으로 작업을 받아 **기존 같은 SQLite catalog/Parquet/snapshot**을 읽는다.
+로컬 포트를 공개하지 않으며 별도 원본 데이터 다운로드나 파일 복사를 하지 않는다.
+Sites에는 `LOCAL_DATA_BRIDGE_SECRET` 비밀값, 로컬 `.dev.vars`에는 같은 값과
+`LOCAL_DATA_SITE_URL`, 기존 Sites 서비스 접근 토큰 `LOCAL_DATA_SITES_AUTHORIZATION`을 설정한다.
+`get_site`의 기존 서비스 접근 토큰을 사용하며 확인을 위해 토큰을 새로 발급하지 않는다.
+이 값들은 브라우저나 Git에 넣지 않는다.
+
+```sh
+npm run data:bridge
+```
+
+설정된 `npm run local`도 bridge를 함께 시작한다. bridge만 실행해도 Sites의 전략 생성과
+저장소 조회는 동작한다. 연구 자동 진행 runner는 별도이며 브라우저에서도 기존 단계 진행을
+사용할 수 있다. 컴퓨터가 꺼지거나 bridge가 종료되면 사이트에 **연결 끊김**을 표시한다.
+데이터 부족은 연결 후 catalog와 파일 hash를 실제 검증한 결과로만 판단한다.
+설정의 다운로드/재개 요청은 인증 후 같은 로컬 작업 큐에 넣고 로컬 downloader를 시작한다.
+원격에서 임의 shell/파일 경로/URL/다운로드 범위를 전달할 수 없다. 전달 결과는 분할되어
+수신되고 소비 후 지워지며, 미소비 결과도 만료 후 정리된다. 연결 작업은 lease가 맞는
+실행기만 완료할 수 있고 결과가 누락되면 실패한다. catalog 원본과 snapshot은 로컬에 유지된다.
+로그는 `~/.qquan/logs/data-bridge.log`에 저장할 수 있다. 재부팅 후 bridge를 다시 실행해야 한다.
+OS 로그인 서비스는 설치하지 않는다.
+
 ## 사용자 데이터 위치
 
 기본 `~/.qquan`, 변경은 비밀이 아닌 `QQUAN_DATA_DIR=/절대/경로`로 한다. 앱과 모든 runner/CLI에 같은 값을 사용한다. 소스 checkout이나 `.output`, `dist` 안에 두지 않는다.

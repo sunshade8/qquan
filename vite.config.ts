@@ -46,11 +46,7 @@ export default defineConfig(async () => {
     return {
       server: { host: "127.0.0.1", port: 3000, strictPort: true },
       resolve: {
-        alias: {
-          "cloudflare:workers": fileURLToPath(
-            new URL("./lib/runtime/node.ts", import.meta.url),
-          ),
-        },
+        alias: [{ find: "cloudflare:workers", replacement: fileURLToPath(new URL("./lib/runtime/node.ts", import.meta.url)) }],
       },
       plugins: [
         vinext(),
@@ -65,6 +61,11 @@ export default defineConfig(async () => {
     server: isCodexSeatbeltSandbox
       ? { watch: { useFsEvents: false, usePolling: true } }
       : undefined,
+    define: { "process.env.QQUAN_RUNTIME": JSON.stringify("cloudflare") },
+    resolve: { alias: [
+      { find: "./market-data-rpc.ts", replacement: fileURLToPath(new URL("./lib/hosted-market-data.ts", import.meta.url)) },
+      { find: /^.*\/local-data-worker\.ts$/, replacement: fileURLToPath(new URL("./lib/hosted-data-worker.ts", import.meta.url)) },
+    ] },
     plugins: [
       vinext(),
       sites(),

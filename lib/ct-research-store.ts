@@ -76,17 +76,9 @@ export async function ensureCTSchema() {
     ),
   ]);
 }
-export async function createCTResearch(ownerId: string, input: unknown) {
+/** Shared by paid-run creation and the read-only data preflight. */
+export async function prepareCTContract(input: unknown): Promise<CTContract> {
   const request = ctRequestSchema.parse(input);
-  await ensureCTSchema();
-  const old = await getGenerationJob(request.requestId);
-  if (old) {
-    if (old.ownerId !== ownerId || !old.ct) throw new Error("요청 식별자 충돌");
-    return old;
-  }
-  const availability = generationAvailability();
-  if (!availability.ready)
-    throw new Error(`연구 모델 키 미설정: ${availability.missing.join(", ")}`);
   const symbols =
     request.symbols ??
     (request.market === "stock" ? ["NVDA"] : ["BTCUSDT"]);
@@ -142,6 +134,21 @@ export async function createCTResearch(ownerId: string, input: unknown) {
     contract.dataVersion = data.datasetVersion;
     contract.dataProvenance = data.provenance;
   }
+  return contract;
+}
+export async function createCTResearch(ownerId: string, input: unknown) {
+  const request = ctRequestSchema.parse(input);
+  await ensureCTSchema();
+  const old = await getGenerationJob(request.requestId);
+  if (old) {
+    if (old.ownerId !== ownerId || !old.ct) throw new Error("요청 식별자 충돌");
+    return old;
+  }
+  const availability = generationAvailability();
+  if (!availability.ready)
+    throw new Error(`연구 모델 키 미설정: ${availability.missing.join(", ")}`);
+  const contract = await prepareCTContract(input);
+  const { symbols, fromMs, toMs } = contract;
   const now = new Date().toISOString();
   const job: GenerationJob = {
     id: request.requestId,

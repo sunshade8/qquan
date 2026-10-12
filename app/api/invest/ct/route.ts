@@ -10,11 +10,12 @@ import {
 } from "@/lib/strategy-generation-store";
 import {
   createCTResearch,
+  prepareCTContract,
   ctPackages,
   ensureCTSchema,
   registerCT,
 } from "@/lib/ct-research-store";
-import { ctDb, loadCTData } from "@/lib/ct-data";
+import { ctDb, loadCTData, ctDataPage, aggregateCT } from "@/lib/ct-data";
 import { ctRunnerOnline } from "@/lib/ct-trading";
 import { generationAvailability } from "@/lib/strategy-generation-llm";
 export const dynamic = "force-dynamic";
@@ -153,6 +154,14 @@ export async function POST(request: Request) {
     > | null;
   if (!body) return Response.json({ error: "JSON 필요" }, { status: 400 });
   try {
+    if (body.action === "preflight") {
+      const { action, ...input } = body;
+      void action;
+      const contract = await prepareCTContract(input);
+      const sample = await ctDataPage(contract, contract.symbols[0], contract.toMs);
+      const aggregated = aggregateCT(sample, contract.minutes, contract.market, contract.toMs);
+      return Response.json({contract, sampleBars: sample.length, aggregatedBars: aggregated.length}, {headers:headers(owner)});
+    }
     if (body.action === "research") {
       const { action, ...input } = body;
       void action;

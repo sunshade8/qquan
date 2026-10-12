@@ -22,6 +22,7 @@ const children = [
     detached: true,
   }),
 ];
+if (process.env.LOCAL_DATA_SITE_URL) children.push(spawn("npm", ["run", "data:bridge"], {stdio:"inherit",env:process.env,detached:true}));
 let stopping = false;
 function stop() {
   if (stopping) return;

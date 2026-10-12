@@ -29,6 +29,9 @@ Cloudflare 자격증명 없이 `npm run data:setup && npm run local`로 실행�
 
 Sites 서버 코드는 Cloudflare Workers에서 동작하며 D1 바인딩을 사용한다.
 로컬 `~/.qquan`의 SQLite·Parquet 파일은 배포로 업로드되거나 Sites에서 접근 가능해지지 않는다.
+Sites에서 공통 시장 데이터 조회는 인증된 `npm run data:bridge`의 outbound 연결로
+같은 로컬 catalog와 snapshot을 사용한다. 연결이 끊기면 데이터 부족으로 판단하지 않고
+연결 오류를 반환한다. 설정·실행은 [로컬 실행 문서](local-runtime.md)를 따른다.
 로컬 연구 실행과 Sites 호스팅의 런타임 차이를 확인하고, 호환되지 않는 기능을 배포 완료로
 간주하지 않는다. 장기 연구·다운로드·거래 감시에는 독립 실행기가 필요하다.
 Toss 계좌·주문 API에는 허용된 출구 IP가 필요하며, 확인 중 토큰을 임의로 재발급하지 않는다.

@@ -425,7 +425,7 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
         ) : null}
         {error ? (
           <p className="strategy-warning error" role="alert">
-            {error} {onPrepareData && <button onClick={onPrepareData}>설정에서 1분봉 다운로드</button>}
+            {error} {onPrepareData && <button onClick={onPrepareData}>저장소·연결 확인</button>}
           </p>
         ) : null}
         <div className="ct-section-head">

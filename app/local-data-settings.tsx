@@ -29,7 +29,7 @@ export default function LocalDataSettings() {
     [busy, setBusy] = useState(false);
   async function load() {
     try {
-      const r = await fetch("/api/local-data");
+      const r = await fetch("/api/local-data", { signal: AbortSignal.timeout(120_000) });
       const d = (await r.json()) as Dataset[] & { error?: string };
       if (!r.ok) throw Error(d.error);
       setData(d);
@@ -39,12 +39,14 @@ export default function LocalDataSettings() {
     }
   }
   useEffect(() => {
-    const initial = setTimeout(() => void load(), 0);
-    const timer = setInterval(() => void load(), 5000);
-    return () => {
-      clearTimeout(initial);
-      clearInterval(timer);
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      await load();
+      if (!stopped) timer = setTimeout(poll, 5000);
     };
+    timer = setTimeout(poll, 0);
+    return () => { stopped = true; clearTimeout(timer); };
   }, []);
   async function action(body: object) {
     setBusy(true);
@@ -53,6 +55,7 @@ export default function LocalDataSettings() {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(120_000),
       });
       const d = (await r.json()) as { error?: string };
       if (!r.ok) throw Error(d.error);
@@ -71,6 +74,7 @@ export default function LocalDataSettings() {
         꺼지면 중단되며 실행기를 다시 시작하면 완료 구간을 재사용합니다.
       </p>
       {error && <p role="alert">{error}</p>}
+      {!error && data.length > 0 && <p>로컬 저장소 연결됨 · 저장된 파일 검증 결과</p>}
       {data.map((d) => (
         <article key={d.dataset} style={{ display: "block" }}>
           <h3>

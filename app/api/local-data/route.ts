@@ -1,9 +1,12 @@
 import { dataRPC } from "@/lib/local-market-data";
-import { startDataWorker } from "@/lib/local-data-worker";
+import { startDataWorker } from "../../../lib/local-data-worker.ts";
 export const dynamic = "force-dynamic";
 function guard(request: Request, write = false) {
   const url = new URL(request.url);
-  if (!["127.0.0.1", "localhost", "[::1]"].includes(url.hostname))
+  const hosted = process.env.QQUAN_RUNTIME === "cloudflare";
+  if (hosted && !request.headers.get("oai-authenticated-user-id"))
+    throw new Error("로그인 후 로컬 저장소를 확인하세요.");
+  if (!hosted && !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname))
     throw new Error("Loopback 전용 API");
   if (write && request.headers.get("origin") !== url.origin)
     throw new Error("동일 origin 브라우저 요청 필요");
