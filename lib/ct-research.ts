@@ -117,6 +117,7 @@ export type CTResearch = {
     | "evidence_review"
     | "done";
   contract: CTContract;
+  dataProvider?: "massive-unadjusted-1m";
   dataCursor: { symbol: number; before: number; pages: number };
   dataHash?: string;
   inventory?: Record<string, unknown>;

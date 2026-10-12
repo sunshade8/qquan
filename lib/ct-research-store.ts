@@ -38,7 +38,7 @@ import {
   type CTSource,
   type CTTrial,
 } from "./ct-research.ts";
-import { ctDataPage, ctDb, loadCTData } from "./ct-data.ts";
+import { ctDataPage, ctDb, ctResearchPageStart, loadCTData } from "./ct-data.ts";
 import {
   ctCheckpointResult,
   ctGate,
@@ -189,7 +189,9 @@ async function tool<T>(
   if (job.status !== "running" || ct.activeMs >= ct.contract.policy.maxActiveMs)
     throw new Error("CT 연구 권한·시간 한도");
   const definition = assertCTTool(name, input, ct);
-  const id = await ctHash({ run: job.id, engine: CT_ENGINE, name, input });
+  const id = await ctHash({ run: job.id, engine: CT_ENGINE, name, input,
+    ...(name === "collect_market_data" && ct.dataProvider ? { provider: ct.dataProvider } : {}),
+  });
   const cached = await ctDb()
     .prepare("SELECT output_payload FROM ct_tools WHERE id=? AND run_id=?")
     .bind(id, job.id)
@@ -406,6 +408,13 @@ export async function advanceCTResearch(
   }
   try {
     if (ct.phase === "data") {
+      if (c.market === "stock" && !ct.dataProvider) {
+        // Interrupted legacy runs must not mix Toss and Massive volume/price series.
+        await ctDb().prepare("DELETE FROM ct_data_pages WHERE run_id=?").bind(job.id).run();
+        ct.dataCursor = { symbol: 0, before: c.toMs, pages: 0 };
+        ct.dataProvider = "massive-unadjusted-1m";
+        await generationProgress(job, token);
+      }
       for (let n = 0; n < 4 && ct.dataCursor.symbol < c.symbols.length; n++) {
         const symbol = c.symbols[ct.dataCursor.symbol],
           before = ct.dataCursor.before;
@@ -438,9 +447,11 @@ export async function advanceCTResearch(
             return rows;
           },
         );
-        const oldest = Math.min(...page.map((b) => b.startMs));
+        const oldest = c.market === "stock"
+          ? ctResearchPageStart(c, before)
+          : Math.min(...page.map((b) => b.startMs));
         ct.dataCursor.pages++;
-        if (!page.length || oldest <= c.fromMs) {
+        if ((c.market === "crypto" && !page.length) || oldest <= c.fromMs) {
           ct.dataCursor.symbol++;
           ct.dataCursor.before = c.toMs;
         } else {

@@ -1,6 +1,8 @@
 import { ctStockSession } from "./ct-sessions.ts";
 import { env } from "cloudflare:workers";
 import { fetchTossMinuteCandles } from "@/lib/market-data";
+import { fetchMassiveIntradayWindow } from "./massive.ts";
+import { paceMassive } from "./massive-pacer.ts";
 import { parseTossCandle } from "./live-bars.ts";
 import { easternParts } from "./market-clock.ts";
 import { upbitCandles } from "./upbit.ts";
@@ -20,15 +22,26 @@ export async function ctDataPage(
     throw new Error("데이터 호출 범위 위반");
   if (contract.market === "crypto")
     return upbitCandles(symbol, contract.minutes, before);
-  const page = await fetchTossMinuteCandles(symbol, {
-    count: 200,
-    before: new Date(before).toISOString(),
-    adjusted: false,
-  });
-  return page.candles
-    .map(parseTossCandle)
-    .filter((b): b is NonNullable<typeof b> => b !== null)
-    .map((b) => ({ ...b, startMs: b.endMs - 60000 }));
+  const from = ctResearchPageStart(contract, before);
+  await paceMassive(`CT ${symbol} 과거 분봉`);
+  const page = await fetchMassiveIntradayWindow(
+    symbol,
+    new Date(from).toISOString().slice(0, 10),
+    new Date(before - 1).toISOString().slice(0, 10),
+    "1m",
+    { session: "all", adjusted: false, allowEmpty: true, maxPages: 1 },
+  );
+  return page.points
+    .map((b) => ({
+      startMs: b.timestamp * 1000,
+      endMs: b.timestamp * 1000 + 60000,
+      open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume,
+    }))
+    .filter((b) => b.startMs >= from && b.endMs <= before);
+}
+// Page by time window so empty weeks and exchange holidays never end history early.
+export function ctResearchPageStart(contract: CTContract, before: number) {
+  return Math.max(contract.fromMs, before - 7 * 86400000);
 }
 export function aggregateCT(
   rows: CTBar[],

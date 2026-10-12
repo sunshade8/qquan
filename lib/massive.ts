@@ -113,7 +113,7 @@ export async function fetchMassiveIntradayWindow(
   from: string,
   to: string,
   interval: MassiveInterval,
-  options: { session?: "all" | "regular"; maxBars?: number; maxPages?: number } = {},
+  options: { session?: "all" | "regular"; maxBars?: number; maxPages?: number; adjusted?: boolean; allowEmpty?: boolean } = {},
 ): Promise<MassiveHistory> {
   const apiKey = massiveApiKey();
   if (!apiKey) throw new MassiveError("not_configured", "MASSIVE_API_KEY가 연결되지 않았습니다.", 503);
@@ -125,7 +125,7 @@ export async function fetchMassiveIntradayWindow(
 
   const aggregate = MASSIVE_AGGREGATE_INTERVALS[interval];
   const first = new URL(`/v2/aggs/ticker/${encodeURIComponent(symbol)}/range/${aggregate.multiplier}/${aggregate.timespan}/${from}/${to}`, BASE);
-  first.searchParams.set("adjusted", "true");
+  first.searchParams.set("adjusted", String(options.adjusted ?? true));
   first.searchParams.set("sort", "asc");
   first.searchParams.set("limit", String(PAGE_LIMIT));
 
@@ -160,7 +160,7 @@ export async function fetchMassiveIntradayWindow(
   }
 
   const points = [...byTimestamp.values()].sort((left, right) => left.timestamp - right.timestamp);
-  if (!points.length) throw new MassiveError("not_found", "Massive에서 해당 구간의 분봉 데이터가 없습니다.", 404);
+  if (!points.length && !options.allowEmpty) throw new MassiveError("not_found", "Massive에서 해당 구간의 분봉 데이터가 없습니다.", 404);
   return { points, provider: "Massive", plan: massivePlan(), availableFrom, dataRecency: massiveDataRecency() };
 }
 
