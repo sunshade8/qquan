@@ -386,7 +386,8 @@ const stockClock = new Intl.DateTimeFormat("en-GB", {
   minute: "2-digit",
   hourCycle: "h23",
 });
-export function ctDate(ms: number, market: CTContract["market"]) {
+export function ctDate(ms: number, market: CTContract["market"], timezone?:string) {
+  if(timezone === "UTC") return new Date(ms).toISOString().slice(0,10);
   return dateFormats[market].format(new Date(ms));
 }
 export function ctSessionClosing(ms: number) {
@@ -490,7 +491,7 @@ export function replayCT(
   for (const time of times) {
     if (options.deadline && Date.now() > options.deadline)
       throw new Error("CT 계산 시간 상한");
-    const date = ctDate(time - 1, contract.market);
+    const date = ctDate(time - 1, contract.market, contract.timezone);
     if (date !== day) {
       recordDay();
       day = date;
@@ -518,6 +519,7 @@ export function replayCT(
               bar.open * (1 + impact / 100),
               contract.market,
               "buy",
+              contract.currency,
             ),
             feePct = (contract.costs.feePct * multiplier) / 100;
           const q = ctQuantity(
@@ -591,6 +593,7 @@ export function replayCT(
                   100),
             contract.market,
             "sell",
+              contract.currency,
           );
           const fees =
             held.fee +
@@ -672,6 +675,7 @@ export function replayCT(
             100),
       contract.market,
       "sell",
+              contract.currency,
     );
     const fees =
       held.fee +
@@ -741,11 +745,11 @@ export function replayCT(
   };
   result.concentrationPct = contribution((t) => t.symbol);
   result.maxMonthConcentrationPct = contribution((t) =>
-    ctDate(t.exitAt, contract.market).slice(0, 7),
+    ctDate(t.exitAt, contract.market, contract.timezone).slice(0, 7),
   );
   result.emptyDays = result.daily.filter(
     (d) =>
-      !result.trades.some((t) => ctDate(t.exitAt, contract.market) === d.date),
+      !result.trades.some((t) => ctDate(t.exitAt, contract.market, contract.timezone) === d.date),
   ).length;
   if (result.status === "no_trades")
     result.diagnostics.push("신호/거래 표본 부족");

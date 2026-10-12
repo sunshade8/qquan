@@ -1,3 +1,4 @@
+import { queryLocalMarket } from "./local-market-data.ts";
 import { saveCTTradeEvidence } from "./ct-trade-evidence.ts";
 import { ensureCTSchema } from "./ct-research-store.ts";
 import { feePerSidePct } from "./broker-costs.ts";
@@ -213,7 +214,8 @@ export async function ctTick(
         dataCache.set(symbol, ctRecentBars(contract, symbol, Date.now()));
       return dataCache.get(symbol)!;
     },
-    async entryAllowed() {
+    async entryAllowed(symbol) {
+      if(book === "ct-crypto" && symbol && symbol !== "KRW-BTC") return false;
       if (
         state.mode === "live" &&
         (await accountHasUncertainOrders(`${book}-live`))
@@ -242,7 +244,8 @@ export async function ctStartState(
   for (const p of packages)
     if ((await ctHash(executableCT(p.spec))) !== p.hash)
       throw new Error("CT 등록 해시 불일치");
-  const chosen = packages.at(-1)!; // One global position; a start pins the most recently explicitly registered version.
+  const chosen = packages.at(-1)!;
+  if (chosen.contract.currency === 'USDT') throw new Error('Binance BTCUSDT 연구는 Upbit KRW 실행과 호환되지 않습니다. 거래소·통화·비용 검증 전 실행 불가'); // One global position; a start pins the most recently explicitly registered version.
   state.ctRules = [
     {
       id: chosen.id,
@@ -285,6 +288,14 @@ export async function ctReadiness(
   const paperReasons: string[] = [],
     liveReasons: string[] = [];
   const latest = packages.at(-1);
+  if (latest?.contract.currency === 'USDT') {
+    paperReasons.push('Binance USDT 연구 → Upbit KRW 실행 변환 미지원');
+    liveReasons.push(...paperReasons);
+  }
+  if (latest?.contract.dataSnapshot) {
+    try { await queryLocalMarket({ dataset: book === 'ct-stock' ? 'stock' : 'btc', instrument: latest.contract.symbols[0], from: latest.contract.fromMs, to: latest.contract.toMs, minutes: 60, snapshot: latest.contract.dataSnapshot }); }
+    catch (e) { paperReasons.push(e instanceof Error ? e.message : '데이터 준비 필요'); liveReasons.push(...paperReasons); }
+  }
   if (!latest) {
     paperReasons.push("검증을 통과한 CT 전략을 먼저 등록하세요.");
     liveReasons.push(...paperReasons);

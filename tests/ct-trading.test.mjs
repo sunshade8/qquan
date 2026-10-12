@@ -265,3 +265,26 @@ test("CT signal expiring while evidence/intent is persisted never reaches the br
   assert.equal(f.submitted.length, 0);
   assert.equal(f.state.orders[0].status, "rejected");
 });
+
+test("symbol-scoped entry restriction blocks a new buy but preserves liquidation", async () => {
+  const f = await fixture();
+  f.deps.entryAllowed = async (symbol) => !symbol;
+  await f.tick();
+  assert.equal(f.submitted.length, 0);
+  f.deps.entryAllowed = async () => true;
+  await f.tick();
+  assert.equal(f.submitted.length, 1);
+  const q = f.state.orders[0].quantity;
+  f.fill(q, 101.1);
+  f.orders.values().next().value.status = "filled";
+  await f.tick();
+  f.deps.entryAllowed = async (symbol) => !symbol;
+  f.setQuote(95);
+  await f.tick();
+  assert.equal(
+    f.submitted.length,
+    2,
+    "entry gate never blocks selling an existing position",
+  );
+  assert.equal(f.submitted[1].side, "sell");
+});

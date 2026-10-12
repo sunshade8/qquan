@@ -1,0 +1,4 @@
+pyarrow==21.0.0
+exchange-calendars==4.11.2
+
+pandas==2.3.3

@@ -23,9 +23,10 @@ const option = (name, fallback) => {
   return index >= 0 && args[index + 1] ? args[index + 1] : fallback;
 };
 
-const base = option("url", process.env.TRADING_RUNNER_URL ?? "http://localhost:3000").replace(/\/$/, "");
+const base = option("url", process.env.TRADING_RUNNER_URL ?? "http://127.0.0.1:3000").replace(/\/$/, "");
 const intervalSeconds = Math.max(5, Number(option("interval", process.env.TRADING_RUNNER_INTERVAL ?? "15")) || 15);
 const generationOnly = args.includes("--generation-only");
+if (generationOnly && !["localhost", "127.0.0.1", "[::1]"].includes(new URL(base).hostname)) throw Error("연구 runner는 로컬 앱 URL만 허용합니다.");
 let stopping = false;
 const runnerHeaders = () => ({ "content-type": "application/json", ...(process.env.STRATEGY_RUNNER_SECRET ? { authorization: `Bearer ${process.env.STRATEGY_RUNNER_SECRET}` } : {}), ...(process.env.VERCEL_AUTOMATION_BYPASS_SECRET ? { "x-vercel-protection-bypass": process.env.VERCEL_AUTOMATION_BYPASS_SECRET } : {}) });
 
@@ -108,7 +109,7 @@ async function caseLoop() {
     await new Promise((resolve) => setTimeout(resolve, 600_000));
   }
 }
-void caseLoop();
+if (!generationOnly) void caseLoop();
 void generationLoop();
 // Independent of trading and model calls. Export all pages, including completed work.
 async function journalLoop() {

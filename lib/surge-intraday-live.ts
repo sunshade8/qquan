@@ -88,7 +88,7 @@ function priorDollarVolumes(date: string) {
         let rows = await readMarketDay(day);
         if (!rows) {
           await paceMassive(`${day} 전 종목 일별 시세 (실거래 비용 모형)`);
-          const fetched = await fetchGroupedDaily(day, true);
+          const fetched = await fetchGroupedDaily(day, true, "allow-external");
           if (!fetched.length) continue;
           rows = compactMarket(fetched);
           await writeMarketDay(day, rows);

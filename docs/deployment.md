@@ -1,3 +1,12 @@
+# 현재 기본 실행: 사용자 컴퓨터
+
+2026-10-13부터 앱/연구/상태 DB/시장 데이터는 로컬 Node + SQLite + Parquet다.
+Cloudflare 자격증명 없이 `npm run data:setup && npm run local`로 실행한다.
+Vercel을 연구 서버나 데이터 저장소로 사용하지 않는다. 이 변경에서는 배포하지 않았다.
+설치·백업·이전·다운로드·정책은 [로컬 실행 문서](local-runtime.md)를 따른다.
+
+아래는 과거 배포 구성 기록이며 현재 연구 실행의 필수 조건이 아니다.
+
 # GitHub / Vercel deployment
 
 - Repository: https://github.com/sunshade8/qquan

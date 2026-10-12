@@ -26,7 +26,7 @@ const FEATURES = [
 
 const STORAGE_KEY = "qquant.invest.feature";
 
-export function InvestWorkspace() {
+export function InvestWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
   const [feature, setFeature] = useState<InvestFeature>("strategy");
 
   // Remember which feature was open; the 전략 board's own polling makes an
@@ -64,6 +64,6 @@ export function InvestWorkspace() {
         </button>
       ))}
     </nav>
-    {feature === "strategy" ? <StrategyWorkspace /> : feature === "ct" ? <CTWorkspace /> : <SurgeWorkspace />}
+    {feature === "strategy" ? <StrategyWorkspace /> : feature === "ct" ? <CTWorkspace onPrepareData={onPrepareData} /> : <SurgeWorkspace />}
   </div>;
 }

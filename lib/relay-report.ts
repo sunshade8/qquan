@@ -13,7 +13,7 @@ import { adherencePct } from "./trade-adherence.ts";
 
 export type RelayDataSource = {
   symbol: string; provider: string; bars: number; firstDate: string; lastDate: string;
-  fallbackReason: string | null; cachedMonths?: number; fetchedMonths?: number;
+  fallbackReason: string | null; snapshot?: string; datasetVersion?: string; cachedMonths?: number; fetchedMonths?: number;
 };
 
 export type RelayStrategyReport = {

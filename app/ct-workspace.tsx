@@ -140,7 +140,7 @@ function TradeEvidence({
     </section>
   );
 }
-export function CTWorkspace() {
+export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
   const [market, setMarket] = useState<CTMarket>("stock"),
     [data, setData] = useState<CTResponse | null>(null),
     [selected, setSelected] = useState(""),
@@ -326,7 +326,7 @@ export function CTWorkspace() {
             <small>
               {m === "stock"
                 ? "Toss · 미국 현금 주식 · USD"
-                : "Upbit · KRW 현물 · 24시간"}
+                : "Binance BTCUSDT · USDT 현물 연구 · Upbit 실행 미지원"}
             </small>
           </button>
         ))}
@@ -375,7 +375,7 @@ export function CTWorkspace() {
                 value={symbols}
                 onChange={(e) => setSymbols(e.target.value)}
                 placeholder={
-                  market === "stock" ? "기본 SPY, QQQ" : "기본 KRW-BTC, KRW-ETH"
+                  market === "stock" ? "기본 NVDA" : "기본 BTCUSDT"
                 }
               />
             </label>
@@ -407,7 +407,7 @@ export function CTWorkspace() {
               </select>
             </label>
             <label>
-              운용 자본 ({market === "stock" ? "USD" : "KRW"})
+              운용 자본 ({market === "stock" ? "USD" : "USDT"})
               <input
                 type="number"
                 min="1"
@@ -425,7 +425,7 @@ export function CTWorkspace() {
         ) : null}
         {error ? (
           <p className="strategy-warning error" role="alert">
-            {error}
+            {error} {onPrepareData && <button onClick={onPrepareData}>설정에서 1분봉 다운로드</button>}
           </p>
         ) : null}
         <div className="ct-section-head">
@@ -468,7 +468,7 @@ export function CTWorkspace() {
             </div>
             {job.error ? (
               <p className="strategy-warning">
-                {job.error} {job.nextAction}
+                {job.error} {job.nextAction} {onPrepareData && <button onClick={onPrepareData}>데이터 설정 열기</button>}
               </p>
             ) : null}
             <div className="ct-controls">

@@ -41,9 +41,22 @@ export default defineConfig(async () => {
   process.env.WRANGLER_LOG_PATH ??= ".wrangler/logs";
   process.env.MINIFLARE_REGISTRY_PATH ??= ".wrangler/registry";
 
-  if(process.env.VERCEL||process.env.QQUAN_RUNTIME==="node"){
-    const {nitro}=await import("nitro/vite");
-    return {resolve:{alias:{"cloudflare:workers":fileURLToPath(new URL("./lib/runtime/node.ts",import.meta.url))}},plugins:[vinext(),nitro({vercel:{functions:{maxDuration:300}}})]};
+  if (process.env.QQUAN_RUNTIME !== "cloudflare") {
+    const { nitro } = await import("nitro/vite");
+    return {
+      server: { host: "127.0.0.1", port: 3000, strictPort: true },
+      resolve: {
+        alias: {
+          "cloudflare:workers": fileURLToPath(
+            new URL("./lib/runtime/node.ts", import.meta.url),
+          ),
+        },
+      },
+      plugins: [
+        vinext(),
+        nitro({ vercel: { functions: { maxDuration: 300 } } }),
+      ],
+    };
   }
   // Wrangler snapshots its log path while the Cloudflare plugin is imported.
   const { cloudflare } = await import("@cloudflare/vite-plugin");

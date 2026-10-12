@@ -1,3 +1,5 @@
+import { localStockPoints } from "./local-market-data.ts";
+import type { RelayDataSource } from "./relay-report.ts";
 import { env } from "cloudflare:workers";
 import { loadRelaySessions } from "@/lib/relay-data";
 import { z } from "zod";
@@ -42,7 +44,14 @@ import {
   type Trial,
   type SearchManifest,
 } from "./slot-research.ts";
-import { agentCandidate, designContext, designPrompt, validateDesignBatch, executableRule, type DesignBatch } from "./slot-research-agent.ts";
+import {
+  agentCandidate,
+  designContext,
+  designPrompt,
+  validateDesignBatch,
+  executableRule,
+  type DesignBatch,
+} from "./slot-research-agent.ts";
 import type { GenerationJob } from "./strategy-generation-types.ts";
 import type { GenerationReview } from "./strategy-generation-spec.ts";
 import { loadResearchMemory } from "./research-memory-store.ts";
@@ -158,8 +167,13 @@ export async function createSlotResearch(ownerId: string, input: unknown) {
   const config = { ...SEARCH_DEFAULTS, ...request.config };
   const problem = configProblems(config, slots);
   if (problem) throw new Error(problem);
-  if (request.sourceMinutes === 1 && config.maxBacktests < slots.length * (config.minPerSlot * 2 + 3) + 1)
-    throw new Error("최소 개발 탐색과 최종·결합 시험 예약을 위한 백테스트 한도가 부족합니다.");
+  if (
+    request.sourceMinutes === 1 &&
+    config.maxBacktests < slots.length * (config.minPerSlot * 2 + 3) + 1
+  )
+    throw new Error(
+      "최소 개발 탐색과 최종·결합 시험 예약을 위한 백테스트 한도가 부족합니다.",
+    );
   const now = new Date().toISOString();
   const job: GenerationJob = {
     id: request.requestId,
@@ -182,7 +196,11 @@ export async function createSlotResearch(ownerId: string, input: unknown) {
     search: {
       version: 1,
       phase: "data",
-      agent: { mode: request.designMode, maxDesignBatches: request.maxDesignBatches, batches: [] },
+      agent: {
+        mode: request.designMode,
+        maxDesignBatches: request.maxDesignBatches,
+        batches: [],
+      },
       evaluation: "unmeasured",
       slots,
       target: request.target,
@@ -222,39 +240,21 @@ export async function readNativeCache(
   to: string,
   step: 1 | 5,
 ) {
-  const sessions = new Map<string, SessionBars>();
+  const grouped = new Map<string, SessionBars>();
   for (const symbol of symbols) {
-    const rows = await db()
-      .prepare(
-        "SELECT trading_date,payload,provider FROM intraday_bar_days WHERE symbol=? AND interval=? AND trading_date>=? AND trading_date<=? ORDER BY trading_date",
-      )
-      .bind(symbol, `${step}m`, from, to)
-      .all<{ trading_date: string; payload: string; provider: string }>();
-    for (const row of rows.results) {
-      if (row.provider !== "Massive")
-        throw new Error(`${symbol}: 캐시 출처 ${row.provider} 불일치`);
-      const day = sessions.get(row.trading_date) ?? {
-        date: row.trading_date,
+    const points = await localStockPoints(symbol, from, to, `${step}m`);
+    for (const p of points) {
+      const day = grouped.get(p.date) ?? {
+        date: p.date,
         bars: {},
+        barsByStep: { [step]: {} },
       };
-      day.bars[symbol] = (
-        JSON.parse(row.payload) as Array<
-          [string, number, number, number, number, number]
-        >
-      ).map(([time, open, high, low, close, volume]) => ({
-        date: row.trading_date,
-        time,
-        open,
-        high,
-        low,
-        close,
-        volume,
-      }));
-      day.barsByStep = { [step]: day.bars };
-      sessions.set(day.date, day);
+      (day.bars[symbol] ??= []).push(p);
+      day.barsByStep![step] = day.bars;
+      grouped.set(p.date, day);
     }
   }
-  return [...sessions.values()].sort((a, b) => a.date.localeCompare(b.date));
+  return [...grouped.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
 function compactResult(result: RelayResult): RelayResult {
   return {
@@ -303,33 +303,44 @@ export async function advanceSlotResearch(
   const done = (reason: string) => {
     search.phase = "done";
     search.endReason = reason;
-    const measuredSlots = new Set(search.trials.filter(t => t.status === "measured").map(t => t.slot));
-    search.evaluation = measuredSlots.size === 0 ? "unmeasured" : measuredSlots.size === search.slots.length ? "measured" : "partial";
-    job.status = measuredSlots.size > 0
-      ? "completed"
-      : "failed";
+    const measuredSlots = new Set(
+      search.trials.filter((t) => t.status === "measured").map((t) => t.slot),
+    );
+    search.evaluation =
+      measuredSlots.size === 0
+        ? "unmeasured"
+        : measuredSlots.size === search.slots.length
+          ? "measured"
+          : "partial";
+    job.status = measuredSlots.size > 0 ? "completed" : "failed";
   };
   if (search.phase === "data") {
     // Shared loader checks durable coverage first and downloads only uncovered
     // ranges. Explicit native resolution is a research-only contract.
     const acquisitionWarnings: string[] = [];
+    let parquetSources: RelayDataSource[] = [];
     try {
       const loaded = await loadRelaySessions(
-      job.universe!,
-      job.from,
-      job.to,
-      0,
-      () => undefined,
-      job.sourceBarMinutes!,
-      job.sourceBarMinutes!,
-    );
+        job.universe!,
+        job.from,
+        job.to,
+        0,
+        () => undefined,
+        job.sourceBarMinutes!,
+        job.sourceBarMinutes!,
+      );
+      parquetSources = loaded.sources;
       acquisitionWarnings.push(...loaded.warnings);
-      if (loaded.sources.some(s => s.provider !== "Massive"))
-        acquisitionWarnings.push("대체 공급자 자료는 원본 연구 스냅샷에 편입하지 않습니다.");
+      if (loaded.sources.some((s) => s.provider !== "Massive"))
+        acquisitionWarnings.push(
+          "대체 공급자 자료는 원본 연구 스냅샷에 편입하지 않습니다.",
+        );
     } catch (error) {
       // An unavailable download is not a reason to discard valid acquired history.
       // readNativeCache still enforces provenance; coverageFor excludes missing bars.
-      acquisitionWarnings.push(error instanceof Error ? error.message : String(error));
+      acquisitionWarnings.push(
+        error instanceof Error ? error.message : String(error),
+      );
     }
     const sessions = await readNativeCache(
       job.universe!,
@@ -337,7 +348,10 @@ export async function advanceSlotResearch(
       job.to,
       job.sourceBarMinutes!,
     );
-    if (!sessions.length) throw new Error(`원본 데이터 확보 미완료: ${acquisitionWarnings.join("; ") || "보유 캐시 없음"}`);
+    if (!sessions.length)
+      throw new Error(
+        `원본 데이터 확보 미완료: ${acquisitionWarnings.join("; ") || "보유 캐시 없음"}`,
+      );
     const hasDaily = await db()
       .prepare(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='daily_prices'",
@@ -366,7 +380,12 @@ export async function advanceSlotResearch(
     }
     let part = 0;
     for (const group of groups.values())
-      await writeGenerationData(`${job.id}:empirical`, part++, group);
+      await writeGenerationData(
+        `${job.id}:empirical`,
+        part++,
+        group,
+        parquetSources,
+      );
     const stored = await readGenerationData(
       `${job.id}:empirical`,
       job.sourceBarMinutes!,
@@ -395,7 +414,7 @@ export async function advanceSlotResearch(
     search.manifest = {
       ...boundaries(job.from, job.to),
       dataHash: hash,
-      source: "Massive adjusted OHLCV / intraday_bar_days",
+      source: "Local Parquet Massive unadjusted 1m · immutable snapshots",
       sourceMinutes: job.sourceBarMinutes!,
       engine: SEARCH_VERSION,
       symbols: job.universe!,
@@ -434,10 +453,18 @@ export async function advanceSlotResearch(
       .run();
     sessionCache.clear();
     sessionCache.set(hash, stored);
-    const viable = search.manifest.coverage.some(c =>
-      c.validDates.filter(d => d <= search.manifest!.trainingTo).length >= 90 &&
-      c.validDates.filter(d => d > search.manifest!.trainingTo && d <= search.manifest!.developmentTo).length >= 20);
-    search.phase = search.agent?.mode === "agent" && viable ? "design" : "search";
+    const viable = search.manifest.coverage.some(
+      (c) =>
+        c.validDates.filter((d) => d <= search.manifest!.trainingTo).length >=
+          90 &&
+        c.validDates.filter(
+          (d) =>
+            d > search.manifest!.trainingTo &&
+            d <= search.manifest!.developmentTo,
+        ).length >= 20,
+    );
+    search.phase =
+      search.agent?.mode === "agent" && viable ? "design" : "search";
     job.events.push({
       at: new Date().toISOString(),
       stage: "data",
@@ -466,26 +493,58 @@ export async function advanceSlotResearch(
     const prompt = designPrompt(context, search.phase === "reflect");
     const inputHash = await digest(prompt);
     // The model response is separately checkpointed by ask() before this commit.
-    const result = validateDesignBatch(await design(prompt), manifest.sourceMinutes, search.slots, search.memory.records.map(r => r.id), search.memory.records);
+    const result = validateDesignBatch(
+      await design(prompt),
+      manifest.sourceMinutes,
+      search.slots,
+      search.memory.records.map((r) => r.id),
+      search.memory.records,
+    );
     const outputHash = await digest(result);
-    search.agent!.batches.push({ ...result, inputHash, outputHash,
-      basedOnTrialIds: search.trials.map(t => t.id), createdAt: new Date().toISOString() });
+    search.agent!.batches.push({
+      ...result,
+      inputHash,
+      outputHash,
+      basedOnTrialIds: search.trials.map((t) => t.id),
+      createdAt: new Date().toISOString(),
+    });
     search.phase = "search";
-    job.events.push({ at: new Date().toISOString(), stage: "design", state: "done", role: "designer",
-      detail: `에이전트 설계 배치 ${search.agent!.batches.length} · 네 계열 · ${search.trials.length}개 개발 실험 진단 반영 · ${result.summary}` });
+    job.events.push({
+      at: new Date().toISOString(),
+      stage: "design",
+      state: "done",
+      role: "designer",
+      detail: `에이전트 설계 배치 ${search.agent!.batches.length} · 네 계열 · ${search.trials.length}개 개발 실험 진단 반영 · ${result.summary}`,
+    });
     return;
   }
   if (search.phase === "search") {
-    const viableSlots = search.slots.filter(slot => !search.trials.some(t => t.slot === slot && ["data_error", "execution_error"].includes(t.status)));
+    const viableSlots = search.slots.filter(
+      (slot) =>
+        !search.trials.some(
+          (t) =>
+            t.slot === slot &&
+            ["data_error", "execution_error"].includes(t.status),
+        ),
+    );
     // Finish the fair baseline allocation before asking for a single batched revision.
     // Compute limits and final reserve are checked BEFORE any additional paid design.
-    const finalReserve = manifest.sourceMinutes === 1 ? search.slots.length * 3 + 1 : 0;
+    const finalReserve =
+      manifest.sourceMinutes === 1 ? search.slots.length * 3 + 1 : 0;
     const searchBacktestLimit = search.config.maxBacktests - finalReserve;
-    if (search.agent?.mode === "agent" && search.agent.batches.length === 1 &&
-      search.agent.maxDesignBatches > 1 && search.config.maxPerSlot > 8 && viableSlots.length &&
-      viableSlots.every(slot => search.trials.filter(t => t.slot === slot).length >= 8) &&
+    if (
+      search.agent?.mode === "agent" &&
+      search.agent.batches.length === 1 &&
+      search.agent.maxDesignBatches > 1 &&
+      search.config.maxPerSlot > 8 &&
+      viableSlots.length &&
+      viableSlots.every(
+        (slot) => search.trials.filter((t) => t.slot === slot).length >= 8,
+      ) &&
       search.backtests + viableSlots.length * 4 <= searchBacktestLimit &&
-      search.computeMs < search.config.maxComputeMs * (1 - search.config.reserveFraction)) {
+      search.computeMs <
+        search.config.maxComputeMs * (1 - search.config.reserveFraction)
+    ) {
       search.phase = "reflect";
       return;
     }
@@ -493,7 +552,9 @@ export async function advanceSlotResearch(
     if (
       !next ||
       search.backtests + 2 > searchBacktestLimit ||
-      search.computeMs >= search.config.maxComputeMs * (manifest.sourceMinutes === 1 ? 1 - search.config.reserveFraction : 1)
+      search.computeMs >=
+        search.config.maxComputeMs *
+          (manifest.sourceMinutes === 1 ? 1 - search.config.reserveFraction : 1)
     ) {
       search.endReason =
         search.computeMs >= search.config.maxComputeMs
@@ -507,7 +568,8 @@ export async function advanceSlotResearch(
       search.phase = "freeze";
       return;
     }
-    const proposal = agentCandidate(search,
+    const proposal = agentCandidate(
+      search,
       next.family,
       next.round,
       next.parent,
@@ -527,7 +589,11 @@ export async function advanceSlotResearch(
       data: manifest.dataHash,
       engine: manifest.engine,
       costs: manifest.costs,
-      rules: { slot: spec.slot, universe: spec.universe, candidate: executableRule(candidate) },
+      rules: {
+        slot: spec.slot,
+        universe: spec.universe,
+        candidate: executableRule(candidate),
+      },
       capital: job.capitalUsd,
       boundaries: boundaries(job.from, job.to),
       maxTrials: search.config.maxPerSlot * search.slots.length,
@@ -554,10 +620,22 @@ export async function advanceSlotResearch(
     }>(hash);
     if (cached) {
       // Keep current identity, lineage, agent provenance and target selection.
-      for (const key of ["status", "reasons", "failure", "eligible", "diagnostics", "train", "development"] as const)
+      for (const key of [
+        "status",
+        "reasons",
+        "failure",
+        "eligible",
+        "diagnostics",
+        "train",
+        "development",
+      ] as const)
         Object.assign(trial, { [key]: structuredClone(cached.trial[key]) });
       for (const summary of [trial.train, trial.development])
-        if (summary) summary.targets = summarizeTargets(summary.metrics.meanDailyPct, search.target);
+        if (summary)
+          summary.targets = summarizeTargets(
+            summary.metrics.meanDailyPct,
+            search.target,
+          );
       search.cacheHits++;
     } else {
       const sourceSessions = await snapshot(job);
@@ -633,8 +711,12 @@ export async function advanceSlotResearch(
       if (trial.status !== "measured" && trial.status !== "budget_exhausted")
         await saveArtifact(hash, { trial });
     }
-    trial.deltaPct = next.parent?.development?.metrics.meanDailyPct != null && trial.development?.metrics.meanDailyPct != null
-      ? trial.development.metrics.meanDailyPct - next.parent.development.metrics.meanDailyPct : null;
+    trial.deltaPct =
+      next.parent?.development?.metrics.meanDailyPct != null &&
+      trial.development?.metrics.meanDailyPct != null
+        ? trial.development.metrics.meanDailyPct -
+          next.parent.development.metrics.meanDailyPct
+        : null;
     search.trials.push(trial);
     search.computeMs += Date.now() - started;
     job.events.push({
@@ -730,12 +812,17 @@ export async function advanceSlotResearch(
     ) => {
       const replayStarted = Date.now();
       search.backtests++;
-      try { return runRelay(strategies, days, {
-        capitalUsd: job.capitalUsd,
-        ...stress,
-        deadlineAt:
-          replayStarted + Math.max(0, search.config.maxComputeMs - search.computeMs),
-      }); } finally { search.computeMs += Date.now() - replayStarted; }
+      try {
+        return runRelay(strategies, days, {
+          capitalUsd: job.capitalUsd,
+          ...stress,
+          deadlineAt:
+            replayStarted +
+            Math.max(0, search.config.maxComputeMs - search.computeMs),
+        });
+      } finally {
+        search.computeMs += Date.now() - replayStarted;
+      }
     };
     for (const t of selected) {
       if (search.final[t.slot]) continue;

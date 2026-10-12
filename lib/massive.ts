@@ -1,19 +1,20 @@
-/** Massive.com historical US stock aggregates for Cloudflare Workers. */
+import { dataRPC, localStockPoints } from "./local-market-data.ts";
+/** Massive.com configuration and local historical compatibility API. */
 
 import { env } from "cloudflare:workers";
-import {
-  MASSIVE_AGGREGATE_INTERVALS,
-  parseMassiveAggregates,
-  type MassiveAggregate,
-  type MassiveInterval,
-  type MassiveIntradayPoint,
+import type {
+  MassiveInterval,
+  MassiveIntradayPoint,
 } from "./massive-shapes.ts";
 
-const BASE = "https://api.massive.com";
-const PAGE_LIMIT = 50_000;
-const DEFAULT_MAX_PAGES = 5;
-
-export type MassiveFailure = "not_configured" | "auth" | "plan_locked" | "rate_limit" | "not_found" | "too_large" | "upstream";
+export type MassiveFailure =
+  | "not_configured"
+  | "auth"
+  | "plan_locked"
+  | "rate_limit"
+  | "not_found"
+  | "too_large"
+  | "upstream";
 
 export class MassiveError extends Error {
   // Plain fields rather than parameter properties so Node's type stripping can load this in tests.
@@ -26,15 +27,6 @@ export class MassiveError extends Error {
     this.status = status;
   }
 }
-
-type MassiveAggregatesPage = {
-  status?: string;
-  results?: MassiveAggregate[];
-  resultsCount?: number;
-  next_url?: string | null;
-  error?: string;
-  message?: string;
-};
 
 export type MassiveHistory = {
   points: MassiveIntradayPoint[];
@@ -53,7 +45,9 @@ function configuredValue(key: string) {
 }
 
 export function massiveApiKey() {
-  return configuredValue("MASSIVE_API_KEY") ?? configuredValue("POLYGON_API_KEY");
+  return (
+    configuredValue("MASSIVE_API_KEY") ?? configuredValue("POLYGON_API_KEY")
+  );
 }
 
 export function massiveConfigured() {
@@ -85,27 +79,10 @@ function shiftYears(date: string, years: number) {
   return value.toISOString().slice(0, 10);
 }
 
-export function massiveAvailableFrom(referenceDate = new Date().toISOString().slice(0, 10)) {
+export function massiveAvailableFrom(
+  referenceDate = new Date().toISOString().slice(0, 10),
+) {
   return shiftYears(referenceDate, massiveHistoryYears());
-}
-
-function messageOf(payload: MassiveAggregatesPage) {
-  return payload.error ?? payload.message ?? "";
-}
-
-function failureFor(response: Response, payload: MassiveAggregatesPage) {
-  const message = messageOf(payload);
-  if (response.status === 401) return new MassiveError("auth", "Massive API 키 인증에 실패했습니다.", response.status);
-  if (response.status === 403) return new MassiveError("plan_locked", `Massive 요금제가 요청한 분봉 기간을 허용하지 않습니다.${message ? ` ${message}` : ""}`, response.status);
-  if (response.status === 429) return new MassiveError("rate_limit", "Massive Basic의 분당 호출 한도를 초과했습니다. 잠시 뒤 기간이나 종목 수를 줄여 다시 시도해주세요.", response.status);
-  if (response.status === 404) return new MassiveError("not_found", "Massive에서 이 종목의 분봉 데이터를 찾지 못했습니다.", response.status);
-  return new MassiveError("upstream", `Massive 분봉 데이터를 가져오지 못했습니다.${message ? ` ${message}` : ""}`, response.status);
-}
-
-function checkedNextUrl(value: string) {
-  const url = new URL(value);
-  if (url.origin !== BASE) throw new MassiveError("upstream", "Massive 페이지 주소가 예상한 API 호스트와 다릅니다.");
-  return url;
 }
 
 export async function fetchMassiveIntradayWindow(
@@ -113,60 +90,44 @@ export async function fetchMassiveIntradayWindow(
   from: string,
   to: string,
   interval: MassiveInterval,
-  options: { session?: "all" | "regular"; maxBars?: number; maxPages?: number; adjusted?: boolean; allowEmpty?: boolean } = {},
+  options: {
+    session?: "all" | "regular";
+    maxBars?: number;
+    maxPages?: number;
+    adjusted?: boolean;
+    allowEmpty?: boolean;
+  } = {},
 ): Promise<MassiveHistory> {
-  const apiKey = massiveApiKey();
-  if (!apiKey) throw new MassiveError("not_configured", "MASSIVE_API_KEY가 연결되지 않았습니다.", 503);
-
-  const availableFrom = massiveAvailableFrom();
-  if (from < availableFrom) {
-    throw new MassiveError("plan_locked", `Massive ${massivePlan()}은 최근 ${massiveHistoryYears()}년만 제공합니다. 시작일을 ${availableFrom} 이후로 줄여주세요.`, 403);
-  }
-
-  const aggregate = MASSIVE_AGGREGATE_INTERVALS[interval];
-  const first = new URL(`/v2/aggs/ticker/${encodeURIComponent(symbol)}/range/${aggregate.multiplier}/${aggregate.timespan}/${from}/${to}`, BASE);
-  first.searchParams.set("adjusted", String(options.adjusted ?? true));
-  first.searchParams.set("sort", "asc");
-  first.searchParams.set("limit", String(PAGE_LIMIT));
-
-  const maxBars = Math.max(1_000, options.maxBars ?? 160_000);
-  const maxPages = Math.max(1, Math.min(DEFAULT_MAX_PAGES, options.maxPages ?? DEFAULT_MAX_PAGES));
-  const byTimestamp = new Map<number, MassiveIntradayPoint>();
-  let next: URL | null = first;
-  let pages = 0;
-
-  while (next) {
-    pages += 1;
-    let response: Response;
-    try {
-      response = await fetch(next, {
-        headers: { accept: "application/json", authorization: `Bearer ${apiKey}` },
-        signal: AbortSignal.timeout(20_000),
-      });
-    } catch {
-      throw new MassiveError("upstream", "Massive 분봉 데이터에 연결하지 못했습니다.");
-    }
-    const payload = await response.json().catch(() => ({})) as MassiveAggregatesPage;
-    if (!response.ok) throw failureFor(response, payload);
-    const page = parseMassiveAggregates(payload.results ?? [], from, to, options.session ?? "all");
-    page.forEach((point) => byTimestamp.set(point.timestamp, point));
-    if (byTimestamp.size > maxBars) {
-      throw new MassiveError("too_large", `요청 구간이 안전 한도 ${maxBars.toLocaleString()}개 분봉을 넘습니다. 기간이나 종목 수를 줄여주세요.`, 413);
-    }
-    if (payload.next_url && pages >= maxPages) {
-      throw new MassiveError("too_large", `Massive ${massivePlan()} 호출 한도에 맞추려면 조회 기간이나 종목 수를 줄여주세요.`, 413);
-    }
-    next = payload.next_url ? checkedNextUrl(payload.next_url) : null;
-  }
-
-  const points = [...byTimestamp.values()].sort((left, right) => left.timestamp - right.timestamp);
-  if (!points.length && !options.allowEmpty) throw new MassiveError("not_found", "Massive에서 해당 구간의 분봉 데이터가 없습니다.", 404);
-  return { points, provider: "Massive", plan: massivePlan(), availableFrom, dataRecency: massiveDataRecency() };
+  if (options.adjusted !== false)
+    throw new MassiveError(
+      "not_found",
+      "수정주가 파생 데이터셋이 없습니다. 로컬 원본은 adjusted=false로 명시하세요.",
+      409,
+    );
+  const points = await localStockPoints(
+    symbol,
+    from,
+    to,
+    interval,
+    options.session ?? "all",
+  );
+  return {
+    points,
+    provider: "Massive",
+    plan: massivePlan(),
+    availableFrom: from,
+    dataRecency: "end_of_day",
+  };
 }
 
 export type MassiveProbe = {
   configured: boolean;
-  status: "connected" | "not_configured" | "auth_error" | "plan_locked" | "unavailable";
+  status:
+    | "connected"
+    | "not_configured"
+    | "auth_error"
+    | "plan_locked"
+    | "unavailable";
   detail: string;
   plan: string;
   historyYears: number;
@@ -174,12 +135,6 @@ export type MassiveProbe = {
   dataRecency: MassiveHistory["dataRecency"];
   callsPerMinute: number;
 };
-
-function shiftDays(date: string, days: number) {
-  const value = new Date(`${date}T00:00:00Z`);
-  value.setUTCDate(value.getUTCDate() + days);
-  return value.toISOString().slice(0, 10);
-}
 
 export async function probeMassive(): Promise<MassiveProbe> {
   const today = new Date().toISOString().slice(0, 10);
@@ -190,15 +145,32 @@ export async function probeMassive(): Promise<MassiveProbe> {
     dataRecency: massiveDataRecency(),
     callsPerMinute: massiveRateLimitPerMinute(),
   };
-  if (!massiveConfigured()) return { ...base, configured: false, status: "not_configured", detail: "MASSIVE_API_KEY 미설정" };
-  const end = shiftDays(today, -1);
-  const start = shiftDays(end, -7);
+  if (!massiveConfigured())
+    return {
+      ...base,
+      configured: false,
+      status: "not_configured",
+      detail: "MASSIVE_API_KEY 미설정",
+    };
   try {
-    const history = await fetchMassiveIntradayWindow("AAPL", start, end, "5m", { session: "regular", maxBars: PAGE_LIMIT, maxPages: 1 });
-    return { ...base, configured: true, status: "connected", detail: `AAPL 5분봉 ${history.points.length.toLocaleString()}개 · ${massivePlan()}` };
-  } catch (error) {
-    const kind = error instanceof MassiveError ? error.kind : "upstream";
-    const status = kind === "auth" ? "auth_error" : kind === "plan_locked" ? "plan_locked" : "unavailable";
-    return { ...base, configured: true, status, detail: error instanceof Error ? error.message : "Massive 확인 실패" };
+    const catalog = await dataRPC<Array<{ dataset: string; rows: number }>>({
+      action: "status",
+    });
+    const stock = catalog.find((d) => d.dataset === "stock");
+    return {
+      ...base,
+      configured: true,
+      status: stock?.rows ? "connected" : "unavailable",
+      detail: stock?.rows
+        ? `로컬 검증 NVDA 원봉 ${stock.rows}개 · 실제 권한은 요청 구간별 다운로드 결과 참조`
+        : "키 설정됨 · 설정의 주식 1분봉 다운로드로 실제 구간 권한 확인",
+    };
+  } catch {
+    return {
+      ...base,
+      configured: true,
+      status: "unavailable",
+      detail: "npm run data:setup으로 로컬 데이터 런타임 설치 필요",
+    };
   }
 }

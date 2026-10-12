@@ -136,6 +136,8 @@ export type GenerationJob = {
   dataTasks?: Array<{ symbol: string; from: string; to: string }>;
   dataCursor?: number;
   dataSources?: Array<{
+    snapshot?: string;
+    datasetVersion?: string;
     symbol: string;
     provider: string;
     bars: number;

@@ -15,7 +15,8 @@ import { toMarketRows, type GroupedRow, type MarketRow } from "./surge-universe.
 
 const BASE = "https://api.massive.com";
 
-export async function fetchGroupedDaily(date: string, keepAllCloses = false): Promise<MarketRow[]> {
+export async function fetchGroupedDaily(date: string, keepAllCloses = false, networkPolicy: "local-only" | "allow-external" = "local-only"): Promise<MarketRow[]> {
+  if(networkPolicy !== 'allow-external') throw new Error('데이터 준비 필요: 전체 시장 일봉 탐색은 NVDA 단일 로컬 데이터셋으로 대체할 수 없습니다. CT의 NVDA 차트 연구를 사용하세요.');
   const apiKey = massiveApiKey();
   if (!apiKey) throw new MassiveError("not_configured", "MASSIVE_API_KEY가 연결되지 않았습니다.", 503);
   const url = new URL(`/v2/aggs/grouped/locale/us/market/stocks/${date}`, BASE);

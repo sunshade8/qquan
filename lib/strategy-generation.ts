@@ -581,12 +581,14 @@ export async function advanceGeneration(
         if (loaded.warnings.length) throw new Error(loaded.warnings.join("; "));
         const sourceIssues = auditDataset(loaded.sessions, [task.symbol], slot, job.sourceBarMinutes ?? 5);
         if (sourceIssues.length) throw new Error(`데이터 품질 부족: ${sourceIssues.join("; ")}`);
-        await writeGenerationData(researchDataId(job), Math.min(cursor, job.dataTasks!.length - 1), researchWindow(loaded.sessions, slot, job.sourceBarMinutes ?? 5));
+        await writeGenerationData(researchDataId(job), Math.min(cursor, job.dataTasks!.length - 1), researchWindow(loaded.sessions, slot, job.sourceBarMinutes ?? 5), loaded.sources);
         job.dataSources = (job.dataSources ?? []).filter(source => !(source.symbol === task.symbol && source.from === task.from && source.to === task.to));
         job.dataSources.push(
           ...loaded.sources.map((s) => ({
             symbol: s.symbol,
             provider: s.provider,
+            snapshot:s.snapshot,
+            datasetVersion:s.datasetVersion,
             bars: s.bars,
             from: task.from,
             to: task.to,

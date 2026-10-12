@@ -14,7 +14,14 @@
     "db:generate": "drizzle-kit generate",
     "trader": "node scripts/trading-runner.mjs",
     "research:logs": "node --experimental-strip-types scripts/research/sync-journal.mjs",
-    "build:vercel": "QQUAN_RUNTIME=node NITRO_PRESET=vercel vite build"
+    "build:vercel": "QQUAN_RUNTIME=node NITRO_PRESET=vercel vite build",
+    "data:setup": "python3 -m venv .venv && .venv/bin/pip install -r scripts/data/requirements.txt",
+    "data:worker": "node --env-file-if-exists=.dev.vars scripts/data/run-worker.mjs",
+    "research:runner": "node --env-file-if-exists=.dev.vars scripts/trading-runner.mjs --generation-only",
+    "local": "node scripts/local.mjs",
+    "build:local": "QQUAN_RUNTIME=node NITRO_PRESET=node-server vite build",
+    "start:local": "HOST=127.0.0.1 PORT=3000 node .output/server/index.mjs",
+    "test:local": "node --experimental-strip-types --test tests/*.test.mjs && .venv/bin/python tests/local-data.test.py"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.123.0",

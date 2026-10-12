@@ -1,8 +1,7 @@
 import { ctStockSession } from "./ct-sessions.ts";
 import { env } from "cloudflare:workers";
 import { fetchTossMinuteCandles } from "@/lib/market-data";
-import { fetchMassiveIntradayWindow } from "./massive.ts";
-import { paceMassive } from "./massive-pacer.ts";
+import { queryLocalMarket } from "./local-market-data.ts";
 import { parseTossCandle } from "./live-bars.ts";
 import { easternParts } from "./market-clock.ts";
 import { upbitCandles } from "./upbit.ts";
@@ -20,24 +19,19 @@ export async function ctDataPage(
     before < contract.fromMs
   )
     throw new Error("데이터 호출 범위 위반");
-  if (contract.market === "crypto")
-    return upbitCandles(symbol, contract.minutes, before);
   const from = ctResearchPageStart(contract, before);
-  await paceMassive(`CT ${symbol} 과거 분봉`);
-  const page = await fetchMassiveIntradayWindow(
-    symbol,
-    new Date(from).toISOString().slice(0, 10),
-    new Date(before - 1).toISOString().slice(0, 10),
-    "1m",
-    { session: "all", adjusted: false, allowEmpty: true, maxPages: 1 },
-  );
-  return page.points
-    .map((b) => ({
-      startMs: b.timestamp * 1000,
-      endMs: b.timestamp * 1000 + 60000,
-      open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume,
-    }))
-    .filter((b) => b.startMs >= from && b.endMs <= before);
+  const result = await queryLocalMarket({
+    dataset: contract.market === "stock" ? "stock" : "btc",
+    instrument: symbol,
+    venue: contract.market === "stock" ? "US" : "BinanceSpot",
+    quoteCurrency: contract.currency,
+    from,
+    to: before,
+    minutes: 1,
+    session: contract.market === "stock" ? "regular" : "all",
+    snapshot: contract.dataSnapshot,
+  });
+  return result.bars;
 }
 // Page by time window so empty weeks and exchange holidays never end history early.
 export function ctResearchPageStart(contract: CTContract, before: number) {
@@ -58,14 +52,22 @@ export function aggregateCT(
   }
   const sorted = [...unique.values()].sort((a, b) => a.endMs - b.endMs);
   if (sorted.some((b) => !validCTBar(b))) throw new Error("비정상 시장 데이터");
-  if (market === "crypto") return sorted.filter((b) => b.endMs <= nowMs);
+
+  if (
+    market === "crypto" &&
+    minutes === 1 &&
+    sorted.some((b) => b.endMs - b.startMs !== 60000)
+  )
+    return sorted.filter((b) => b.endMs <= nowMs);
   const size = minutes * 60000,
     groups = new Map<number, CTBar[]>();
   for (const b of sorted) {
-    const et = easternParts(b.startMs);
-    const session = ctStockSession(et.date);
-    if (!session || et.time < session.open || et.time >= session.close)
-      continue;
+    if (market === "stock") {
+      const et = easternParts(b.startMs);
+      const session = ctStockSession(et.date);
+      if (!session || et.time < session.open || et.time >= session.close)
+        continue;
+    }
     const at = Math.floor(b.startMs / size) * size;
     const group = groups.get(at) ?? [];
     group.push(b);
@@ -92,6 +94,31 @@ export function aggregateCT(
     .sort((a, b) => a.endMs - b.endMs);
 }
 export async function loadCTData(runId: string, contract: CTContract) {
+  if (contract.dataSnapshot) {
+    const entries: Array<[string, CTBar[]]> = [];
+    for (const symbol of contract.symbols) {
+      const bars: CTBar[] = [];
+      for (
+        let from = contract.fromMs;
+        from < contract.toMs;
+        from += 31 * 86400000
+      ) {
+        const page = await queryLocalMarket({
+          dataset: contract.market === "stock" ? "stock" : "btc",
+          instrument: symbol,
+          quoteCurrency: contract.currency,
+          from,
+          to: Math.min(contract.toMs, from + 31 * 86400000),
+          minutes: contract.minutes,
+          session: contract.market === "stock" ? "regular" : "all",
+          snapshot: contract.dataSnapshot,
+        });
+        bars.push(...page.bars);
+      }
+      entries.push([symbol, bars]);
+    }
+    return Object.fromEntries(entries);
+  }
   const pages = await ctDb()
     .prepare(
       "SELECT symbol,payload FROM ct_data_pages WHERE run_id=? ORDER BY before_ms",
@@ -105,7 +132,9 @@ export async function loadCTData(runId: string, contract: CTContract) {
         pages.results
           .filter((p) => p.symbol === symbol)
           .flatMap((p) => JSON.parse(p.payload) as CTBar[]),
-        contract.minutes,
+        contract.market === "crypto" && !contract.dataSnapshot
+          ? 1
+          : contract.minutes,
         contract.market,
         contract.toMs,
       ).filter((b) => b.startMs >= contract.fromMs),
@@ -119,6 +148,21 @@ export async function ctRecentBars(
 ) {
   let before = nowMs;
   const rows: CTBar[] = [];
+  if (contract.market === "stock" && contract.dataSnapshot) {
+    const to = Math.min(contract.toMs, Math.floor(nowMs / 86400000) * 86400000);
+    if (to > contract.fromMs) {
+      const warmup = await queryLocalMarket({
+        dataset: "stock",
+        instrument: symbol,
+        from: Math.max(contract.fromMs, to - 7 * 86400000),
+        to,
+        minutes: 1,
+        session: "regular",
+        snapshot: contract.dataSnapshot,
+      });
+      rows.push(...warmup.bars);
+    }
+  }
   const native = contract.market === "stock" ? 1 : contract.minutes;
   // Current day only for stocks; closed sessions are never joined into a fake continuous candle.
   const count = contract.market === "stock" ? Math.ceil(390 / 200) + 1 : 8;
@@ -141,6 +185,16 @@ export async function ctRecentBars(
     const oldest = Math.min(...page.map((b) => b.startMs));
     if (oldest >= before) throw new Error("데이터 커서 정체");
     before = oldest;
+    if (
+      contract.market === "stock" &&
+      oldest < Math.floor(nowMs / 86400000) * 86400000
+    )
+      break;
   }
-  return aggregateCT(rows, contract.minutes, contract.market, nowMs);
+  return aggregateCT(
+    rows,
+    contract.market === "crypto" ? 1 : contract.minutes,
+    contract.market,
+    nowMs,
+  );
 }

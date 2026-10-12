@@ -28,7 +28,7 @@ export type CTTradingDeps = {
   };
   bars: (symbol: string) => Promise<CTBar[]>;
   checkpoint: (state: DashboardState) => Promise<void>;
-  entryAllowed: () => Promise<boolean>;
+  entryAllowed: (symbol?: string) => Promise<boolean>;
   evidence?: (trade: DashboardTrade, bars: CTBar[]) => Promise<void>;
 };
 const number = (value: Decimal.Value) => new Decimal(value).toNumber();
@@ -114,7 +114,7 @@ export async function tickCTDashboard(
       side === "buy" &&
       (!trade.ctSignal ||
         deps.now() >= trade.ctSignal.validUntil ||
-        !(await deps.entryAllowed()) ||
+        !(await deps.entryAllowed(trade.symbol)) ||
         deps.now() >= trade.ctSignal.validUntil)
     ) {
       order.status = "rejected";
@@ -420,6 +420,7 @@ export async function tickCTDashboard(
   if (!(await deps.entryAllowed())) return state;
   for (const rule of rules) {
     for (const symbol of rule.spec.symbols) {
+      if (!(await deps.entryAllowed(symbol))) continue;
       const bars = await deps.bars(symbol),
         last = bars.at(-1);
       if (!last || last.endMs < now - rule.spec.minutes * 60000 - 60000)
@@ -484,7 +485,7 @@ export async function tickCTDashboard(
       if (
         deps.now() >= signal.validUntil ||
         deps.now() - quoteTime > 60000 ||
-        !(await deps.entryAllowed())
+        !(await deps.entryAllowed(symbol))
       )
         continue;
       const trade: DashboardTrade = {

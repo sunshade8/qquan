@@ -249,32 +249,10 @@ test("CT measured passing fixture freezes, independently reviews, consumes final
 });
 
 
-test("stock research resumes legacy Toss collection with isolated Massive pages and skips empty weeks", async () => {
-  const j = await job("data");
-  const c = j.ct.contract;
-  c.market = "stock";
-  c.symbols = ["SPY"];
-  c.toMs = c.fromMs + 40 * 86400000;
-  j.ct.dataCursor = { symbol: 0, before: c.toMs - 86400000, pages: 9 };
-  sqlite.prepare("INSERT INTO ct_data_pages VALUES (?,?,?,?)")
-    .run(j.id, "SPY", c.toMs, JSON.stringify([{ legacy: true }]));
-  globalThis.__strategyTestEnv.MASSIVE_API_KEY = "fixture";
-  globalThis.__strategyTestEnv.MASSIVE_CALLS_PER_MINUTE = "100000";
-  const original = globalThis.fetch;
-  let requests = 0;
-  globalThis.fetch = async (url) => {
-    assert.equal(new URL(url).hostname, "api.massive.com");
-    requests++;
-    return Response.json({ results: [] });
-  };
-  try {
-    await research.advanceCTResearch(j, "fixture", noModel);
-    assert.equal(requests, 4);
-    assert.equal(j.ct.dataProvider, "massive-unadjusted-1m");
-    assert.deepEqual(j.ct.dataCursor, { symbol: 0, before: c.toMs - 28 * 86400000, pages: 4 });
-    const pages = sqlite.prepare("SELECT payload FROM ct_data_pages WHERE run_id=?").all(j.id);
-    assert.equal(pages.length, 4);
-    assert.ok(pages.every(p => p.payload === "[]"), "all legacy provider pages discarded");
-    assert.equal(j.status, "running", "empty windows do not terminate history");
-  } finally { globalThis.fetch = original; }
+test("legacy stock collection preserves original pages and requests local preparation without market calls", async () => {
+ const j=await job('data');const c=j.ct.contract;c.market='stock';c.symbols=['SPY'];
+ sqlite.prepare('INSERT INTO ct_data_pages VALUES (?,?,?,?)').run(j.id,'SPY',c.toMs,JSON.stringify([{legacy:true}]));
+ const original=globalThis.fetch;let calls=0;globalThis.fetch=async()=>{calls++;throw Error('No network');};
+ try {await assert.rejects(()=>research.advanceCTResearch(j,'fixture',noModel),/데이터 준비/);assert.equal(calls,0);assert.equal(JSON.parse(sqlite.prepare('SELECT payload FROM ct_data_pages WHERE run_id=? AND symbol=?').get(j.id,'SPY').payload)[0].legacy,true);}
+ finally {globalThis.fetch=original;}
 });

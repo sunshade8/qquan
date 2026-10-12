@@ -54,3 +54,8 @@ __pycache__/
 # Nitro Node build
 /.output/
 /.nitro/
+
+.venv/
+__pycache__/
+*.parquet
+*.sqlite*

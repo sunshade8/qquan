@@ -1,3 +1,4 @@
+import { queryLocalMarket } from "./local-market-data.ts";
 import { CT_CALENDAR_VERSION, ctStockSession } from "./ct-sessions.ts";
 import { fetchCTSource } from "./ct-source-network.ts";
 import { assertCTTool } from "./ct-tools.ts";
@@ -49,7 +50,6 @@ import {
   type CTResult,
 } from "./ct-engine.ts";
 import { feePerSidePct } from "./broker-costs.ts";
-import { upbitMarkets } from "./upbit.ts";
 export async function ensureCTSchema() {
   await ensureSchema();
   await ctDb().batch([
@@ -89,11 +89,10 @@ export async function createCTResearch(ownerId: string, input: unknown) {
     throw new Error(`연구 모델 키 미설정: ${availability.missing.join(", ")}`);
   const symbols =
     request.symbols ??
-    (request.market === "stock" ? ["SPY", "QQQ"] : ["KRW-BTC", "KRW-ETH"]);
+    (request.market === "stock" ? ["NVDA"] : ["BTCUSDT"]);
   if (request.market === "crypto") {
-    const markets = await upbitMarkets();
-    if (symbols.some((s) => !markets.some((m) => m.market === s)))
-      throw new Error("거래 가능한 Upbit KRW 현물 범위만 지원합니다.");
+    if (symbols.some(s => s !== 'BTCUSDT'))
+      throw new Error('새 코인 연구는 Binance Spot BTCUSDT만 지원합니다. 기존 Upbit 기록은 유지됩니다.');
   } else if (
     symbols.some(
       (s) =>
@@ -118,15 +117,15 @@ export async function createCTResearch(ownerId: string, input: unknown) {
     trainingToMs: fromMs + Math.floor(request.days * 0.6) * 86400000,
     developmentToMs: fromMs + Math.floor(request.days * 0.8) * 86400000,
     toMs,
-    currency: request.market === "stock" ? "USD" : "KRW",
-    timezone: request.market === "stock" ? "America/New_York" : "Asia/Seoul",
-    capital: request.capital ?? (request.market === "stock" ? 1000 : 1000000),
+    currency: request.market === "stock" ? "USD" : "USDT",
+    timezone: request.market === "stock" ? "America/New_York" : "UTC",
+    capital: request.capital ?? (request.market === "stock" ? 1000 : 1000),
     costs: {
-      feePct: request.market === "stock" ? feePerSidePct() : 0.05,
+      feePct: request.market === "stock" ? feePerSidePct() : 0.1,
       sellTaxPct: request.market === "stock" ? 0.0008 : 0,
       spreadPct: 0.05,
       slippagePct: 0.03,
-      minimumOrder: request.market === "stock" ? 1 : 5000,
+      minimumOrder: request.market === "stock" ? 1 : 5,
       quantityDecimals: request.market === "stock" ? 0 : 8,
     },
     policy: CT_POLICY,
@@ -134,8 +133,15 @@ export async function createCTResearch(ownerId: string, input: unknown) {
     createdAt: new Date().toISOString(),
     selection: request.symbols
       ? "사용자 지정 현재 종목 · 생존편향 가능"
-      : "고정 유동성 기준 연구 범위(SPY/QQQ 또는 BTC/ETH), 과거 구성 복원 아님 · 생존편향 가능",
+      : "NVDA 단일 종목 / Binance BTCUSDT 연구 · 다른 종목에 일반화 검증되지 않음",
   };
+  // Pin immutable file hashes before any paid call or queue creation.
+  for (const symbol of symbols) {
+    const data = await queryLocalMarket({ dataset: request.market === 'stock' ? 'stock' : 'btc', instrument: symbol, from: fromMs, to: toMs, minutes: 60, session: request.market === 'stock' ? 'regular' : 'all', metadataOnly:true });
+    contract.dataSnapshot = data.snapshot;
+    contract.dataVersion = data.datasetVersion;
+    contract.dataProvenance = data.provenance;
+  }
   const now = new Date().toISOString();
   const job: GenerationJob = {
     id: request.requestId,
@@ -408,13 +414,9 @@ export async function advanceCTResearch(
   }
   try {
     if (ct.phase === "data") {
-      if (c.market === "stock" && !ct.dataProvider) {
-        // Interrupted legacy runs must not mix Toss and Massive volume/price series.
-        await ctDb().prepare("DELETE FROM ct_data_pages WHERE run_id=?").bind(job.id).run();
-        ct.dataCursor = { symbol: 0, before: c.toMs, pages: 0 };
-        ct.dataProvider = "massive-unadjusted-1m";
-        await generationProgress(job, token);
-      }
+      if (!c.dataSnapshot && c.market === 'stock' && !ct.dataProvider)
+        throw new Error('데이터 준비 필요: 기존 수집 원본은 보존했습니다. 설정 → 주식 1분봉 다운로드 후 새 연구를 시작하세요.');
+      if (!c.dataSnapshot) {
       for (let n = 0; n < 4 && ct.dataCursor.symbol < c.symbols.length; n++) {
         const symbol = c.symbols[ct.dataCursor.symbol],
           before = ct.dataCursor.before;
@@ -447,7 +449,7 @@ export async function advanceCTResearch(
             return rows;
           },
         );
-        const oldest = c.market === "stock"
+        const oldest = c.dataSnapshot || c.market === "stock"
           ? ctResearchPageStart(c, before)
           : Math.min(...page.map((b) => b.startMs));
         ct.dataCursor.pages++;
@@ -461,6 +463,7 @@ export async function advanceCTResearch(
         await generationProgress(job, token);
       }
       if (ct.dataCursor.symbol < c.symbols.length) return;
+      }
       const data = await loadCTData(job.id, c);
       ct.dataHash = await ctHash(data);
       ct.inventory = Object.fromEntries(

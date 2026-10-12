@@ -88,7 +88,7 @@ const create = () =>
     target: null,
     config: { maxPerSlot: 8 },
   });
-test("historical native cache bypasses current provider retention AND missing credentials", async () => {
+test("legacy SQL rows remain intact but unsupported instruments cannot masquerade as shared NVDA data", async () => {
   const d = {
     ...days[0],
     date: "2020-01-02",
@@ -97,32 +97,24 @@ test("historical native cache bypasses current provider retention AND missing cr
     },
   };
   seed([d], "OLD");
-  sqlite
-    .prepare(
-      "INSERT INTO intraday_bar_coverage (id,symbol,interval,month,from_date,to_date,complete,fetched_at) VALUES (?,?,?,?,?,?,?,?)",
-    )
-    .run(
-      "OLD|5m|2020-01",
-      "OLD",
-      "5m",
-      "2020-01",
-      "2020-01-01",
-      "2020-01-31",
-      1,
-      0,
-    );
-  const r = await loader.loadRelaySessions(
-    ["OLD"],
-    "2020-01-02",
-    "2020-01-02",
-    0,
-    () => {},
-    5,
-    5,
+  await assert.rejects(
+    () =>
+      loader.loadRelaySessions(
+        ["OLD"],
+        "2020-01-02",
+        "2020-01-02",
+        0,
+        () => {},
+        5,
+        5,
+      ),
+    /identity/,
   );
-  assert.equal(r.sessions.length, 1);
-  assert.equal(r.sources[0].fetchedMonths, 0);
-  assert.equal(r.sources[0].provider, "Massive");
+  assert.ok(
+    sqlite
+      .prepare("SELECT count(*) AS n FROM intraday_bar_days WHERE symbol='OLD'")
+      .get().n > 0,
+  );
   await assert.rejects(
     () =>
       loader.loadRelaySessions(
@@ -135,24 +127,6 @@ test("historical native cache bypasses current provider retention AND missing cr
         5,
       ),
     /5분봉/,
-  );
-  sqlite
-    .prepare(
-      "UPDATE intraday_bar_days SET provider='unknown' WHERE symbol='OLD'",
-    )
-    .run();
-  await assert.rejects(
-    () =>
-      loader.loadRelaySessions(
-        ["OLD"],
-        "2020-01-02",
-        "2020-01-02",
-        0,
-        () => {},
-        5,
-        5,
-      ),
-    /출처/,
   );
 });
 test("durable search, manual stop/resume, bounded calls, and deduplicated replay", async () => {
@@ -192,28 +166,23 @@ test("data-only failures cannot be called evaluated research completion", async 
   const broken = structuredClone(days);
   for (const d of broken) d.bars.NVDA = [];
   seed(broken, "BAD");
-  let job = await empirical.createSlotResearch(owner, {
-    requestId: crypto.randomUUID(),
-    universe: ["BAD"],
-    slots: ["trend"],
-    sourceMinutes: 5,
-    designMode: "local",
-    config: { maxPerSlot: 8 },
-  });
-  for (let n = 0; n < 20; n++) {
-    job = await flow.advanceGeneration(job.id);
-    if (job.status !== "running") break;
-  }
-  assert.equal(job.status, "failed", job.error);
-  assert.equal(
-    job.search.trials.every((t) => t.status === "data_error"),
-    true,
+  await assert.rejects(
+    () =>
+      empirical.createSlotResearch(owner, {
+        requestId: crypto.randomUUID(),
+        universe: ["BAD"],
+        slots: ["trend"],
+        sourceMinutes: 5,
+        designMode: "local",
+        config: { maxPerSlot: 8 },
+      }),
+    /데이터 확보/,
   );
-  assert.equal(
-    job.search.trials.every((t) => !t.development),
-    true,
+  assert.ok(
+    sqlite
+      .prepare("SELECT COUNT(*) n FROM intraday_bar_days WHERE symbol='BAD'")
+      .get().n > 0,
   );
-  assert.equal(job.search.backtests, 0);
 });
 test("compute ceiling ends exploration without consuming holdout or money", async () => {
   let job = await create();
@@ -247,24 +216,48 @@ test("independent review reservation preserves the total user budget", async () 
 });
 
 test("program agent designs batches, uses measured failures, and resumes its saved design", async () => {
-  for (const row of sqlite.prepare("SELECT payload FROM strategy_generation_runs WHERE status='paused'").all())
+  for (const row of sqlite
+    .prepare(
+      "SELECT payload FROM strategy_generation_runs WHERE status='paused'",
+    )
+    .all())
     await store.cancelGenerationJob(JSON.parse(row.payload));
   const { FAMILIES, makeCandidate } = await import("../lib/slot-research.ts");
   const prompts = [];
   globalThis.__strategyTestHooks.call = (role, prompt) => {
     assert.equal(role, "designer");
     prompts.push(prompt);
-    return { summary: "합성 테스트 응답: 한 번의 설계 호출로 네 계열을 로컬 비교합니다.",
-      memoryUse: JSON.parse(prompt.split("Context: ")[1]).priorExperiments.slice(0, 1).map(r => ({ experimentId: r.id, action: "change", reason: "이전 실험에서 관측한 비용과 거래 수를 바탕으로 손절폭을 변경합니다." })),
-      designs: FAMILIES.map(family => ({ family,
+    return {
+      summary:
+        "합성 테스트 응답: 한 번의 설계 호출로 네 계열을 로컬 비교합니다.",
+      memoryUse: JSON.parse(prompt.split("Context: ")[1])
+        .priorExperiments.slice(0, 1)
+        .map((r) => ({
+          experimentId: r.id,
+          action: "change",
+          reason:
+            "이전 실험에서 관측한 비용과 거래 수를 바탕으로 손절폭을 변경합니다.",
+        })),
+      designs: FAMILIES.map((family) => ({
+        family,
         mechanism: `${family} 계열의 원인과 완성 봉 신호를 시험하는 합성 테스트 가설입니다.`,
-        change: prompts.length === 1 ? "학습 자료 기반의 첫 배치 설계" : "실측 실패 진단을 반영해 관측 길이와 진입 기준 수정",
-        candidate: { ...makeCandidate(family, 0).candidate, stopPct: prompts.length === 1 ? 0.9 : 1.3 },
-      })) };
+        change:
+          prompts.length === 1
+            ? "학습 자료 기반의 첫 배치 설계"
+            : "실측 실패 진단을 반영해 관측 길이와 진입 기준 수정",
+        candidate: {
+          ...makeCandidate(family, 0).candidate,
+          stopPct: prompts.length === 1 ? 0.9 : 1.3,
+        },
+      })),
+    };
   };
   let job = await empirical.createSlotResearch(owner, {
-    requestId: crypto.randomUUID(), universe: ["NVDA"], slots: ["trend"],
-    brief: "사용자 메모를 실제 설계에 반영", sourceMinutes: 5,
+    requestId: crypto.randomUUID(),
+    universe: ["NVDA"],
+    slots: ["trend"],
+    brief: "사용자 메모를 실제 설계에 반영",
+    sourceMinutes: 5,
   });
   job = await flow.advanceGeneration(job.id);
   assert.equal(job.search.phase, "design");
@@ -272,69 +265,112 @@ test("program agent designs batches, uses measured failures, and resumes its sav
   job = await flow.advanceGeneration(job.id);
   assert.equal(job.search.agent.batches.length, 1);
   assert.match(prompts[0], /사용자 메모를 실제 설계에 반영/);
-  assert.ok(job.search.memory.records.length > 0, "prior durable runs must reach the next agent");
+  assert.ok(
+    job.search.memory.records.length > 0,
+    "prior durable runs must reach the next agent",
+  );
   assert.ok(job.search.agent.batches[0].memoryUse.length > 0);
   const frozenMemory = structuredClone(job.search.memory);
   await store.pauseGenerationJob(job);
   await store.resumeGenerationFailure(await store.getGenerationJob(job.id));
   job = await store.getGenerationJob(job.id);
-  for (let n = 0; n < 40 && job.status === "running"; n++) job = await flow.advanceGeneration(job.id);
+  for (let n = 0; n < 40 && job.status === "running"; n++)
+    job = await flow.advanceGeneration(job.id);
   assert.equal(job.status, "completed", job.error);
   assert.equal(prompts.length, 2, "not one LLM call per candidate");
   assert.equal(job.search.agent.batches[1].basedOnTrialIds.length, 8);
   assert.ok(job.search.trials.length >= 10);
-  assert.ok(job.search.trials.some(t => t.designHash === job.search.agent.batches[1].outputHash));
-  assert.ok(job.search.trials.some(t => t.parentId && t.deltaPct !== null));
+  assert.ok(
+    job.search.trials.some(
+      (t) => t.designHash === job.search.agent.batches[1].outputHash,
+    ),
+  );
+  assert.ok(job.search.trials.some((t) => t.parentId && t.deltaPct !== null));
   assert.match(prompts[1], /"failure":/);
   assert.match(prompts[1], /"counters":/);
-  assert.equal(job.calls.filter(c => c.role === "designer").length, 2);
+  assert.equal(job.calls.filter((c) => c.role === "designer").length, 2);
   assert.equal(job.costUsd, 0.02);
   assert.deepEqual(job.search.final, {});
   assert.equal(job.search.evaluation, "measured");
-  assert.deepEqual(job.search.memory, frozenMemory, "resume and reflection reuse the frozen evidence");
+  assert.deepEqual(
+    job.search.memory,
+    frozenMemory,
+    "resume and reflection reuse the frozen evidence",
+  );
 });
 
-test("unavailable download cannot discard usable historical native rows", async () => {
+test("unsupported new history never substitutes NVDA or deletes stored source rows", async () => {
   const old = days.map((d, index) => {
-    const date = new Date(Date.UTC(2020, 0, 1 + index)).toISOString().slice(0, 10);
-    return { date, bars: { NVDA: d.bars.NVDA.map(b => ({ ...b, date })) } };
+    const date = new Date(Date.UTC(2020, 0, 1 + index))
+      .toISOString()
+      .slice(0, 10);
+    return { date, bars: { NVDA: d.bars.NVDA.map((b) => ({ ...b, date })) } };
   });
   seed(old, "HISTORY");
-  let job = await empirical.createSlotResearch(owner, {
-    requestId: crypto.randomUUID(), universe: ["HISTORY"], slots: ["trend"], designMode: "local", sourceMinutes: 5,
-  });
-  job = await flow.advanceGeneration(job.id);
-  assert.equal(job.search.phase, "search", job.error);
-  assert.ok(job.search.manifest.acquisitionWarnings.length > 0);
-  assert.equal(job.from, "2020-01-01");
-  assert.ok(job.search.manifest.coverage[0].validDates.length > 200);
-  job = await flow.advanceGeneration(job.id);
-  assert.equal(job.search.trials[0].status, "measured");
-  await store.cancelGenerationJob(job);
+  await assert.rejects(
+    () =>
+      empirical.createSlotResearch(owner, {
+        requestId: crypto.randomUUID(),
+        universe: ["HISTORY"],
+        slots: ["trend"],
+        designMode: "local",
+        sourceMinutes: 5,
+      }),
+    /데이터 확보/,
+  );
+  assert.ok(
+    sqlite
+      .prepare(
+        "SELECT count(*) AS n FROM intraday_bar_days WHERE symbol='HISTORY'",
+      )
+      .get().n > 200,
+  );
 });
 
 test("journal export includes historical pages and isolates owners; runner export requires authentication", async () => {
   const { journalPage } = await import("../lib/research-memory-store.ts");
-  const template = (await store.listGenerationJobs(owner)).find(j => j.search.manifest);
+  const template = (await store.listGenerationJobs(owner)).find(
+    (j) => j.search.manifest,
+  );
   const archiveOwner = "ffffffff-ffff-4fff-8fff-ffffffffffff";
   for (let i = 0; i < 25; i++) {
     const j = structuredClone(template);
-    j.id = crypto.randomUUID(); j.ownerId = archiveOwner; j.status = "completed";
+    j.id = crypto.randomUUID();
+    j.ownerId = archiveOwner;
+    j.status = "completed";
     await store.createGenerationJob(j);
   }
   const first = await journalPage(archiveOwner);
-  assert.equal(first.journals.length, 20); assert.ok(first.next);
+  assert.equal(first.journals.length, 20);
+  assert.ok(first.next);
   const second = await journalPage(archiveOwner, first.next);
-  assert.equal(second.journals.length, 5); assert.equal(second.next, null);
-  assert.equal(new Set([...first.journals, ...second.journals].map(j => j.id)).size, 25);
+  assert.equal(second.journals.length, 5);
+  assert.equal(second.next, null);
+  assert.equal(
+    new Set([...first.journals, ...second.journals].map((j) => j.id)).size,
+    25,
+  );
   assert.equal((await journalPage("other-owner")).journals.length, 0);
   const { GET } = await import("../app/api/strategy-generation/route.ts");
-  const denied = await GET(new Request("https://example.com/api/strategy-generation?journal=1&source=runner"));
+  const denied = await GET(
+    new Request(
+      "https://example.com/api/strategy-generation?journal=1&source=runner",
+    ),
+  );
   assert.equal(denied.status, 403);
-  const own = await GET(new Request("https://example.com/api/strategy-generation?journal=1", { headers: { cookie: `qquant_research_device=${archiveOwner}` } }));
+  const own = await GET(
+    new Request("https://example.com/api/strategy-generation?journal=1", {
+      headers: { cookie: `qquant_research_device=${archiveOwner}` },
+    }),
+  );
   assert.equal((await own.json()).journals.length, 20);
   globalThis.__strategyTestEnv.STRATEGY_RUNNER_SECRET = "test-runner-only";
-  const allowed = await GET(new Request("https://example.com/api/strategy-generation?journal=1&source=runner", { headers: { authorization: "Bearer test-runner-only" } }));
+  const allowed = await GET(
+    new Request(
+      "https://example.com/api/strategy-generation?journal=1&source=runner",
+      { headers: { authorization: "Bearer test-runner-only" } },
+    ),
+  );
   assert.equal(allowed.status, 200);
   delete globalThis.__strategyTestEnv.STRATEGY_RUNNER_SECRET;
 });

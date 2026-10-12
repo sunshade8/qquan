@@ -42,8 +42,9 @@ export function ctFillPrice(
   price: number,
   market: "stock" | "crypto",
   side: "buy" | "sell",
+  currency?: string,
 ) {
-  const tick = market === "crypto" ? upbitTick(price) : new Decimal("0.01");
+  const tick = currency === "USDT" ? new Decimal("0.01") : market === "crypto" ? upbitTick(price) : new Decimal("0.01");
   return new Decimal(price)
     .div(tick)
     .toDecimalPlaces(0, side === "buy" ? Decimal.ROUND_UP : Decimal.ROUND_DOWN)

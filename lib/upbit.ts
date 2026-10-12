@@ -212,6 +212,10 @@ export async function upbitSubmit(input: {
   price: string;
   identifier: string;
 }) {
+  if (input.side === "buy" && input.symbol !== "KRW-BTC")
+    throw new Error(
+      "신규 코인 매수는 BTC만 허용됩니다. 기존 다른 코인의 감시·매도·취소는 유지됩니다.",
+    );
   if (upbitSetting("UPBIT_TRADING_DISABLED") !== "false")
     throw new Error("UPBIT_TRADING_DISABLED: 실주문 잠금");
   const chance = await upbitChance(input.symbol);

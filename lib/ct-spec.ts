@@ -101,8 +101,11 @@ export type CTContract = {
   trainingToMs: number;
   developmentToMs: number;
   toMs: number;
-  currency: "USD" | "KRW";
-  timezone: "America/New_York" | "Asia/Seoul";
+  currency: "USD" | "KRW" | "USDT";
+  dataSnapshot?: string;
+  dataVersion?: string;
+  dataProvenance?: Record<string,string>;
+  timezone: "America/New_York" | "Asia/Seoul" | "UTC";
   capital: number;
   costs: {
     feePct: number;

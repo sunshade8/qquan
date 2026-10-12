@@ -1,3 +1,7 @@
+> 기본 실행은 사용자 컴퓨터의 Node + SQLite + 공유 Parquet입니다.
+> `npm ci && npm run data:setup && npm run local` → http://127.0.0.1:3000
+> [로컬 실행·다운로드·백업/이전](docs/local-runtime.md)
+
 # vinext-starter
 
 A clean full-stack starter running on

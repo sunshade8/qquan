@@ -1,5 +1,6 @@
 "use client";
 
+import LocalDataSettings from "./local-data-settings";
 import CalendarDays from "lucide-react/dist/esm/icons/calendar-days";
 import ChartCandlestick from "lucide-react/dist/esm/icons/chart-candlestick";
 import ChevronDown from "lucide-react/dist/esm/icons/chevron-down";
@@ -62,7 +63,7 @@ type ConnectionReport = {
 };
 
 type ProviderReport = {
-  primary: "toss" | "yahoo";
+  primary: "toss" | "yahoo" | "local";
   toss: { status: "connected" | "unavailable" | "not_configured"; bars?: number; start?: string; end?: string; reason?: string };
   yahoo: { status: "connected" | "unavailable"; bars?: number; start?: string; end?: string; reason?: string };
   validation: { overlap: number; latestDate: string | null; latestCloseDeltaPct: number | null } | null;
@@ -524,12 +525,12 @@ export function QuantWorkspace() {
   useEffect(() => {
     const controller = new AbortController();
     const ticker = symbol.split(":").at(-1) ?? symbol;
-    fetch(`/api/market/history?symbol=${encodeURIComponent(ticker)}`, { signal: controller.signal })
+    fetch(`/api/market/history?symbol=${encodeURIComponent(ticker)}&dataset=minute-v1-raw`, { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
         const data = await response.json() as { rows?: PriceRow[]; source?: string; providers?: ProviderReport; error?: string };
         if (!response.ok || !data.rows?.length) throw new Error(data.error || "가격 데이터를 가져오지 못했습니다.");
         setRows(data.rows);
-        setDatasetName(`${ticker} · 10Y daily`);
+        setDatasetName(`${ticker} · local daily`);
         setDataSource(data.source ?? "Market data");
         setProviders(data.providers ?? null);
       })
@@ -774,7 +775,7 @@ export function QuantWorkspace() {
                 {dataTab === "rows" && (
                   <div className="dock-content">
                     {!rows.length ? (
-                      <div className="empty-data"><Database size={19} /><div><strong>{loadingData ? "OHLCV를 가져오는 중입니다" : "분석 데이터가 없습니다"}</strong><p>{loadingData ? `${symbol}의 조정 일봉 10년치를 불러오고 있습니다.` : "자동 수집에 실패하면 CSV를 대체 입력으로 사용할 수 있습니다."}</p>{importError && <em>{importError}</em>}</div></div>
+                      <div className="empty-data"><Database size={19} /><div><strong>{loadingData ? "OHLCV를 가져오는 중입니다" : "분석 데이터가 없습니다"}</strong><p>{loadingData ? `${symbol}의 로컬 1분봉 집계 일봉을 불러오고 있습니다.` : "자동 수집에 실패하면 CSV를 대체 입력으로 사용할 수 있습니다."}</p>{importError && <em>{importError}</em>}</div></div>
                     ) : (
                       <div className="rows-view">
                         {profile && <div className="dataset-profile"><span><small>Period</small><b>{profile.start} — {profile.end}</b></span><span><small>Total change</small><b className={profile.change >= 0 ? "positive" : "negative"}>{formatPercent(profile.change)}</b></span><span><small>Up days</small><b>{(profile.upDays * 100).toFixed(1)}%</b></span><span><small>Avg volume</small><b>{Math.round(profile.averageVolume).toLocaleString()}</b></span><span><small>Source check</small><b>{providers?.validation?.latestCloseDeltaPct !== null && providers?.validation?.latestCloseDeltaPct !== undefined ? `Δ ${providers.validation.latestCloseDeltaPct.toFixed(3)}%` : dataSource}</b></span></div>}
@@ -815,7 +816,7 @@ export function QuantWorkspace() {
               <aside className="agent-dock">
                 <div className="agent-head"><div><span className="agent-mark"><Sparkles size={15} /></span><div><strong>Agent</strong><small>{rows.length ? `${datasetName} attached` : "waiting for data"}</small></div></div><button className="agent-history-shortcut" aria-label="Open agent history" onClick={() => setHistoryOpen(true)}><HistoryIcon size={14} /><span>{history.length}</span></button></div>
                 <div className="agent-context">
-                  <span>{symbol}</span><span>{intervals.find((item) => item.value === interval)?.label}</span><span>{studies.length} studies</span><span className={rows.length ? "connected" : "missing"}>{rows.length ? `${rows.length} rows` : "loading data"}</span><span className={brokerSnapshot?.available ? "connected" : "missing"}>{brokerSnapshot?.available ? `Toss ${brokerSnapshot.session?.label ?? "quote"}` : "Toss fallback"}</span>
+                  <span>{symbol}</span><span>{intervals.find((item) => item.value === interval)?.label}</span><span>{studies.length} studies</span><span className={rows.length ? "connected" : "missing"}>{rows.length ? `${rows.length} rows` : "loading data"}</span><span className={brokerSnapshot?.available ? "connected" : "missing"}>{brokerSnapshot?.available ? `Toss ${brokerSnapshot.session?.label ?? "quote"}` : "현재가 확인 필요"}</span>
                 </div>
                 <div className="conversation-log" aria-live="polite">
                   {!messages.length && <div className="agent-empty"><strong>차트와 데이터를 함께 조작합니다.</strong><p>“RSI와 MACD 추가해줘”처럼 차트를 바꾸거나, “이 조건이 다른 시장 국면에서도 남는지”처럼 데이터를 조사해 달라고 하세요.</p></div>}
@@ -831,7 +832,7 @@ export function QuantWorkspace() {
           </div>
         )}
 
-        {view === "invest" && <InvestWorkspace />}
+        {view === "invest" && <InvestWorkspace onPrepareData={()=>setView("settings")} />}
 
         {view === "backtest" && <BacktestWorkspace focusStrategyId={focusStrategyId} onAskLab={askLab} />}
 
@@ -848,7 +849,7 @@ export function QuantWorkspace() {
         {view === "settings" && (
           <section className="simple-view">
             <header><div><span>Connections</span><h1>데이터와 모델 연결</h1></div></header>
-            <div className="settings-list">
+            <div className="settings-list"><LocalDataSettings />
               <article className="llm-cost-card">
                 <div className="llm-cost-head">
                   <div><span>LLM API COST</span><strong>{llmUsage ? `$${llmUsage.totals.costUsd.toFixed(4)}` : "—"}</strong><p>{llmUsage ? `${llmUsage.totals.calls}회 실제 호출 · 추적 시작 ${llmUsage.totals.trackingSince ? new Date(llmUsage.totals.trackingSince).toLocaleDateString("ko-KR") : "이번 버전"}` : llmUsageError || "실제 usage를 집계하는 중"}</p></div>
@@ -867,13 +868,13 @@ export function QuantWorkspace() {
               </article>
               <article><div><strong>TradingView Advanced Chart</strong><p>차트, 드로잉, 보조지표</p></div><span className="connected"><i />Connected</span></article>
               <article><div><strong>Toss Securities</strong><p>브로커 현재가·호가·최근 체결·장 시간 · 읽기 전용</p></div><span className={brokerSnapshot?.available ? "connected" : "missing"}><i />{brokerSnapshot?.available ? "Connected" : brokerSnapshot?.code === "ip_allowlist" ? "IP allowlist" : "Fallback"}</span></article>
-              <article><div><strong>Yahoo Finance</strong><p>조정 일봉 10년 · 토스 교차검증 및 자동 폴백</p></div><span className={providers?.yahoo.status === "connected" ? "connected" : "missing"}><i />{providers?.yahoo.status === "connected" ? "Connected" : "Unavailable"}</span></article>
+              <article><div><strong>Yahoo Finance</strong><p>보조 정보 연결 · 과거 OHLCV는 공유 로컬 Parquet</p></div><span className={providers?.yahoo.status === "connected" ? "connected" : "missing"}><i />{providers?.yahoo.status === "connected" ? "Connected" : "Unavailable"}</span></article>
               <article className="llm-cost-card">
                 <div className="llm-cost-head">
                   <div>
                     <span>MASSIVE HISTORICAL</span>
                     <strong>{connections ? `${connections.massive.plan} · ${MASSIVE_STATUS_LABELS[connections.massive.status]}` : "확인 중"}</strong>
-                    <p>QQuant의 유일한 분봉 소스입니다. 키가 설정됐는지가 아니라 요금제가 실제로 봉을 돌려주는지를 매번 실호출로 확인합니다.</p>
+                    <p>주식 과거 1분봉 다운로드 공급자입니다. 검증된 로컬 봉과 작업별 실제 이용 권한을 표시합니다. 설정 조회는 과거 봉을 재요청하지 않습니다.</p>
                   </div>
                   <a href="https://massive.com/docs" target="_blank" rel="noreferrer">API 문서</a>
                 </div>
@@ -887,7 +888,7 @@ export function QuantWorkspace() {
                       <code>{connections.massive.detail}</code>
                     </div>
                     <div className="connection-row">
-                      <span><strong>제공 기간</strong><small>이보다 이른 시작일은 요금제가 거부합니다</small></span>
+                      <span><strong>제공 기간</strong><small>로컬 설정 기준 · 실제 권한은 다운로드 응답으로 확인</small></span>
                       <b className="connected">{connections.massive.historyYears}년</b>
                       <code>{connections.massive.availableFrom} 이후</code>
                     </div>
@@ -905,7 +906,7 @@ export function QuantWorkspace() {
                 ) : <p className="llm-cost-note">{connectionsError || "연결 상태를 확인하는 중"}</p>}
                 {connections?.checkedAt ? <p className="llm-cost-note">확인 시각 {new Date(connections.checkedAt).toLocaleString("ko-KR")}</p> : null}
               </article>
-              <article><div><strong>Analysis dataset</strong><p>우선순위 Toss → Yahoo · 자동 갱신 캐시 24시간</p></div><span className={rows.length ? "connected" : "missing"}><i />{rows.length ? dataSource : "Loading"}</span></article>
+              <article><div><strong>Analysis dataset</strong><p>공유 로컬 Parquet · 원본 정책 및 coverage 확인</p></div><span className={rows.length ? "connected" : "missing"}><i />{rows.length ? dataSource : "Loading"}</span></article>
               <article><div><strong>SEC EDGAR</strong><p>8-K 항목 2.02 실적 발표일과 발표 시각 · 키 불필요</p></div><span className="connected"><i />Connected</span></article>
               <article><div><strong>FRED</strong><p>매크로 지표 원본 실제치와 개정 이력</p></div><span className={connections?.fred.configured ? "connected" : "missing"}><i />{connections?.fred.configured ? "Connected" : "FRED_API_KEY 미설정"}</span></article>
 

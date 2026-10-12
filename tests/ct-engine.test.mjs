@@ -266,13 +266,16 @@ test("CT data inventory reports missing intervals without pretending full covera
 test("CT published NYSE sessions include holidays and early closes, unknown years fail closed", async () => {
   const { ctStockSession } = await import("../lib/ct-sessions.ts");
   const { ctSessionClosing } = await import("../lib/ct-engine.ts");
+  assert.equal(ctStockSession("2021-12-24"), null);
+  assert.equal(ctStockSession("2021-11-26").close, "13:00");
+  assert.equal(ctStockSession("2024-06-10").open, "09:30");
   assert.equal(ctStockSession("2026-07-03"), null);
   assert.equal(ctStockSession("2025-01-09"), null);
   assert.equal(ctStockSession("2026-07-02").close, "16:00");
   assert.equal(ctStockSession("2026-11-27").close, "13:00");
   assert.equal(ctSessionClosing(Date.parse("2026-11-27T17:59:00Z")), true);
   assert.equal(ctSessionClosing(Date.parse("2026-11-27T17:58:00Z")), false);
-  assert.throws(() => ctStockSession("2029-01-02"), /범위/);
+  assert.throws(() => ctStockSession("2036-01-02"), /범위/);
 });
 test("CT a missing held bar is data_error rather than an invented profitable fill", () => {
   const b = bars();
