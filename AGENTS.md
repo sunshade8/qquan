@@ -8,13 +8,15 @@
 ## GitHub 및 배포 작업 완료 기준
 
 사용자가 이 프로젝트에서 요청한 수정은 검증 후 `main`에 commit/push하고,
-GitHub에 연결된 Vercel `sunshade8s-projects/qquan`의 production 배포 상태까지 확인한다.
+웹사이트 코드 변경은 Sites의 기존 프로젝트에 배포하고 성공 상태와 실제 사이트 URL까지 확인한다.
+문서·에이전트 지침만 수정하거나 로컬 데이터만 내려받은 작업은 사이트 배포 대상이 아니다.
+Vercel 배포·환경변수 동기화·production 상태 확인은 기본 완료 조건에 포함하지 않는다.
 사용자가 명시적으로 로컬 작업만 요청하거나 push/배포하지 말라고 하면 그 요청이 우선한다.
 파일 저장마다 중간 코드를 올리지 말고, 요청한 변경이 검증된 시점에 반영한다.
 
 - 작업 시작 시 branch/status를 확인한다. 다른 작업의 미완성 변경을 임의로 포함하거나 덮어쓰지 않는다.
 - `main` 이외의 브랜치라면 무조건 checkout하거나 force push하지 않는다. 필요한 병합을 안전하게 수행한다.
 - `.dev.vars`, `.env*`의 비밀값은 절대 commit하지 않는다. `.env.example`에는 이름과 비밀이 아닌 기본값만 둔다.
-- 환경변수를 변경했다면 `scripts/deploy/sync-vercel-env.mjs --apply`로 연결된 Vercel에 먼저 반영한다.
-- 배포 구조와 현재 런타임 제약은 `docs/deployment.md`를 읽는다. Cloudflare 빌드 성공과 Vercel 배포 성공을 혼동하지 않는다.
+- 호스팅 환경변수를 변경했다면 Sites 도구로 기존 사이트에 반영한다. 비밀값은 로그나 문서에 출력하지 않는다.
+- 배포 전 `docs/deployment.md`와 Sites 스킬을 읽는다. 기존 Sites 프로젝트 ID와 접근 권한을 유지한다. 로컬 빌드 성공만으로 Sites 배포 성공을 보고하지 않는다.
 - push 실패, 빌드 실패, DB 연결 미완료는 완료로 보고하지 말고 원인을 명확히 알린다.

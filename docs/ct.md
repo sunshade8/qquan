@@ -92,7 +92,7 @@ node --env-file=.dev.vars scripts/trading-runner.mjs --url http://localhost:3000
 node --env-file=.dev.vars scripts/trading-runner.mjs --generation-only
 ```
 
-원격 실행에는 서버와 러너에 같은 `STRATEGY_RUNNER_SECRET`을 설정한다. Vercel 보호를 유지하려면 러너에 프로젝트의 `VERCEL_AUTOMATION_BYPASS_SECRET`도 설정한다. 요청이 실제 주문을 보내는 위치는 러너 머신이 아니라 대상 앱 서버이므로 Toss/Upbit의 허용 IP도 앱 서버 출구 IP여야 한다. 러너가 꺼지면 자동 매매 감시가 지속된다고 표시하지 않는다.
+원격 실행에는 서버와 러너에 같은 `STRATEGY_RUNNER_SECRET`을 설정한다. Sites 원격 실행에서는 기존 사이트의 접근 정책에 맞는 인증을 확인한다. 요청이 실제 주문을 보내는 위치는 러너 머신이 아니라 대상 앱 서버이므로 Toss/Upbit의 허용 IP도 앱 서버 출구 IP여야 한다. 러너가 꺼지면 자동 매매 감시가 지속된다고 표시하지 않는다.
 
 ## 실제 검증과 아직 확인되지 않은 범위
 
@@ -100,7 +100,7 @@ node --env-file=.dev.vars scripts/trading-runner.mjs --generation-only
 
 실제 Upbit 현재가/호가/계좌 읽기와 Toss SPY 15분 연구의 원봉 4페이지 수집도 확인했다. 실제 주문은 0회다. 전체 주식 연구, 실제 통과 후보의 독립 검토/최종 평가/등록, 전향 모의 체결, 실전 주문은 실데이터 통합 검증되지 않았다. 통과→독립 검토→최종 동결→등록→동일 규칙 실행, 유실 응답/부분체결/취소 순서는 고정 모델 응답과 합성 데이터 테스트로 구분해 검증한다. 한 연구의 성과를 일반 수익성의 증거로 사용하지 않는다.
 
-Vercel용 Node/Nitro 빌드와 기존 D1 REST 어댑터를 추가했다. 현재 환경에는 기존 Cloudflare D1의 account/database/token이 없으므로 production DB/API 정상 동작은 별도 미완료 항목이다. 빈 DB나 서버리스 메모리 DB로 정상인 척하지 않고 연결 미설정 오류를 반환한다. [배포 문서](deployment.md)의 설정과 API 검증을 완료해야 production에서 연구를 저장/실행할 수 있다. D1 REST는 Cloudflare 전역 API 제한을 공유하므로 고빈도 운용 전에 호출량을 측정하고 필요하면 인증된 Worker DB proxy 등으로 바꿔야 한다.
+기본 연구 실행은 로컬 Node + SQLite + Parquet다. 웹사이트 변경의 호스팅 배포 대상은 Sites이며, [배포 문서](deployment.md)에 따라 기존 프로젝트의 빌드·D1 연결·API 동작을 검증한다. 로컬 연구 DB와 시장 파일은 Sites에 자동 이전되지 않는다. 과거 Vercel용 Node/Nitro 및 D1 REST 어댑터 구성은 기본 배포 완료 기준이 아니다.
 
 ## 공식 API 근거
 
