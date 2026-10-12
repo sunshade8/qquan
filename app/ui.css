@@ -1,0 +1,151 @@
+/* ==========================================================================
+   UI primitives. Built only from the tokens in globals.css :root.
+   Prefixed `ui-` so they never collide with feature classes.
+   button · field · card · badge · dot · segmented · disclosure · metric ·
+   empty state · inline alert · meter · table
+   ========================================================================== */
+
+.ui-num { font-variant-numeric: tabular-nums; }
+.ui-mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; letter-spacing: 0; }
+.ui-sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+.ui-korean { word-break: keep-all; overflow-wrap: break-word; line-height: var(--lh-read); }
+
+/* ---- Button: primary / secondary / ghost / danger -------------------------- */
+.ui-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--sp-2);
+  min-height: var(--control-h); padding: 0 var(--sp-3);
+  border: 1px solid var(--line-strong); border-radius: var(--r-2);
+  background: var(--panel); color: var(--text);
+  font-size: var(--fs-3); font-weight: 600; line-height: 1; white-space: nowrap;
+}
+.ui-btn svg { flex: none; }
+@media (hover: hover) and (pointer: fine) {
+  .ui-btn:not(:disabled):hover { background: var(--panel-alt); }
+}
+.ui-btn.primary { border-color: transparent; background: var(--accent-solid); color: var(--accent-ink); }
+@media (hover: hover) and (pointer: fine) {
+  .ui-btn.primary:not(:disabled):hover { background: color-mix(in srgb, var(--accent-solid) 88%, black); }
+}
+.ui-btn.ghost { border-color: transparent; background: transparent; color: var(--secondary); }
+@media (hover: hover) and (pointer: fine) {
+  .ui-btn.ghost:not(:disabled):hover { background: var(--surface-sunken); color: var(--text); }
+}
+.ui-btn.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 36%, transparent); background: transparent; }
+@media (hover: hover) and (pointer: fine) {
+  .ui-btn.danger:not(:disabled):hover { background: var(--danger-soft); }
+}
+.ui-btn.sm { min-height: 28px; padding: 0 var(--sp-3); font-size: var(--fs-2); border-radius: var(--r-1); }
+.ui-btn.lg { min-height: 40px; padding: 0 var(--sp-4); font-size: var(--fs-4); }
+@media (pointer: coarse) { .ui-btn { min-height: 40px; } .ui-btn.sm { min-height: 36px; } }
+
+/* ---- Field: label above control, helper below ------------------------------- */
+.ui-field { display: grid; gap: var(--sp-1); min-width: 0; font-size: var(--fs-2); color: var(--secondary); }
+.ui-field > span { font-weight: 600; }
+.ui-field small { color: var(--secondary); font-size: var(--fs-1); }
+.ui-input, .ui-field input, .ui-field select, .ui-field textarea {
+  width: 100%; min-width: 0; min-height: var(--control-h); padding: 0 var(--sp-3);
+  border: 1px solid var(--line-strong); border-radius: var(--r-2);
+  background: var(--panel); color: var(--text); font-size: var(--fs-3);
+}
+.ui-field textarea { padding: var(--sp-2) var(--sp-3); min-height: 72px; resize: vertical; line-height: var(--lh-ui); }
+.ui-input:focus-visible, .ui-field :is(input, select, textarea):focus-visible { border-color: var(--accent); outline-offset: 0; }
+.ui-input::placeholder, .ui-field :is(input, textarea)::placeholder { color: var(--tertiary); }
+@media (pointer: coarse) { .ui-input, .ui-field :is(input, select) { min-height: 40px; } }
+
+/* ---- Card / panel: hairline border, no shadow ------------------------------- */
+.ui-card { min-width: 0; border: 1px solid var(--line); border-radius: var(--r-3); background: var(--panel); }
+.ui-card.pad { padding: var(--sp-4); }
+.ui-card.quiet { background: var(--panel-alt); }
+.ui-card-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); flex-wrap: wrap; }
+.ui-title { margin: 0; font-size: var(--fs-4); font-weight: 650; letter-spacing: -.01em; line-height: var(--lh-tight); }
+.ui-sub { margin: 0; color: var(--secondary); font-size: var(--fs-2); line-height: var(--lh-read); word-break: keep-all; }
+.ui-label { color: var(--secondary); font-size: var(--fs-1); font-weight: 600; letter-spacing: .02em; }
+
+/* ---- Badge and status dot ---------------------------------------------------- */
+.ui-badge {
+  display: inline-flex; align-items: center; gap: 5px; min-height: 20px; padding: 0 var(--sp-2);
+  border-radius: var(--r-1); background: var(--surface-sunken); color: var(--secondary);
+  font-size: var(--fs-1); font-weight: 600; line-height: 1; white-space: nowrap;
+}
+.ui-badge[data-tone="accent"] { background: var(--accent-soft); color: var(--accent); }
+.ui-badge[data-tone="warn"] { background: var(--warn-soft); color: var(--warn-text); }
+.ui-badge[data-tone="danger"] { background: var(--danger-soft); color: var(--danger); }
+.ui-badge[data-tone="strong"] { background: var(--text); color: var(--bg); }
+.ui-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--tertiary); }
+.ui-dot[data-tone="accent"] { background: var(--accent); }
+.ui-dot[data-tone="warn"] { background: var(--warn); }
+.ui-dot[data-tone="danger"] { background: var(--danger); }
+.ui-dot[data-tone="done"] { background: var(--text); }
+
+/* ---- Segmented control ------------------------------------------------------- */
+.ui-segmented { display: inline-flex; gap: 2px; padding: 3px; border-radius: var(--r-2); background: var(--surface-sunken); max-width: 100%; }
+.ui-segmented > button {
+  min-height: 30px; padding: 0 var(--sp-4); border: 0; border-radius: 7px;
+  background: transparent; color: var(--secondary); font-size: var(--fs-3); font-weight: 600;
+}
+.ui-segmented > button[aria-pressed="true"], .ui-segmented > button[aria-selected="true"] {
+  background: var(--panel); color: var(--text); box-shadow: 0 0 0 1px var(--line), 0 1px 2px rgba(0, 0, 0, .06);
+}
+@media (pointer: coarse) { .ui-segmented > button { min-height: 38px; } }
+
+/* ---- Disclosure (details) ---------------------------------------------------- */
+.ui-disclosure { border-top: 1px solid var(--line); }
+.ui-disclosure > summary {
+  display: flex; align-items: center; gap: var(--sp-2); min-height: 40px; padding: 0 2px;
+  list-style: none; cursor: pointer; color: var(--text); font-size: var(--fs-3); font-weight: 600;
+}
+.ui-disclosure > summary::-webkit-details-marker { display: none; }
+.ui-disclosure > summary::before {
+  content: ""; flex: none; width: 6px; height: 6px; margin: 0 3px 0 1px;
+  border-right: 1.5px solid var(--secondary); border-bottom: 1.5px solid var(--secondary);
+  transform: rotate(-45deg); transition: transform var(--hover) var(--ease-out-strong);
+}
+.ui-disclosure[open] > summary::before { transform: rotate(45deg); }
+.ui-disclosure > summary small { margin-left: auto; color: var(--secondary); font-size: var(--fs-2); font-weight: 400; }
+.ui-disclosure > .ui-disclosure-body { padding: 0 2px var(--sp-4); display: grid; gap: var(--sp-3); }
+
+/* ---- Metric tile ------------------------------------------------------------- */
+.ui-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); gap: 1px; border: 1px solid var(--line); border-radius: var(--r-2); background: var(--line); overflow: hidden; }
+.ui-metric { display: grid; gap: 2px; padding: var(--sp-3); background: var(--panel); min-width: 0; }
+.ui-metric > span { color: var(--secondary); font-size: var(--fs-1); }
+.ui-metric > b { font-size: var(--fs-5); font-weight: 650; letter-spacing: -.02em; font-variant-numeric: tabular-nums; line-height: var(--lh-tight); }
+.ui-metric > small { color: var(--secondary); font-size: var(--fs-1); font-variant-numeric: tabular-nums; }
+
+/* ---- Empty state ------------------------------------------------------------- */
+.ui-empty { display: grid; justify-items: start; gap: var(--sp-2); padding: var(--sp-5) var(--sp-4); border: 1px dashed var(--line-strong); border-radius: var(--r-3); color: var(--secondary); }
+.ui-empty strong { color: var(--text); font-size: var(--fs-4); font-weight: 650; }
+.ui-empty p { margin: 0; max-width: 56ch; font-size: var(--fs-3); line-height: var(--lh-read); word-break: keep-all; }
+
+/* ---- Inline alert ------------------------------------------------------------ */
+.ui-alert {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4); border: 1px solid color-mix(in srgb, var(--warn) 34%, transparent);
+  border-radius: var(--r-2); background: var(--warn-soft); color: var(--text); font-size: var(--fs-3);
+}
+.ui-alert > svg { margin-top: 2px; color: var(--warn-text); }
+.ui-alert > div { display: grid; gap: 2px; min-width: 0; line-height: var(--lh-read); word-break: keep-all; overflow-wrap: anywhere; }
+.ui-alert strong { font-size: var(--fs-3); font-weight: 650; }
+.ui-alert p { margin: 0; color: var(--secondary); font-size: var(--fs-2); }
+.ui-alert[data-tone="danger"] { border-color: color-mix(in srgb, var(--danger) 34%, transparent); background: var(--danger-soft); }
+.ui-alert[data-tone="danger"] > svg { color: var(--danger); }
+.ui-alert[data-tone="info"] { border-color: color-mix(in srgb, var(--accent) 28%, transparent); background: var(--accent-soft); }
+.ui-alert[data-tone="info"] > svg { color: var(--accent); }
+.ui-alert[data-tone="quiet"] { border-color: var(--line); background: var(--panel-alt); }
+.ui-alert[data-tone="quiet"] > svg { color: var(--secondary); }
+
+/* ---- Meter: value against a limit. Amber from 80% ---------------------------- */
+.ui-meter { display: block; height: 4px; border-radius: 2px; background: var(--surface-sunken); overflow: hidden; }
+.ui-meter > i { display: block; height: 100%; width: 100%; border-radius: inherit; background: var(--text); transform-origin: left; transform: scaleX(var(--v, 0)); transition: transform var(--settle) var(--ease-out-strong); }
+.ui-meter[data-tone="warn"] > i { background: var(--warn); }
+
+/* ---- Table: dense, tabular, hairline rows ------------------------------------ */
+.ui-table { width: 100%; border-collapse: collapse; font-size: var(--fs-2); font-variant-numeric: tabular-nums; }
+.ui-table th { padding: var(--sp-2) var(--sp-3); color: var(--secondary); font-size: var(--fs-1); font-weight: 600; text-align: right; white-space: nowrap; }
+.ui-table th:first-child, .ui-table td:first-child { text-align: left; }
+.ui-table td { padding: 7px var(--sp-3); border-top: 1px solid var(--line); text-align: right; white-space: nowrap; }
+.ui-table td:first-child { color: var(--secondary); }
+.ui-scroll-x { max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-disclosure > summary::before, .ui-meter > i { transition: none; }
+}
