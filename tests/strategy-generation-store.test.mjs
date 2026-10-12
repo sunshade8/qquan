@@ -385,3 +385,17 @@ test("permanent authentication error pauses immediately instead of retrying or r
  assert.equal(job.pauseReason,"interrupted"); assert.equal(job.recovery.failures,1); assert.equal(job.recovery.retryAt,undefined);
  await store.cancelGenerationJob(job);
 });
+
+test("the running job holding the account slot is visible and cancellable from another owner",async()=>{
+ assert.equal(await store.activeGeneration(owner),null);
+ const job=await create();
+ const seen=await store.activeGeneration("other-owner");
+ assert.equal(seen.id,job.id);assert.equal(seen.mine,false);assert.equal(seen.kind,"slot");
+ assert.equal((await store.activeGeneration(owner)).mine,true);
+ assert.equal(await store.cancelActiveGeneration(crypto.randomUUID()),false);
+ assert.equal((await store.getGenerationJob(job.id)).status,"running");
+ assert.equal(await store.cancelActiveGeneration(job.id),true);
+ assert.equal((await store.getGenerationJob(job.id)).status,"cancelled");
+ assert.equal(await store.activeGeneration(owner),null);
+ assert.equal(await store.cancelActiveGeneration(job.id),false);
+});

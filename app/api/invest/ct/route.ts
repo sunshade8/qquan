@@ -3,6 +3,8 @@ import { env } from "cloudflare:workers";
 import { researchOwnerCookie, researchOwnerFrom } from "@/lib/research-owner";
 import { advanceGeneration, publicJob } from "@/lib/strategy-generation";
 import {
+  activeGeneration,
+  cancelActiveGeneration,
   cancelGenerationJob,
   getGenerationJob,
   pauseGenerationJob,
@@ -19,8 +21,8 @@ import { ctDb, loadCTData, ctDataPage, aggregateCT } from "@/lib/ct-data";
 import { ctRunnerOnline } from "@/lib/ct-trading";
 import { generationAvailability } from "@/lib/strategy-generation-llm";
 export const dynamic = "force-dynamic";
-const headers = (owner: string) => ({
-  "set-cookie": researchOwnerCookie(owner),
+const headers = (owner: string, request: Request) => ({
+  "set-cookie": researchOwnerCookie(owner, request),
   "cache-control": "no-store",
 });
 function runnerAuthorized(request: Request) {
@@ -57,7 +59,7 @@ export async function GET(request: Request) {
         id,
       );
       return packet
-        ? Response.json(packet, { headers: headers(owner) })
+        ? Response.json(packet, { headers: headers(owner, request) })
         : Response.json(
             {
               error:
@@ -99,7 +101,7 @@ export async function GET(request: Request) {
           output: JSON.parse(row.output_payload),
           executions: pages.results.flatMap((p) => JSON.parse(p.payload)),
         },
-        { headers: headers(owner) },
+        { headers: headers(owner, request) },
       );
     }
     if (url.searchParams.has("chart")) {
@@ -118,7 +120,7 @@ export async function GET(request: Request) {
         return Response.json({ error: "잘못된 차트 범위" }, { status: 400 });
       return Response.json(
         { bars: data[symbol].filter((b) => b.endMs <= at).slice(-160) },
-        { headers: headers(owner) },
+        { headers: headers(owner, request) },
       );
     }
     const rows = await ctDb()
@@ -127,14 +129,19 @@ export async function GET(request: Request) {
       )
       .bind(owner, market)
       .all<{ payload: string }>();
+    const jobs = rows.results.map((r) => publicJob(JSON.parse(r.payload)));
+    // The account runs one job at a time. If the one holding it is not in this
+    // device's list, say so instead of leaving a disabled button unexplained.
+    const active = await activeGeneration(owner);
     return Response.json(
       {
-        jobs: rows.results.map((r) => publicJob(JSON.parse(r.payload))),
+        jobs,
+        blocking: active && !jobs.some((j) => j.id === active.id) ? active : null,
         registered: await ctPackages(market),
         availability: generationAvailability(),
         runnerOnline: await ctRunnerOnline(),
       },
-      { headers: headers(owner) },
+      { headers: headers(owner, request) },
     );
   } catch (error) {
     return Response.json(
@@ -160,7 +167,7 @@ export async function POST(request: Request) {
       const contract = await prepareCTContract(input);
       const sample = await ctDataPage(contract, contract.symbols[0], contract.toMs);
       const aggregated = aggregateCT(sample, contract.minutes, contract.market, contract.toMs);
-      return Response.json({contract, sampleBars: sample.length, aggregatedBars: aggregated.length}, {headers:headers(owner)});
+      return Response.json({contract, sampleBars: sample.length, aggregatedBars: aggregated.length}, {headers:headers(owner, request)});
     }
     if (body.action === "research") {
       const { action, ...input } = body;
@@ -168,7 +175,7 @@ export async function POST(request: Request) {
       const job = await createCTResearch(owner, input);
       return Response.json(
         { job: publicJob(job) },
-        { status: 202, headers: headers(owner) },
+        { status: 202, headers: headers(owner, request) },
       );
     }
     await ensureCTSchema();
@@ -182,6 +189,11 @@ export async function POST(request: Request) {
         )
         .bind(Date.now())
         .run();
+    if (body.action === "cancel_blocking") {
+      const cancelled =
+        typeof body.id === "string" && (await cancelActiveGeneration(body.id));
+      return Response.json({ ok: true, cancelled }, { headers: headers(owner, request) });
+    }
     let id = typeof body.id === "string" ? body.id : null;
     if (runner) {
       const row = await ctDb()
@@ -198,7 +210,7 @@ export async function POST(request: Request) {
     if (body.action === "register")
       return Response.json(
         { strategyId: await registerCT(job) },
-        { headers: headers(owner) },
+        { headers: headers(owner, request) },
       );
     if (body.action === "cancel") await cancelGenerationJob(job);
     else if (body.action === "pause") await pauseGenerationJob(job);
@@ -248,7 +260,7 @@ export async function POST(request: Request) {
         },
       );
     } else return Response.json({ error: "잘못된 CT 동작" }, { status: 400 });
-    return Response.json({ ok: true }, { headers: headers(owner) });
+    return Response.json({ ok: true }, { headers: headers(owner, request) });
   } catch (error) {
     return Response.json(
       { error: error instanceof Error ? error.message : "CT 실패" },

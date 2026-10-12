@@ -8,6 +8,8 @@ import {
 import { createSlotResearch, getArtifact } from "@/lib/slot-research-store";
 import { generationAvailability } from "@/lib/strategy-generation-llm";
 import {
+  activeGeneration,
+  cancelActiveGeneration,
   listGenerationJobs,
   getGenerationJob,
   cancelGenerationJob,
@@ -52,9 +54,14 @@ export async function GET(request: Request) {
       if (!allowed) return Response.json({ error: "산출물을 찾지 못했습니다." }, { status: 404 });
       return Response.json(await getArtifact(hash), { headers: { "cache-control": "no-store" } });
     }
+    const jobs = (await listGenerationJobs(owner)).filter(job=>!job.ct).map(publicJob);
+    // One running job per account, from any screen or device: name the one
+    // holding the slot when this device's list does not contain it.
+    const active = await activeGeneration(owner);
     return Response.json(
       {
-        jobs: (await listGenerationJobs(owner)).filter(job=>!job.ct).map(publicJob),
+        jobs,
+        blocking: active && !jobs.some(job => job.id === active.id) ? active : null,
         availability: generationAvailability(),
         // Expensive candle JSON aggregation is opt-in, never on every status poll.
         inventory: new URL(request.url).searchParams.get("inventory") === "1" ? await generationInventory() : [],
@@ -66,7 +73,7 @@ export async function GET(request: Request) {
       },
       {
         headers: {
-          "set-cookie": researchOwnerCookie(owner),
+          "set-cookie": researchOwnerCookie(owner, request),
           "cache-control": "no-store",
         },
       },
@@ -113,7 +120,7 @@ export async function POST(request: Request) {
         config: body.config, from: body.from, to: body.to,
         designMode: body.designMode, maxDesignBatches: body.maxDesignBatches,
       });
-      return Response.json({ job: publicJob(job) }, { headers: { "set-cookie": researchOwnerCookie(owner) }, status: 202 });
+      return Response.json({ job: publicJob(job) }, { headers: { "set-cookie": researchOwnerCookie(owner, request) }, status: 202 });
     }
     if (body.action === "create") {
       const job = await createGeneration(owner, {
@@ -124,9 +131,11 @@ export async function POST(request: Request) {
       });
       return Response.json(
         { job: publicJob(job) },
-        { headers: { "set-cookie": researchOwnerCookie(owner) }, status: 202 },
+        { headers: { "set-cookie": researchOwnerCookie(owner, request) }, status: 202 },
       );
     }
+    if (body.action === "cancel_blocking")
+      return Response.json({ ok: true, cancelled: typeof body.id === "string" && (await cancelActiveGeneration(body.id)) });
     const runner = body.source === "runner" && body.action === "advance";
     if (runner) {
       const hostname = new URL(request.url).hostname;

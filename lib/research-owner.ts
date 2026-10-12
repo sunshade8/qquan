@@ -6,6 +6,12 @@ export function researchOwnerFrom(request: Request) {
   return existing && /^[a-f0-9-]{36}$/i.test(existing) ? existing : crypto.randomUUID();
 }
 
-export function researchOwnerCookie(ownerId: string) {
-  return `${RESEARCH_COOKIE_NAME}=${ownerId}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax; Secure`;
+/**
+ * Pass the request so a plain-http local app (`http://127.0.0.1:3000`) does not
+ * get a `Secure` cookie: browsers that refuse it drop it, every poll then gets
+ * a fresh owner, and the screen never sees the job it just started.
+ */
+export function researchOwnerCookie(ownerId: string, request?: Request) {
+  const secure = !request || new URL(request.url).protocol === "https:";
+  return `${RESEARCH_COOKIE_NAME}=${ownerId}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax${secure ? "; Secure" : ""}`;
 }

@@ -6,7 +6,9 @@ import Download from "lucide-react/dist/esm/icons/download";
 import Info from "lucide-react/dist/esm/icons/info";
 import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw";
 import TriangleAlert from "lucide-react/dist/esm/icons/triangle-alert";
+import X from "lucide-react/dist/esm/icons/x";
 import type { GenerationJob } from "@/lib/strategy-generation-types";
+import type { ActiveGeneration } from "@/lib/strategy-generation-store";
 import type { CTPackage } from "@/lib/ct-research-store";
 import type { CTBar, CTResult } from "@/lib/ct-engine";
 import type { CTResearch, CTSource, CTTrial } from "@/lib/ct-research";
@@ -29,6 +31,8 @@ export { CT_PHASES };
 
 type CTResponse = {
   jobs: Omit<GenerationJob, "ownerId">[];
+  /** Running job holding the account's single slot that this device cannot see. */
+  blocking: ActiveGeneration | null;
   registered: CTPackage[];
   availability: { ready: boolean; missing: string[] };
   runnerOnline: boolean;
@@ -46,6 +50,8 @@ function download(value: unknown, name: string) {
 const tone = (n: number) => (n > 0 ? "positive" : n < 0 ? "negative" : "");
 const pct = (n: number) => `${n > 0 ? "+" : ""}${n.toFixed(2)}%`;
 const money = (n: number) => n.toLocaleString("ko-KR", { maximumFractionDigits: 4 });
+const BLOCKING_KIND = { "ct-stock": "CT 주식 연구", "ct-crypto": "CT 코인 연구", slot: "전략 탭 슬롯 연구" } as const;
+const clockTime = (iso: string) => new Date(iso).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
 
 /** 동결 규칙 최종 평가 요약. */
 function FinalMetrics({ result }: { result: CTResult }) {
@@ -382,10 +388,11 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
       }
       const p = (await r.json()) as { job?: { id: string } };
       if (p.job) setSelected(p.job.id);
-      await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "CT 요청 실패");
     } finally {
+      // A refused start usually means something else holds the slot; refresh so it shows.
+      await load();
       setBusy(false);
     }
   };
@@ -439,7 +446,8 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
   const latestTrial = ct?.trials.at(-1);
   const live = cj ? isLive(cj.status) : false;
   const registeredThis = Boolean(job && data?.registered.some((p) => p.runId === job.id));
-  const startBlocked = busy || data?.availability.ready === false || job?.status === "running";
+  const blocking = data?.blocking ?? null;
+  const startBlocked = busy || data?.availability.ready === false || job?.status === "running" || Boolean(blocking);
   const summary = [
     symbols.trim() ? symbols.trim().toUpperCase().split(/[,\s]+/).join(", ") : market === "stock" ? "NVDA" : "BTCUSDT",
     minutes ? `${minutes}분봉` : "시장 기본 봉",
@@ -499,6 +507,26 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
         </div>
         {job?.status === "running" ? (
           <p className="ui-sub">진행 중인 연구가 끝나거나 취소되면 새 연구를 시작할 수 있습니다.</p>
+        ) : null}
+        {blocking ? (
+          <div className="ui-alert" data-tone="info" role="alert">
+            <Info size={16} aria-hidden="true" />
+            <div>
+              <strong>실행 중인 연구가 있어 새로 시작할 수 없습니다</strong>
+              <p>
+                {BLOCKING_KIND[blocking.kind]}
+                {blocking.phase ? ` · ${CT_PHASES[blocking.phase as keyof typeof CT_PHASES] ?? blocking.phase}` : ""} · {clockTime(blocking.createdAt)} 시작 · 마지막 갱신 {clockTime(blocking.updatedAt)} · 비용 ${blocking.costUsd.toFixed(2)} / ${blocking.budgetUsd}
+                {blocking.mine ? "" : " · 다른 브라우저 세션에서 시작되어 이 화면의 연구 목록에는 보이지 않습니다."}
+              </p>
+            </div>
+            <button
+              className="ui-btn sm"
+              disabled={busy}
+              onClick={() => void act("cancel_blocking", { id: blocking.id })}
+            >
+              <X size={13} aria-hidden="true" />이 연구 취소
+            </button>
+          </div>
         ) : null}
         <details className="ui-disclosure ct-options">
           <summary>선택 설정<small>연구 방향, 종목, 주기, 예산</small></summary>

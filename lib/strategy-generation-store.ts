@@ -130,6 +130,47 @@ export async function cancelGenerationJob(job: GenerationJob) {
     .bind(JSON.stringify(job), Date.now(), job.id)
     .run();
 }
+/**
+ * `idx_generation_active` allows one running job per account, whoever started
+ * it and from whichever screen. A screen only lists its own device's jobs, so
+ * this is how it finds out what is holding the slot when it cannot see it.
+ */
+export type ActiveGeneration = {
+  id: string;
+  mine: boolean;
+  kind: "ct-stock" | "ct-crypto" | "slot";
+  phase: string | null;
+  createdAt: string;
+  updatedAt: string;
+  costUsd: number;
+  budgetUsd: number;
+};
+export async function activeGeneration(ownerId: string): Promise<ActiveGeneration | null> {
+  await ensureSchema();
+  const row = await db()
+    .prepare(
+      "SELECT id, owner_id, created_at, updated_at, json_extract(payload,'$.ct.contract.market') AS market, COALESCE(json_extract(payload,'$.ct.phase'), json_extract(payload,'$.search.phase')) AS phase, json_extract(payload,'$.costUsd') AS cost, json_extract(payload,'$.budgetUsd') AS budget FROM strategy_generation_runs WHERE status='running' LIMIT 1",
+    )
+    .first<{ id: string; owner_id: string; created_at: number; updated_at: number; market: string | null; phase: string | null; cost: number | null; budget: number | null }>();
+  if (!row) return null;
+  return {
+    id: row.id,
+    mine: row.owner_id === ownerId,
+    kind: row.market === "crypto" ? "ct-crypto" : row.market === "stock" ? "ct-stock" : "slot",
+    phase: row.phase,
+    createdAt: new Date(row.created_at).toISOString(),
+    updatedAt: new Date(row.updated_at).toISOString(),
+    costUsd: row.cost ?? 0,
+    budgetUsd: row.budget ?? 0,
+  };
+}
+/** Cancels the running job only if it is still the one the caller was shown. */
+export async function cancelActiveGeneration(expectedId: string) {
+  const job = await getGenerationJob(expectedId);
+  if (!job || job.status !== "running") return false;
+  await cancelGenerationJob(job);
+  return true;
+}
 export async function pauseGenerationJob(job: GenerationJob) {
   if (job.status !== "running")
     throw new Error("실행 중인 연구만 일시정지할 수 있습니다.");
