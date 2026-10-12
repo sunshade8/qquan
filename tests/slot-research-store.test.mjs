@@ -374,3 +374,35 @@ test("journal export includes historical pages and isolates owners; runner expor
   assert.equal(allowed.status, 200);
   delete globalThis.__strategyTestEnv.STRATEGY_RUNNER_SECRET;
 });
+test("slot designer truncation behaves exactly like the previous 502 (CT-only output-limit policy)", async () => {
+  const { ClaudeApiError, IncompleteResponseError } = await import("../lib/llm-error.ts");
+  const outcomes = [];
+  for (const fail of [
+    () => new ClaudeApiError("OpenAI 구조화 응답이 완성되지 않았습니다.", 502),
+    (options) => new IncompleteResponseError("OpenAI", { reason: "max_output_tokens", maxOutputTokens: options.maxOutputTokens, outputTokens: options.maxOutputTokens, reasoningTokens: 15000, effort: options.effort }),
+  ]) {
+    for (const row of sqlite.prepare("SELECT payload FROM strategy_generation_runs WHERE status IN ('running','paused')").all())
+      await store.cancelGenerationJob(JSON.parse(row.payload));
+    const seen = [];
+    globalThis.__strategyTestHooks.call = (role, prompt, options) => {
+      seen.push({ role, maxOutputTokens: options.maxOutputTokens, effort: options.effort });
+      throw fail(options);
+    };
+    let job = await empirical.createSlotResearch(owner, { requestId: crypto.randomUUID(), universe: ["NVDA"], slots: ["trend"], sourceMinutes: 5 });
+    job = await flow.advanceGeneration(job.id);
+    assert.equal(job.search.phase, "design");
+    const steps = [];
+    for (let n = 0; n < 3 && job.status === "running"; n++) {
+      job = await flow.advanceGeneration(job.id);
+      steps.push({ status: job.status, failures: job.recovery?.failures, nextAction: job.nextAction, pauseReason: job.pauseReason });
+      sqlite.prepare("UPDATE strategy_generation_runs SET payload=json_set(payload,'$.recovery.retryAt',?) WHERE id=? AND json_extract(payload,'$.recovery.retryAt') IS NOT NULL")
+        .run(new Date(Date.now() - 1000).toISOString(), job.id);
+    }
+    outcomes.push({ seen, steps });
+  }
+  assert.deepEqual(outcomes[1].steps, outcomes[0].steps);
+  assert.deepEqual(outcomes[1].seen, outcomes[0].seen);
+  assert.match(outcomes[0].steps[0].nextAction, /10초 후 같은 단계 자동 재시도/);
+  assert.ok(outcomes[0].seen.every((s) => s.maxOutputTokens === 16000 && s.effort === "high"));
+  assert.equal(outcomes[0].seen.length, 3);
+});

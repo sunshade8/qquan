@@ -58,6 +58,23 @@ export function researchModel(role: GenerationRole, failures = 0) {
 export function researchMaxTokens(role: GenerationRole) {
   return role === "dataAnalyst" ? 4000 : role === "reporter" ? 3000 : GENERATION_MODELS[role].provider === "OpenAI" ? 16000 : 12000;
 }
+export type ResearchEffort = "low" | "medium" | "high";
+/** CT designer allowance after one max-output truncation; the cost reserve is priced on it. */
+export const CT_DESIGNER_RETRY_MAX_TOKENS = 32000;
+/**
+ * Output allowance and reasoning effort for one call. OpenAI counts reasoning inside
+ * max_output_tokens, so a truncated CT call is retried once with less reasoning (and,
+ * for the designer, a larger allowance). Slot and legacy research keep the defaults.
+ */
+export function researchCallLimits(role: GenerationRole, options: { ct?: boolean; truncated?: boolean } = {}) {
+  const primary = GENERATION_MODELS[role];
+  const base = { maxOutputTokens: researchMaxTokens(role), effort: ("effort" in primary ? primary.effort : "high") as ResearchEffort };
+  if (!options.ct || !options.truncated) return base;
+  return {
+    maxOutputTokens: role === "designer" ? CT_DESIGNER_RETRY_MAX_TOKENS : base.maxOutputTokens,
+    effort: (base.effort === "high" ? "medium" : base.effort === "medium" ? "low" : base.effort) as ResearchEffort,
+  };
+}
 export function assertDifferentProvider(
   author: GenerationRole,
   reviewer: GenerationRole,

@@ -99,3 +99,66 @@ test("fallback request uses the documented secondary Anthropic model",async()=>{
  try {await assert.rejects(()=>generationCall("owner","evidenceReviewer",schema,"test",{failures:2}));}
  finally{mockFetch=originalFetch;}
 });
+function incompleteOpenAi(reason, capture) {
+ return async (url, options) => {
+  const body = JSON.parse(options.body);
+  capture?.push(body);
+  const max = body.max_output_tokens;
+  const response = {id:"resp_cut",object:"response",created_at:1,status:"incomplete",incomplete_details:{reason},model:"gpt-6.1-sol",output:[],
+   usage:{input_tokens:9476,output_tokens:max,total_tokens:9476+max,input_tokens_details:{cached_tokens:0},output_tokens_details:{reasoning_tokens:max-300}}};
+  return sse([
+   {type:"response.created",response:{...response,status:"in_progress",incomplete_details:null,usage:null}},
+   {type:"response.incomplete",response},
+  ].map((event,sequence_number)=>({...event,sequence_number})));
+ };
+}
+test("OpenAI max_output_tokens truncation is its own error with the reasoning share and requested limits", async () => {
+ const { IncompleteResponseError } = await import("../lib/llm-error.ts");
+ const requests = [];
+ mockFetch = incompleteOpenAi("max_output_tokens", requests);
+ try {
+  await assert.rejects(() => generationCall("owner","designer",schema,"test",{ct:true}), error => {
+   assert.ok(error instanceof IncompleteResponseError);
+   assert.equal(error.reason,"max_output_tokens"); assert.equal(error.truncated,true);
+   assert.equal(error.maxOutputTokens,16000); assert.equal(error.outputTokens,16000); assert.equal(error.reasoningTokens,15700);
+   assert.equal(error.effort,"high");
+   assert.match(error.message,/출력 한도 16,000토큰 초과 · 출력 16,000토큰 중 추론 15,700토큰/);
+   return true;
+  });
+  assert.equal(requests[0].max_output_tokens,16000); assert.equal(requests[0].reasoning.effort,"high");
+  // Callers can change the allowance and effort for a retry.
+  await assert.rejects(() => generationCall("owner","designer",schema,"test",{ct:true,maxOutputTokens:32000,effort:"medium"}), /출력 한도 32,000토큰 초과/);
+  assert.equal(requests[1].max_output_tokens,32000); assert.equal(requests[1].reasoning.effort,"medium");
+ } finally { mockFetch=originalFetch; }
+});
+test("other incomplete reasons stay distinct from an output-limit truncation", async () => {
+ mockFetch = incompleteOpenAi("content_filter");
+ try {
+  await assert.rejects(() => generationCall("owner","designer",schema,"test"), error => {
+   assert.equal(error.reason,"content_filter"); assert.equal(error.truncated,false);
+   assert.match(error.message,/콘텐츠 필터/); assert.doesNotMatch(error.message,/출력 한도/);
+   return true;
+  });
+ } finally { mockFetch=originalFetch; }
+});
+test("Claude max_tokens stop is reported as the same truncation", async () => {
+ let request;
+ mockFetch=async(url,options)=>{
+  request=JSON.parse(options.body);
+  return sse([
+   {type:"message_start",message:{id:"msg_cut",type:"message",role:"assistant",model:"claude-opus-5",content:[],stop_reason:null,stop_sequence:null,usage:{input_tokens:100,output_tokens:1}}},
+   {type:"content_block_start",index:0,content_block:{type:"text",text:""}},
+   {type:"content_block_delta",index:0,delta:{type:"text_delta",text:'{"summary":"잘'}},
+   {type:"content_block_stop",index:0},
+   {type:"message_delta",delta:{stop_reason:"max_tokens",stop_sequence:null},usage:{output_tokens:12000}},
+   {type:"message_stop"},
+  ]);
+ };
+ try {
+  await assert.rejects(() => generationCall("owner","riskReviewer",schema,"test",{effort:"medium"}), error => {
+   assert.equal(error.truncated,true,error.message); assert.equal(error.maxOutputTokens,12000); assert.equal(error.reasoningTokens,null);
+   return true;
+  });
+  assert.equal(request.max_tokens,12000); assert.equal(request.output_config.effort,"medium");
+ } finally { mockFetch=originalFetch; }
+});

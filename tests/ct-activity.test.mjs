@@ -90,3 +90,17 @@ test("the timeline interleaves tool and model calls by time with stable keys", (
   const entries = ctTimeline(tools, mergeCalls([call({ startedAt: "2026-10-12T22:40:00.000Z" })], null));
   assert.deepEqual(entries.map((e) => e.key), ["t:a:0", "c:c1", "t:b:1"]);
 });
+
+test("truncation uses the recorded stop reason and allowance, not the role default", () => {
+  const recovery = { failures: 0, retryAt: "2026-10-13T00:00:10.000Z", message: "한도 32,000토큰 · 추론 medium 설정으로 1회 재시도" };
+  const cut = call({ status: "failed", maxOutputTokens: 16000, effort: "high", incompleteReason: "max_output_tokens", reasoningTokens: 15700, usage: { output_tokens: 16000 } });
+  const now = ctNow(job({ calls: [cut], recovery }), mergeCalls([cut], null));
+  assert.equal(now.truncatedAt, 16000);
+  assert.equal(now.reasoningTokens, 15700);
+  // A filtered response is not reported as cut off even if it used the whole allowance.
+  const filtered = call({ status: "failed", maxOutputTokens: 16000, incompleteReason: "content_filter", usage: { output_tokens: 16000 } });
+  assert.equal(ctNow(job({ calls: [filtered], recovery }), mergeCalls([filtered], null)).truncatedAt, undefined);
+  // The retry in flight shows its own raised allowance.
+  const retry = call({ maxOutputTokens: 32000, effort: "medium" });
+  assert.equal(ctNow(job({ calls: [cut, retry] }), mergeCalls([cut, retry], null)).maxTokens, 32000);
+});

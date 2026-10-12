@@ -30,6 +30,13 @@ export type ResearchCall = {
   uncertainUsd?: number;
   result?: unknown;
   error?: string;
+  /** Requested output allowance and reasoning effort (absent on calls before 2026-10-13). */
+  maxOutputTokens?: number;
+  effort?: string;
+  /** Provider's stop reason when the response was incomplete, e.g. "max_output_tokens". */
+  incompleteReason?: string;
+  /** Hidden reasoning tokens inside output_tokens (OpenAI only). */
+  reasoningTokens?: number | null;
 };
 export type ResearchMeter = {
   jobId: string;

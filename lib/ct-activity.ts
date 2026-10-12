@@ -146,7 +146,7 @@ export function phaseContext(ct: CTResearch) {
 export type CTNow =
   | { kind: "model"; agent: CTAgentId; call: CTCall; since: string; signalAt: string; maxTokens: number }
   | { kind: "tool"; agent: "engine"; trace: CTToolTrace; since: string; signalAt: string }
-  | { kind: "retry"; agent: CTAgentId | null; error: string; retryAt: string; failures: number; signalAt: string; truncatedAt?: number }
+  | { kind: "retry"; agent: CTAgentId | null; error: string; retryAt: string; failures: number; signalAt: string; truncatedAt?: number; reasoningTokens?: number | null }
   | { kind: "between"; agent: CTAgentId | null; signalAt: string }
   | { kind: "paused" | "ended"; agent: null; signalAt: string };
 
@@ -164,17 +164,18 @@ export function ctNow(job: CTActivityJob, calls: CTCall[]): CTNow {
   if (job.status !== "running") return { kind: "ended", agent: null, signalAt };
   const call = [...calls].reverse().find((c) => c.status === "started");
   if (call)
-    return { kind: "model", agent: call.role as CTAgentId, call, since: call.startedAt, signalAt, maxTokens: researchMaxTokens(call.role) };
+    return { kind: "model", agent: call.role as CTAgentId, call, since: call.startedAt, signalAt, maxTokens: call.maxOutputTokens ?? researchMaxTokens(call.role) };
   const trace = [...ct.tools].reverse().find((t) => t.status === "started");
   if (trace) return { kind: "tool", agent: "engine", trace, since: trace.at, signalAt };
   if (job.recovery?.retryAt) {
     const failed = calls.at(-1)?.status === "failed" ? calls.at(-1)! : null;
-    // A failed call that used its whole output allowance was cut off, not refused.
-    const cap = failed ? researchMaxTokens(failed.role) : 0;
+    // The provider's stop reason is authoritative; older calls fall back to "used the whole allowance".
+    const cap = failed ? (failed.maxOutputTokens ?? researchMaxTokens(failed.role)) : 0;
+    const truncated = failed && (failed.incompleteReason ? failed.incompleteReason === "max_output_tokens" : (failed.usage.output_tokens ?? 0) >= cap);
     return {
       kind: "retry",
       agent: (failed?.role as CTAgentId | undefined) ?? phaseAgent(ct.phase),
-      ...(failed && (failed.usage.output_tokens ?? 0) >= cap ? { truncatedAt: cap } : {}),
+      ...(truncated ? { truncatedAt: cap, reasoningTokens: failed.reasoningTokens ?? null } : {}),
       error: job.recovery.message || job.error || "일시적 오류",
       retryAt: job.recovery.retryAt,
       failures: job.recovery.failures,

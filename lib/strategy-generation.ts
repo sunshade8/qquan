@@ -2,6 +2,7 @@ import { z } from "zod";
 import { advanceSlotResearch } from "@/lib/slot-research-store";
 import { designBatchSchema } from "./slot-research-agent.ts";
 import { researchFailure, uncertainResearchCost } from "./research-recovery.ts";
+import { IncompleteResponseError } from "./llm-error.ts";
 import { usageCostUsd } from "@/lib/llm-usage";
 import { slotById, SLOTS, assertTradable } from "./trade-slots.ts";
 import { researchRequestSchema, researchCalendar, discoveryPlanSchema, validateDiscoveryPlan } from "./strategy-discovery.ts";
@@ -15,7 +16,7 @@ import {
 import {
   GENERATION_MODELS, RESEARCH_WEB_SEARCH,
   researchModel,
-  researchMaxTokens,
+  researchCallLimits,
   assertDifferentProvider,
   type GenerationRole,
 } from "./strategy-generation-models.ts";
@@ -263,15 +264,17 @@ async function ask<T extends z.ZodType>(job: GenerationJob, role: GenerationRole
     old.uncertainUsd = old.reserveUsd;
     old.error = "연결 중단으로 최종 사용량 미확인";
   }
+  // A CT call already cut off at its output allowance is retried with changed limits, never identical ones.
+  const limits = researchCallLimits(role, { ct: Boolean(job.ct), truncated: job.calls.some(call => call.key === key && call.incompleteReason === "max_output_tokens") });
   // Includes system/schema overhead and a conservative UTF token bound, including retries.
   const webSearch = Boolean(job.ct && job.ct.phase === "sources");
-  const reserve = (webSearch ? RESEARCH_WEB_SEARCH.maxCalls*RESEARCH_WEB_SEARCH.usdPerCall : 0) + ((prompt.length + JSON.stringify(z.toJSONSchema(schema)).length + 4000) * 2 * model.input + researchMaxTokens(role) * model.output) / 1_000_000;
+  const reserve = (webSearch ? RESEARCH_WEB_SEARCH.maxCalls*RESEARCH_WEB_SEARCH.usdPerCall : 0) + ((prompt.length + JSON.stringify(z.toJSONSchema(schema)).length + 4000) * 2 * model.input + limits.maxOutputTokens * model.output) / 1_000_000;
   const ceiling = job.search && job.search.phase !== "final" ? job.budgetUsd * (1 - job.search.config.reserveFraction) : job.ct && !["risk_review","final","evidence_review"].includes(job.ct.phase) ? job.budgetUsd * (1-job.ct.contract.policy.reserveFraction) : job.budgetUsd;
   if (job.costUsd + uncertainResearchCost(job.calls) + reserve > ceiling)
     throw new ResearchBudgetError(`연구 예산 $${job.budgetUsd} 내 추가 호출 여유가 없습니다. 미확인 호출 비용도 한도에 포함합니다.`);
   const now = new Date().toISOString();
   const call: ResearchCall = { id: crypto.randomUUID(), key, role, model: model.model, provider: model.provider,
-    status: "started", startedAt: now, updatedAt: now, usage: {}, estimated: true, costUsd: 0, reserveUsd: reserve };
+    status: "started", startedAt: now, updatedAt: now, usage: {}, estimated: true, costUsd: 0, reserveUsd: reserve, ...limits };
   job.calls.push(call);
   await generationProgress(job, runtime.token); // Intent is durable BEFORE spending money.
   let persistedAt = Date.now(), meteredAt = 0;
@@ -283,9 +286,16 @@ async function ask<T extends z.ZodType>(job: GenerationJob, role: GenerationRole
     runtime.onUsage(snapshot);
     return snapshot;
   };
+  // Hidden reasoning streams no events; keep the 360s lease alive so a long call is never re-claimed and paid twice.
+  const keepAlive = setInterval(() => {
+    if (Date.now() - persistedAt < 60_000) return;
+    persistedAt = Date.now();
+    // A cancellation surfaces at the next checkpoint or commit.
+    generationProgress(job, runtime.token).catch(() => undefined);
+  }, 30_000);
   try {
     const result = await generationCall(job.ownerId, role, schema, prompt, {
-      failures: job.recovery?.failures, ct: Boolean(job.ct), webSearch,
+      failures: job.recovery?.failures, ct: Boolean(job.ct), webSearch, ...limits,
       onUsage: async (usage, estimated) => {
         call.usage = usage;
         call.estimated = estimated;
@@ -305,6 +315,7 @@ async function ask<T extends z.ZodType>(job: GenerationJob, role: GenerationRole
     });
     call.sources = result.sources;
     call.searchCalls = result.searchCalls;
+    call.reasoningTokens = result.reasoningTokens;
     call.result = result.data;
     call.status = "completed";
     call.estimated = false;
@@ -321,6 +332,10 @@ async function ask<T extends z.ZodType>(job: GenerationJob, role: GenerationRole
       call.status = "failed";
       const failure = researchFailure(error);
       call.error = failure.message;
+      if (error instanceof IncompleteResponseError) {
+        call.incompleteReason = error.reason;
+        call.reasoningTokens = error.reasoningTokens;
+      }
       if ([400, 401, 402, 403, 404, 429].includes(failure.status)) {
         call.usage = {}; call.costUsd = 0; call.estimated = false;
       }
@@ -330,9 +345,36 @@ async function ask<T extends z.ZodType>(job: GenerationJob, role: GenerationRole
     }
     meter();
     throw error;
+  } finally {
+    clearInterval(keepAlive);
   }
 }
 class ResearchBudgetError extends Error {}
+/**
+ * A CT call that hit its output allowance is retried once, immediately, with changed
+ * limits (see researchCallLimits). A second truncation, or a role with nothing left to
+ * change, pauses instead of spending again on the same outcome.
+ */
+function ctOutputLimit(job: GenerationJob, error: IncompleteResponseError) {
+  const failed = job.calls?.at(-1);
+  const truncations = failed ? job.calls!.filter(call => call.key === failed.key && call.incompleteReason === "max_output_tokens").length : 0;
+  const next = failed ? researchCallLimits(failed.role, { ct: true, truncated: true }) : null;
+  const changed = next && (next.maxOutputTokens !== error.maxOutputTokens || next.effort !== error.effort);
+  const n = (value: number) => value.toLocaleString("en-US");
+  job.error = error.message;
+  if (next && changed && truncations === 1) {
+    // A truncation is not a transient failure: it neither consumes the transient retry budget nor waits.
+    const plan = `한도 ${n(next.maxOutputTokens)}토큰 · 추론 ${next.effort} 설정으로 1회 재시도`;
+    job.recovery = { failures: job.recovery?.failures ?? 0, retryAt: new Date().toISOString(), message: plan };
+    job.nextAction = `출력 한도 ${n(error.maxOutputTokens)}토큰 초과 · ${plan}. 기존 후보와 검증 기록은 유지됩니다.`;
+    return;
+  }
+  job.recovery = { failures: job.recovery?.failures ?? 0, message: error.message };
+  pause(job, "interrupted", error.message,
+    `출력 한도 ${n(error.maxOutputTokens)}토큰 초과${truncations > 1 ? `가 조건을 바꾼 재시도에서도 반복되어` : "로"} 자동 재시도를 멈췄습니다` +
+    `${error.reasoningTokens != null ? ` (출력 ${n(error.outputTokens)}토큰 중 추론 ${n(error.reasoningTokens)}토큰)` : ""}. ` +
+    (next ? `재개하면 한도 ${n(next.maxOutputTokens)}토큰 · 추론 ${next.effort} 설정으로 다시 호출합니다(유료).` : "저장된 단계에서 재개할 수 있습니다."));
+}
 function pause(
   job: GenerationJob,
   reason: NonNullable<GenerationJob["pauseReason"]>,
@@ -825,6 +867,9 @@ export async function advanceGeneration(
       job.status = "completed";
     } else if (job.ct && (error instanceof ResearchBudgetError || /CT 계산 시간 상한|백테스트 한도|CT 연구 권한·시간 한도/.test(String(error)))) {
       job.ct.phase="done";job.ct.passed=false;job.ct.endReason=`연구 한도 종료 · 통과 전략 없음 · ${error instanceof Error?error.message:"한도"}`;job.status="completed";
+    } else if (job.ct && error instanceof IncompleteResponseError && error.truncated) {
+      ctOutputLimit(job, error);
+      onProgress(job.nextAction ?? error.message);
     } else if (error instanceof ResearchBudgetError) {
       pause(
         job,

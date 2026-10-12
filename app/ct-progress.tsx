@@ -590,13 +590,15 @@ export function NowPanel({ job, calls, driver }: { job: CTJob; calls: CTCall[]; 
             {actor ? <b>{actor.name}</b> : <b>{CT_PHASES[job.ct.phase]}</b>}
             {now.kind === "model" ? <> · <code>{now.call.model}</code> · {now.call.provider}</> : null}
             {now.kind === "tool" ? <> · 로컬 계산 · <code>{now.trace.name}</code></> : null}
-            {now.kind === "retry" ? <> · {now.failures}회차 재시도</> : null}
+            {now.kind === "retry" ? <> · {now.truncatedAt ? "출력 한도 조정 재시도" : `${now.failures}회차 재시도`}</> : null}
           </p>
           {/* key: the sentence cross-fades in when the work changes, never on a mere poll. */}
           <p className="ct-now-title" key={workKey}>{title}</p>
           <p className="ct-now-detail">
             {now.kind === "retry"
-              ? `${now.error}${now.truncatedAt ? ` · 출력 한도 ${tokens(now.truncatedAt)}토큰을 모두 써서 응답이 잘렸습니다.` : ""}`
+              ? now.truncatedAt
+                ? `출력 한도 ${tokens(now.truncatedAt)}토큰을 모두 써서 응답이 잘렸습니다${now.reasoningTokens != null ? ` (추론 ${tokens(now.reasoningTokens)}토큰)` : ""} · ${now.error}`
+                : now.error
               : now.kind === "ended" ? (job.ct.endReason ?? job.error ?? phaseContext(job.ct)) : now.kind === "paused" ? (job.error ?? job.nextAction ?? phaseContext(job.ct)) : phaseContext(job.ct)}
           </p>
         </div>
