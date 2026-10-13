@@ -71,6 +71,15 @@ OS 로그인 서비스는 설치하지 않는다.
 
 SQLite WAL, 30초 busy timeout, `BEGIN IMMEDIATE` batch로 프로세스 간 접근을 직렬화한다. 기존 D1의 parameterized prepare/bind/all/raw/first/run/batch 계약을 Node SQLite 어댑터로 유지한다. 연구·장부 lease는 같은 DB를 사용한다. 다운로드는 별도 dataset 활성 unique index와 token lease, heartbeat, worker 파일 잠금을 사용한다. 프로세스가 죽은 lease는 약 2분 뒤 재획득 가능하다. 취소된 이전 worker는 새 소유자의 작업을 갱신할 수 없다.
 
+## 소유자 ID (브라우저 간 연구 기록 공유)
+
+연구·전략·대화·장부·LLM 사용량은 `owner_id`로 저장된다. `QQUAN_OWNER_ID`(UUID)를 `.dev.vars`에 두면 Safari/Chrome, `localhost`/`127.0.0.1` 어디서 열어도 같은 기록을 본다. 비워 두면 브라우저 쿠키가 소유자라 브라우저를 바꾸면 이전 기록이 보이지 않는다(데이터는 DB에 남아 있음). 이전 쿠키 소유자들의 기록은 한 번 합친다. 쓰기 전에 `backups/`에 사본을 만든다.
+
+```sh
+node --env-file=.dev.vars scripts/data/merge-owners.mjs --dry-run
+node --env-file=.dev.vars scripts/data/merge-owners.mjs
+```
+
 ## 백업과 기존 Miniflare 이전
 
 ```sh
