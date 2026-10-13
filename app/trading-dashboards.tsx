@@ -10,6 +10,7 @@ import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw";
 import TriangleAlert from "lucide-react/dist/esm/icons/triangle-alert";
 import X from "lucide-react/dist/esm/icons/x";
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { CT_EXIT_REASON_TEXT } from "@/lib/ct-trade-levels";
 import type { DashboardMode, DashboardTrade, StopPhase, TradingDashboardResponse, TradingDashboardView } from "@/lib/dashboard-types";
 import type { RelayBacktestReport } from "@/lib/relay-report";
 
@@ -445,7 +446,7 @@ function DashboardPanel({ view, data, now, busy, book, onStart, onStop, onBackte
           {view.positions.map((trade) => <tr key={trade.id}>
             <td>보유</td><td>{trade.strategyName}</td><td><strong>{trade.symbol}</strong>{book.startsWith("ct-")&&<button className="ghost" onClick={()=>onTradeChart(trade.id)}>차트</button>}</td><td>{trade.boughtQuantity - trade.soldQuantity}</td>
             <td>{trade.entryPrice?.toLocaleString("ko-KR",{maximumFractionDigits:8}) ?? "—"}</td><td>{trade.markPrice?.toLocaleString("ko-KR",{maximumFractionDigits:8}) ?? "—"}</td>
-            <td>−{trade.stopPct}% / {trade.targetPct === null ? "시간 청산" : `+${trade.targetPct}%`}</td>
+            <td>{trade.ctPosition ? `손절 ${trade.ctPosition.stopLevel.toLocaleString("ko-KR",{maximumFractionDigits:8})}${trade.ctPosition.moves.length ? ` (${trade.ctPosition.moves.length}회 상향)` : ""} / ${trade.ctPosition.targetLevel === null ? "목표 없음" : trade.ctPosition.targetLevel.toLocaleString("ko-KR",{maximumFractionDigits:8})}` : `−${trade.stopPct}% / ${trade.targetPct === null ? "시간 청산" : `+${trade.targetPct}%`}`}</td>
             <td>{trade.pendingExit ? `${EXIT_TEXT[trade.pendingExit]} 매도 중` : trade.status === "entering" ? "진입 중" : `~${new Date(trade.slotEndsAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false })} 청산`}</td>
           </tr>)}
           {view.orders.map((order) => <tr key={order.id}>
@@ -464,7 +465,7 @@ function DashboardPanel({ view, data, now, busy, book, onStart, onStop, onBackte
         <tbody>{view.trades.map((trade: DashboardTrade) => <tr key={trade.id}>
           <td>{trade.date}</td><td>{trade.strategyName}</td><td><strong>{trade.symbol}</strong>{book.startsWith("ct-")&&<button className="ghost" onClick={()=>onTradeChart(trade.id)}>차트</button>}</td><td>{trade.signalTime}</td>
           <td>{trade.entryPrice ? `${trade.entryPrice.toLocaleString("ko-KR",{maximumFractionDigits:8})} · ${clock(trade.entryAt)}` : "—"}</td>
-          <td>{trade.exitPrice ? `${trade.exitPrice.toLocaleString("ko-KR",{maximumFractionDigits:8})} · ${trade.exit ? EXIT_TEXT[trade.exit] : ""}` : "—"}</td>
+          <td>{trade.exitPrice ? `${trade.exitPrice.toLocaleString("ko-KR",{maximumFractionDigits:8})} · ${trade.ctExitReason ? (CT_EXIT_REASON_TEXT[trade.ctExitReason] ?? trade.ctExitReason) : trade.exit ? EXIT_TEXT[trade.exit] : ""}` : "—"}</td>
           <td>{trade.boughtQuantity}</td>
           <td className={tone(trade.pnlUsd)}>{trade.pnlUsd === null ? "—" : usd(trade.pnlUsd, true)}</td>
           <td>{trade.entrySlippagePct === null ? "—" : pct(trade.entrySlippagePct, 3)}</td>

@@ -2,14 +2,24 @@ import { ctFillPrice } from "./market-precision.ts";
 import { ctStockSession } from "./ct-sessions.ts";
 import Decimal from "decimal.js";
 import {
+  CT_ATR_DEFAULT_LOOKBACK,
   CT_ENGINE_V1,
+  ctAtrWindow,
+  ctExitAtrConfig,
+  ctExitUsesAtr,
+  ctIsLevelFeature,
+  ctIsManagedExit,
+  ctIsPrevDayFeature,
+  ctRowsNeeded,
   ctSpecSchema,
   type CTCondition,
   type CTContract,
+  type CTManagedExit,
   type CTMarket,
   type CTSpec,
 } from "./ct-spec.ts";
 import { buildHigherSeries, higherWindow, type CTHigherSeries } from "./ct-timeframes.ts";
+import { buildDayLevels, levelFeature, levelLines, type CTDayLevels } from "./ct-levels.ts";
 import { easternWallTimeToEpoch } from "./market-clock.ts";
 
 export type CTBar = {
@@ -32,6 +42,8 @@ export type CTSignal = {
   support: number;
   stages: Array<{ index: number; at: number; values: number[] }>;
   references?: Array<{ feature: string; price: number; observedAt: number }>;
+  /** ATR in price units at the decision time, for managed exits that use `atr` stops, targets or trails. */
+  exitAtr?: number;
   swings: Array<{
     kind: "high" | "low";
     at: number;
@@ -53,6 +65,15 @@ export type CTTrade = {
   reason: string;
   specHash: string;
   compliant: boolean;
+  /** Managed exits only: how the stop and target stood and moved. Absent for classic exits (results stay byte-identical). */
+  management?: CTTradeManagement;
+};
+export type CTTradeManagement = {
+  initialStop: number;
+  target: number | null;
+  initialRisk: number;
+  /** Stop moves in order; `at` is the close of the bar after which the new level applies (from the next bar on). */
+  moves: Array<{ at: number; from: number; to: number; source: "breakeven" | "trail" }>;
 };
 export type CTResult = {
   engine: string;
@@ -173,28 +194,44 @@ function higherBars(bars: CTBar[], factor: number, nowMs: number) {
   );
 }
 /**
- * Closed base bars that can form the condition's window: lookback + offset + 1 complete
- * groups, plus one partial group at each end. Older bars cannot change the result.
+ * Closed base bars that can form a window of `count` rows of `timeframe` minutes ending `offset`
+ * rows back: count + offset complete groups, plus one partial group at each end. Older bars
+ * cannot change the result.
  */
-function conditionTail(condition: CTCondition, input: CTBar[], nowMs: number) {
+function windowTail(timeframe: number, count: number, offset: number, input: CTBar[], nowMs: number) {
   let end = input.length;
   while (end > 0 && input[end - 1].endMs > nowMs) end--;
-  const count =
-    (condition.lookback + condition.offset + 3) * condition.timeframe;
-  return input.slice(Math.max(0, end - count), end);
+  const bars = (count - 1 + offset + 3) * timeframe;
+  return input.slice(Math.max(0, end - bars), end);
 }
 /** Completed 60/240/1440-minute series per timeframe for one symbol (ct-pattern-2). */
 export type CTHigherSets = Map<number, CTHigherSeries>;
-export type CTFeatureContext = { higher?: CTHigherSets; market?: CTMarket; symbol?: string };
+export type CTFeatureContext = { higher?: CTHigherSets; levels?: CTDayLevels; market?: CTMarket; symbol?: string };
+/** Higher timeframes (>12 min) a spec reads: condition windows, ATR normalisers, the previous day, the exit's ATR. */
+export function ctHigherTimeframes(spec: CTSpec): Set<number> {
+  const out = new Set<number>();
+  for (const stage of spec.stages)
+    for (const c of stage.conditions) {
+      if (c.timeframe > 12) out.add(c.timeframe);
+      if (c.unit === "atr" && ctAtrWindow(c).timeframe > 12) out.add(ctAtrWindow(c).timeframe);
+      if (ctIsPrevDayFeature(c.feature)) out.add(1440);
+    }
+  const atr = ctExitUsesAtr(spec.exit) ? ctExitAtrConfig(spec.exit) : null;
+  if (atr && atr.timeframe > 12) out.add(atr.timeframe);
+  return out;
+}
 /** Series a spec's higher-timeframe conditions need, built once from the symbol's one-minute bars. */
 export function ctHigherSets(spec: CTSpec, bars: CTBar[], symbol: string): CTHigherSets {
   const sets: CTHigherSets = new Map();
-  for (const stage of spec.stages)
-    for (const c of stage.conditions)
-      if (c.timeframe > 12 && !sets.has(c.timeframe)) sets.set(c.timeframe, buildHigherSeries(bars, c.timeframe, spec.market, symbol));
+  for (const timeframe of ctHigherTimeframes(spec)) sets.set(timeframe, buildHigherSeries(bars, timeframe, spec.market, symbol));
   return sets;
 }
-export const ctNeedsHigher = (spec: CTSpec) => spec.stages.some((s) => s.conditions.some((c) => c.timeframe > 12));
+export const ctNeedsHigher = (spec: CTSpec) => ctHigherTimeframes(spec).size > 0;
+export const ctNeedsLevels = (spec: CTSpec) => spec.stages.some((s) => s.conditions.some((c) => ctIsLevelFeature(c.feature)));
+/** Day-level arrays a spec's level features need, built once from the symbol's one-minute bars. */
+export function ctLevelSets(spec: CTSpec, bars: CTBar[]): CTDayLevels | undefined {
+  return ctNeedsLevels(spec) ? buildDayLevels(bars, spec.market) : undefined;
+}
 function higherRows(condition: CTCondition, input: CTBar[], nowMs: number, ctx?: CTFeatureContext) {
   let series = ctx?.higher?.get(condition.timeframe);
   if (!series) {
@@ -203,36 +240,77 @@ function higherRows(condition: CTCondition, input: CTBar[], nowMs: number, ctx?:
   }
   return higherWindow(series, nowMs, condition.lookback, condition.offset);
 }
+/**
+ * `count` chained complete rows of `timeframe` minutes ending `offset` rows before the last row
+ * closed by nowMs, or null when any is missing, invalid or not chained.
+ */
+function windowRows(timeframe: number, count: number, offset: number, input: CTBar[], nowMs: number, ctx?: CTFeatureContext): CTBar[] | null {
+  if (timeframe > 12) {
+    let series = ctx?.higher?.get(timeframe);
+    if (!series) {
+      if (!ctx?.market) throw new Error("상위 시간대 조건에는 시장 정보가 필요합니다.");
+      series = buildHigherSeries(input, timeframe, ctx.market, ctx.symbol ?? "");
+    }
+    const rows = higherWindow(series, nowMs, count - 1, offset);
+    return rows && rows.every(validCTBar) ? rows : null;
+  }
+  const full = higherBars(windowTail(timeframe, count, offset, input, nowMs), timeframe, nowMs);
+  const end = full.length - offset;
+  const rows = full.slice(Math.max(0, end - count), end);
+  if (rows.length !== count || rows.some((b, i) => !validCTBar(b) || (i > 0 && b.startMs !== rows[i - 1].endMs))) return null;
+  return rows;
+}
+/** Mean true range of rows[1..]: `rows.length - 1` bars, each against its predecessor's close. */
+function meanTrueRange(rows: CTBar[]) {
+  let sum = 0;
+  for (let i = 1; i < rows.length; i++) {
+    const b = rows[i],
+      pc = rows[i - 1].close;
+    sum += Math.max(b.high - b.low, Math.abs(b.high - pc), Math.abs(b.low - pc));
+  }
+  return sum / (rows.length - 1);
+}
+/** ATR as percent of the last close over `lookback` bars of `timeframe`, at the decision time (offset 0). */
+function atrPctAt(timeframe: number, lookback: number, input: CTBar[], nowMs: number, ctx?: CTFeatureContext) {
+  const rows = windowRows(timeframe, lookback + 1, 0, input, nowMs, ctx);
+  return rows ? (meanTrueRange(rows) / rows.at(-1)!.close) * 100 : null;
+}
 export function ctFeature(
   condition: CTCondition,
   input: CTBar[],
   nowMs: number,
   ctx?: CTFeatureContext,
 ): number | null {
-  if (condition.timeframe > 12) {
-    const rows = higherRows(condition, input, nowMs, ctx);
-    return rows && rows.every(validCTBar) ? featureFromRows(condition, rows, false) : null;
+  let raw: number | null;
+  if (ctIsLevelFeature(condition.feature)) {
+    if (!ctx?.market) throw new Error("레벨 피처에는 시장 정보가 필요합니다.");
+    const levels = ctx.levels ?? buildDayLevels(input, ctx.market),
+      daily = ctIsPrevDayFeature(condition.feature) ? (ctx.higher?.get(1440) ?? buildHigherSeries(input, 1440, ctx.market, ctx.symbol ?? "")) : undefined;
+    raw = levelFeature(condition, levels, daily, ctx.market, ctx.symbol ?? "", nowMs);
+  } else {
+    const rows = windowRows(condition.timeframe, ctRowsNeeded(condition), condition.offset, input, nowMs, ctx);
+    raw = rows ? featureFromRows(condition, rows, condition.timeframe <= 12) : null;
   }
-  const full = higherBars(
-    conditionTail(condition, input, nowMs),
-    condition.timeframe,
-    nowMs,
-  );
-  const end = full.length - condition.offset;
-  const rows = full.slice(Math.max(0, end - condition.lookback - 1), end);
-  if (
-    rows.length !== condition.lookback + 1 ||
-    rows.some(
-      (b, i) => !validCTBar(b) || (i > 0 && b.startMs !== rows[i - 1].endMs),
-    )
-  )
-    return null;
-  return featureFromRows(condition, rows, true);
+  if (raw === null || condition.unit !== "atr") return raw;
+  const w = ctAtrWindow(condition),
+    atrPct = atrPctAt(w.timeframe, w.rows - 1, input, nowMs, ctx);
+  return atrPct !== null && atrPct > 0 ? raw / atrPct : null;
 }
-/** The feature formulas over lookback + 1 chained bars. */
+/** The feature formulas over the window's chained bars (lookback + 1 for the classic ones). */
 function featureFromRows(condition: CTCondition, rows: CTBar[], checkGaps: boolean): number | null {
   const current = rows.at(-1)!,
     prior = rows.slice(0, -1);
+  if (condition.feature === "atr_pct") return (meanTrueRange(rows) / current.close) * 100;
+  if (condition.feature === "atr_percentile") {
+    // The last `lookback` ATR values (atrLookback bars each, as % of that bar's close); the share of the earlier ones at or below the current.
+    const period = condition.atrLookback ?? CT_ATR_DEFAULT_LOOKBACK,
+      atrs: number[] = [];
+    for (let end = rows.length - condition.lookback; end < rows.length; end++)
+      atrs.push(meanTrueRange(rows.slice(end - period, end + 1)) / rows[end].close);
+    const now = atrs.at(-1)!,
+      before = atrs.slice(0, -1);
+    return before.filter((a) => a <= now).length / before.length;
+  }
   const high = Math.max(...prior.map((b) => b.high)),
     low = Math.min(...prior.map((b) => b.low));
   const avg = (xs: number[]) => xs.reduce((s, n) => s + n, 0) / xs.length;
@@ -271,6 +349,7 @@ function featureFromRows(condition: CTCondition, rows: CTBar[], checkGaps: boole
       return swing ? (current.close / swing.price - 1) * 100 : null;
     }
   }
+  return null;
 }
 function ctReference(condition: CTCondition, input: CTBar[], now: number, ctx?: CTFeatureContext) {
   let rows: CTBar[];
@@ -280,7 +359,7 @@ function ctReference(condition: CTCondition, input: CTBar[], now: number, ctx?: 
     rows = window;
   } else {
     const full = higherBars(
-        conditionTail(condition, input, now),
+        windowTail(condition.timeframe, condition.lookback + 1, condition.offset, input, now),
         condition.timeframe,
         now,
       ),
@@ -313,14 +392,15 @@ function ctReference(condition: CTCondition, input: CTBar[], now: number, ctx?: 
  */
 export function ctHistoryBars(spec: CTSpec) {
   // 60/240/1440-minute conditions read their own completed-bar series, not this window.
-  const need = Math.max(
-    0,
-    ...spec.stages.flatMap((s) =>
-      s.conditions
-        .filter((c) => c.timeframe <= 12)
-        .map((c) => (c.lookback + c.offset + 3) * c.timeframe),
-    ),
+  const windows = spec.stages.flatMap((s) =>
+    s.conditions.flatMap((c) => [
+      ...(c.timeframe <= 12 ? [(ctRowsNeeded(c) - 1 + c.offset + 3) * c.timeframe] : []),
+      ...(c.unit === "atr" && ctAtrWindow(c).timeframe <= 12 ? [(ctAtrWindow(c).rows + 2) * ctAtrWindow(c).timeframe] : []),
+    ]),
   );
+  const atr = ctExitUsesAtr(spec.exit) ? ctExitAtrConfig(spec.exit) : null;
+  if (atr && atr.timeframe <= 12) windows.push((atr.lookback + 3) * atr.timeframe);
+  const need = Math.max(0, ...windows);
   const gaps = spec.stages.reduce((sum, s) => sum + s.maxGapBars, 0);
   return Math.min(1800, Math.max(121, need + gaps + 2));
 }
@@ -338,16 +418,20 @@ export function detectCT(
   nowMs: number,
   cache?: CTFeatureCache,
   higher?: CTHigherSets,
+  levelSet?: CTDayLevels,
 ): CTSignal | null {
-  // ct-pattern-2 higher-timeframe series: supplied by a replay, otherwise built from the full input.
-  let sets = higher;
+  // Higher-timeframe series and day levels: supplied by a replay, otherwise built from the full input.
+  let sets = higher,
+    levels = levelSet;
   const ctx = (): CTFeatureContext => ({
     higher: (sets ??= ctNeedsHigher(spec) ? ctHigherSets(spec, input, symbol) : new Map()),
+    levels: (levels ??= ctLevelSets(spec, input)),
     market: spec.market,
     symbol,
   });
+  const needCtx = ctNeedsHigher(spec) || ctNeedsLevels(spec);
   const feature = (c: CTCondition, bars: CTBar[], at: number) => {
-    const compute = () => ctFeature(c, bars, at, c.timeframe > 12 ? ctx() : undefined);
+    const compute = () => ctFeature(c, bars, at, needCtx ? ctx() : undefined);
     if (!cache) return compute();
     let byTime = cache.get(c);
     if (!byTime) cache.set(c, (byTime = new Map()));
@@ -402,6 +486,15 @@ export function detectCT(
   if (pattern.some((b, i) => i && b.startMs !== pattern[i - 1].endMs))
     return null;
   const previous = bars.slice(Math.max(0, bars.length - 21), -1);
+  // Managed exits with ATR stops/targets/trails need the ATR at the decision; without it the rule cannot size or exit.
+  let exitAtr: number | undefined;
+  if (ctExitUsesAtr(spec.exit)) {
+    const cfg = ctExitAtrConfig(spec.exit)!,
+      rows = windowRows(cfg.timeframe, cfg.lookback + 1, 0, bars, last.endMs, needCtx ? ctx() : undefined);
+    if (!rows) return null;
+    exitAtr = meanTrueRange(rows);
+    if (!(exitAtr > 0)) return null;
+  }
   return {
     symbol,
     decidedAt: last.endMs,
@@ -414,12 +507,22 @@ export function detectCT(
     stages: matches,
     references: matches.flatMap((m, i) =>
       spec.stages[i].conditions.flatMap((c) => {
+        if (ctIsLevelFeature(c.feature)) {
+          const x = ctx();
+          return levelLines(c, x.levels!, ctIsPrevDayFeature(c.feature) ? x.higher?.get(1440) : undefined, spec.market, symbol, m.at).map((l) => ({
+            feature: l.feature,
+            price: l.price,
+            observedAt: m.at,
+          }));
+        }
+        if (c.feature === "atr_pct" || c.feature === "atr_percentile") return [];
         const price = ctReference(c, bars.slice(0, m.index + 1), m.at, c.timeframe > 12 ? ctx() : undefined);
         return price === null
           ? []
           : [{ feature: c.feature, price, observedAt: m.at }];
       }),
     ),
+    ...(exitAtr !== undefined ? { exitAtr } : {}),
     swings: ctSwings(bars.slice(-120), last.endMs),
   };
 }
@@ -430,19 +533,237 @@ export function ctExit(
   entryAt: number,
   bar: CTBar,
 ) {
+  // Classic exits only; a managed exit has state and goes through ctExitStep.
+  if (ctIsManagedExit(spec.exit)) throw new Error("ctExit은 고정 손절·목표 구조 전용입니다. 관리형 청산은 ctExitStep을 사용하세요.");
+  const exit = spec.exit;
   const stop = Math.max(
-    entry * (1 - spec.exit.stopPct / 100),
-    spec.exit.invalidation === "last_stage_low" ? signal.patternLow : 0,
+    entry * (1 - exit.stopPct / 100),
+    exit.invalidation === "last_stage_low" ? signal.patternLow : 0,
   );
-  const target = entry * (1 + spec.exit.targetPct / 100);
+  const target = entry * (1 + exit.targetPct / 100);
   // A gap through the stop fills at the adverse open. Ambiguous bars are stop-first.
   if (bar.low <= stop)
     return { price: Math.min(stop, bar.open), reason: "stop" };
   if (bar.high >= target)
     return { price: bar.open >= target ? bar.open : target, reason: "target" };
-  if (bar.endMs - entryAt >= spec.exit.maxHoldBars * spec.minutes * 60_000)
+  if (bar.endMs - entryAt >= exit.maxHoldBars * spec.minutes * 60_000)
     return { price: bar.close, reason: "time" };
   return null;
+}
+/* ------------------------------------------------------------ exit management */
+
+/**
+ * The exit as one normalised plan, whichever shape the spec uses. Classic exits (stopPct/targetPct)
+ * become a pct stop + pct target and keep their historical reason names; managed exits (ct-pattern-3)
+ * carry breakeven / trail / time stop. Everything that exits a position goes through this plan.
+ */
+export type CTExitPlan = {
+  managed: boolean;
+  stop: CTManagedExit["stop"];
+  /** Classic `invalidation: last_stage_low`: the stop is never below the pattern low. */
+  invalidationLow: boolean;
+  target: CTManagedExit["target"] | null;
+  breakeven: CTManagedExit["breakeven"] | null;
+  trail: CTManagedExit["trail"] | null;
+  timeStop: CTManagedExit["timeStop"] | null;
+  maxHoldBars: number;
+};
+export function ctExitPlan(spec: Pick<CTSpec, "exit">): CTExitPlan {
+  const e = spec.exit;
+  if (!ctIsManagedExit(e))
+    return {
+      managed: false,
+      stop: { type: "pct", value: e.stopPct },
+      invalidationLow: e.invalidation === "last_stage_low",
+      target: { type: "pct", value: e.targetPct },
+      breakeven: null,
+      trail: null,
+      timeStop: null,
+      maxHoldBars: e.maxHoldBars,
+    };
+  return {
+    managed: true,
+    stop: e.stop,
+    invalidationLow: false,
+    target: e.target ?? null,
+    breakeven: e.breakeven ?? null,
+    trail: e.trail ?? null,
+    timeStop: e.timeStop ?? null,
+    maxHoldBars: e.maxHoldBars,
+  };
+}
+/** What an open position remembers between bars. Plain numbers: it is stored with live trades and rebuilt from bars. */
+export type CTPosition = {
+  entry: number;
+  entryAt: number;
+  initialStop: number;
+  /** entry − initial stop, price units, always > 0. */
+  initialRisk: number;
+  stopLevel: number;
+  stopSource: "initial" | "breakeven" | "trail";
+  targetLevel: number | null;
+  /** Highest high of the bars already processed (the current bar is added after it is judged). */
+  highestHigh: number;
+  breakevenArmed: boolean;
+  trailArmed: boolean;
+  /** Bars processed so far (the entry bar is the first). */
+  bars: number;
+  /** Lows of the last five bars and the latest confirmed swing low since entry (swing_low trails only). */
+  lows: number[];
+  swingLow: number | null;
+  moves: CTTradeManagement["moves"];
+};
+/** The stop distance as percent of the entry: what sizing risks per trade. */
+export const ctRiskPct = (position: Pick<CTPosition, "entry" | "initialRisk">) => (position.initialRisk / position.entry) * 100;
+const MAX_STOP_PCT = 15;
+/**
+ * The position at the fill, or null when the rule has no valid stop for this signal (a pattern/swing
+ * low at or above the entry, no confirmed swing, no ATR, a stop farther than 15%). `stopScale` widens
+ * or narrows the initial stop distance — the gate's ±10% stop stress.
+ */
+export function ctOpenPosition(
+  spec: Pick<CTSpec, "exit">,
+  signal: CTSignal,
+  entry: number,
+  entryAt: number,
+  options: { stopScale?: number } = {},
+): CTPosition | null {
+  const plan = ctExitPlan(spec);
+  let stop: number | null;
+  switch (plan.stop.type) {
+    case "pct":
+      stop = entry * (1 - plan.stop.value / 100);
+      break;
+    case "atr":
+      stop = signal.exitAtr ? entry - plan.stop.value * signal.exitAtr : null;
+      break;
+    case "pattern_low":
+      stop = signal.patternLow * (1 - plan.stop.value / 100);
+      break;
+    case "swing_low": {
+      const swing = signal.swings.filter((s) => s.kind === "low").at(-1);
+      stop = swing ? swing.price * (1 - plan.stop.value / 100) : null;
+      break;
+    }
+  }
+  if (stop === null || !Number.isFinite(stop)) return null;
+  if (plan.invalidationLow) stop = Math.max(stop, signal.patternLow);
+  if (options.stopScale !== undefined && options.stopScale !== 1) stop = entry - (entry - stop) * options.stopScale;
+  const initialRisk = entry - stop;
+  if (!(initialRisk > 0) || (plan.managed && (initialRisk / entry) * 100 > MAX_STOP_PCT + 1e-9)) return null;
+  let targetLevel: number | null = null;
+  if (plan.target) {
+    if (plan.target.type === "pct") targetLevel = entry * (1 + plan.target.value / 100);
+    else if (plan.target.type === "r") targetLevel = entry + plan.target.value * initialRisk;
+    else if (signal.exitAtr) targetLevel = entry + plan.target.value * signal.exitAtr;
+    else return null;
+  }
+  return {
+    entry,
+    entryAt,
+    initialStop: stop,
+    initialRisk,
+    stopLevel: stop,
+    stopSource: "initial",
+    targetLevel,
+    highestHigh: entry,
+    breakevenArmed: false,
+    trailArmed: false,
+    bars: 0,
+    lows: [],
+    swingLow: null,
+    moves: [],
+  };
+}
+export type CTExitHit = { price: number; reason: string };
+/**
+ * Judge one bar for an open position and advance its state: THE exit function — replayCT, the
+ * paper/live runner and the design tools all call it, so a backtest and a live trade cannot
+ * disagree about the stop.
+ *
+ * Inside the bar the order is conservative: the stop that stood before the bar is checked first
+ * (a gap through it fills at the open), then the target, then the time stop, the holding limit and
+ * the day-end exit the caller passes as `forced`. Only when the position survives the bar are
+ * highestHigh, breakeven and the trail updated from that bar's high — so a raised stop applies
+ * from the NEXT bar and one bar can never both raise the stop and be stopped by it.
+ * Pure: the input position is not modified.
+ */
+export function ctExitStep(
+  spec: Pick<CTSpec, "exit" | "minutes">,
+  signal: CTSignal,
+  position: CTPosition,
+  bar: CTBar,
+  forced: CTExitHit | null = null,
+): { position: CTPosition; exit: CTExitHit | null } {
+  const plan = ctExitPlan(spec),
+    p = position;
+  if (bar.low <= p.stopLevel)
+    return { position: p, exit: { price: Math.min(p.stopLevel, bar.open), reason: p.stopSource === "initial" ? "stop" : p.stopSource } };
+  if (p.targetLevel !== null && bar.high >= p.targetLevel)
+    return { position: p, exit: { price: bar.open >= p.targetLevel ? bar.open : p.targetLevel, reason: "target" } };
+  const barNo = p.bars + 1;
+  if (plan.timeStop && barNo === plan.timeStop.bars && (bar.close - p.entry) / p.initialRisk < plan.timeStop.minR)
+    return { position: p, exit: { price: bar.close, reason: "time_stop" } };
+  if (bar.endMs - p.entryAt >= plan.maxHoldBars * spec.minutes * 60_000)
+    return { position: p, exit: { price: bar.close, reason: plan.managed ? "max_hold" : "time" } };
+  if (forced) return { position: p, exit: forced };
+  const highestHigh = Math.max(p.highestHigh, bar.high),
+    rMax = (highestHigh - p.entry) / p.initialRisk;
+  const next: CTPosition = { ...p, highestHigh, bars: barNo };
+  const lift = (level: number, source: "breakeven" | "trail") => {
+    if (!(level > next.stopLevel)) return;
+    next.moves = [...next.moves, { at: bar.endMs, from: next.stopLevel, to: level, source }];
+    next.stopLevel = level;
+    next.stopSource = source;
+  };
+  if (plan.breakeven && !next.breakevenArmed && rMax >= plan.breakeven.triggerR) {
+    next.breakevenArmed = true;
+    lift(p.entry * (1 + (plan.breakeven.offsetPct ?? 0) / 100), "breakeven");
+  }
+  if (plan.trail) {
+    if (plan.trail.type === "swing_low") {
+      next.lows = [...p.lows, bar.low].slice(-5);
+      // A swing low is confirmed two bars later: the middle of five strictly lowest.
+      if (next.lows.length === 5 && next.lows.every((l, i) => i === 2 || l > next.lows[2])) next.swingLow = next.lows[2];
+    }
+    if (!next.trailArmed && rMax >= plan.trail.activateR) next.trailArmed = true;
+    if (next.trailArmed) {
+      const t = plan.trail;
+      const level =
+        t.type === "pct"
+          ? highestHigh * (1 - t.value / 100)
+          : t.type === "atr"
+            ? signal.exitAtr
+              ? highestHigh - t.value * signal.exitAtr
+              : null
+            : next.swingLow !== null
+              ? next.swingLow * (1 - t.value / 100)
+              : null;
+      if (level !== null) lift(level, "trail");
+    }
+  }
+  return { position: next, exit: null };
+}
+/**
+ * A position rebuilt from nothing but the rule, the signal, the fill and the bars since entry —
+ * what a restarted runner can do instead of trusting a stored state. Equal to stepping live.
+ */
+export function ctRebuildPosition(
+  spec: Pick<CTSpec, "exit" | "minutes">,
+  signal: CTSignal,
+  entry: number,
+  entryAt: number,
+  bars: CTBar[],
+  options: { stopScale?: number } = {},
+) {
+  let position = ctOpenPosition(spec, signal, entry, entryAt, options);
+  if (!position) return { position: null, exit: null as CTExitHit | null, exitBar: null as CTBar | null };
+  for (const bar of bars) {
+    const step = ctExitStep(spec, signal, position, bar);
+    position = step.position;
+    if (step.exit) return { position, exit: step.exit, exitBar: bar };
+  }
+  return { position, exit: null as CTExitHit | null, exitBar: null as CTBar | null };
 }
 export function ctQuantity(
   spec: CTSpec,
@@ -451,9 +772,13 @@ export function ctQuantity(
   equity: number,
   price: number,
   volume: number,
+  /** Stop distance, percent of the entry, for managed exits (classic exits use spec.exit.stopPct). */
+  stopPct?: number,
 ) {
+  const risk = stopPct ?? (ctIsManagedExit(spec.exit) ? NaN : spec.exit.stopPct);
   if (
     ![cash, equity, price, volume].every(Number.isFinite) ||
+    !(risk > 0) ||
     cash <= 0 ||
     equity <= 0 ||
     price <= 0 ||
@@ -471,7 +796,7 @@ export function ctQuantity(
     new Decimal(equity).mul(spec.sizing.allocationPct).div(100).div(price),
     new Decimal(equity)
       .mul(spec.sizing.riskPct)
-      .div(spec.exit.stopPct)
+      .div(risk)
       .div(price),
     new Decimal(volume).mul(spec.sizing.participationPct).div(100),
   ).toDecimalPlaces(contract.costs.quantityDecimals, Decimal.ROUND_DOWN);
@@ -537,13 +862,32 @@ export function ctForcedExit(spec: Pick<CTSpec, "engine">, market: CTMarket, bar
     ? { price: bar.close, reason: market === "stock" ? "session" : "day_end" }
     : null;
 }
+/** Start of the trading day containing the bar that closes at `ms` (UTC midnight, or the regular-session open); null outside a session. */
+export function ctDayStartMs(market: CTMarket, ms: number): number | null {
+  if (market === "crypto") return Math.floor((ms - 1) / DAY_MS) * DAY_MS;
+  const date = ctDate(ms - 1, "stock"),
+    session = ctStockSession(date);
+  return session ? easternWallTimeToEpoch(date, session.open) : null;
+}
+/**
+ * Whether the decision at `ms` (the signal bar's close) lies inside one of the entry windows:
+ * minutes elapsed since the day start, fromMinute and toMinute both included. {0, 30} = the first
+ * 30 minutes: decisions closing at minute 1 … 30.
+ */
+export function ctInEntryWindow(windows: Array<{ fromMinute: number; toMinute: number }>, market: CTMarket, ms: number) {
+  const start = ctDayStartMs(market, ms);
+  if (start === null) return false;
+  const minute = (ms - start) / 60_000;
+  return windows.some((w) => minute >= w.fromMinute && minute <= w.toMinute);
+}
 /**
  * New entries are refused on the day's last bar and, with noEntryBeforeDayEndMinutes, for that
  * many minutes before the day ends. `ms` is the decision time (the signal bar's close). ct-pattern-1
  * crypto has no day end, so nothing changes there.
  */
-export function ctEntryBlocked(spec: Pick<CTSpec, "engine" | "entry">, market: CTMarket, ms: number) {
+export function ctEntryBlocked(spec: Pick<CTSpec, "engine" | "entry">, market: CTMarket, ms: number, ignoreWindows = false) {
   if (ctDayClosing(spec, market, ms)) return true;
+  if (!ignoreWindows && spec.entry.entryWindows?.length && !ctInEntryWindow(spec.entry.entryWindows, market, ms)) return true;
   const minutes = spec.entry.noEntryBeforeDayEndMinutes ?? 0;
   if (!minutes) return false;
   const end = ctDayEndMs(market, ms);
@@ -573,6 +917,10 @@ export function ctNetTradePct(
 export function ctRoundTripCostPct(contract: Pick<CTContract, "costs">, multiplier = 1) {
   return -ctNetTradePct(contract, 100, 100, multiplier);
 }
+/** The stop/target story of a managed trade, for records and charts. */
+export function ctManagement(position: CTPosition): CTTradeManagement {
+  return { initialStop: position.initialStop, target: position.targetLevel, initialRisk: position.initialRisk, moves: position.moves };
+}
 export function replayCT(
   specInput: CTSpec,
   data: Record<string, CTBar[]>,
@@ -584,9 +932,12 @@ export function replayCT(
     costMultiplier?: number;
     delayBars?: number;
     deadline?: number;
+    /** Scales the initial stop distance (the gate's ±10% stop stress for managed exits). */
+    stopScale?: number;
   } = {},
 ): CTResult {
   const spec = ctSpecSchema.parse(specInput),
+    plan = ctExitPlan(spec),
     multiplier = options.costMultiplier ?? 1;
   const result: CTResult = {
     engine: spec.engine,
@@ -635,6 +986,7 @@ export function replayCT(
     fee: number;
     entryImpact: number;
     checkedThrough: number;
+    position: CTPosition;
   } | null = null;
   let pending: { symbol: string; signal: CTSignal; index: number } | null =
     null;
@@ -664,6 +1016,12 @@ export function replayCT(
       ctNeedsHigher(spec)
         ? ctHigherSets(spec, (data[s] ?? []).filter((b) => b.startMs >= fromMs && b.endMs <= toMs), s)
         : undefined,
+    ]),
+  );
+  const levelSets = Object.fromEntries(
+    spec.symbols.map((s) => [
+      s,
+      ctLevelSets(spec, (data[s] ?? []).filter((b) => b.startMs >= fromMs && b.endMs <= toMs)),
     ]),
   );
   const firstInRange = Object.fromEntries(
@@ -716,18 +1074,22 @@ export function replayCT(
               contract.currency,
             ),
             feePct = (contract.costs.feePct * multiplier) / 100;
-          const q = ctQuantity(
-            spec,
-            contract,
-            cash,
-            cash,
-            price,
-            Math.min(rows[pending.index].volume, bar.volume),
-          );
+          const position = ctOpenPosition(spec, signal, price, bar.startMs, { stopScale: options.stopScale });
+          const q = position
+            ? ctQuantity(
+                spec,
+                contract,
+                cash,
+                cash,
+                price,
+                Math.min(rows[pending.index].volume, bar.volume),
+                plan.managed ? ctRiskPct(position) : undefined,
+              )
+            : 0;
           if (
             q &&
-            (spec.exit.invalidation !== "last_stage_low" ||
-              price > signal.patternLow) &&
+            position &&
+            (!plan.invalidationLow || price > signal.patternLow) &&
             Math.abs(price / signal.reference - 1) * 100 <=
               spec.entry.maxDeviationPct &&
             contract.costs.spreadPct * multiplier <= spec.entry.maxSpreadPct
@@ -741,11 +1103,12 @@ export function replayCT(
               fee: q * price * feePct,
               entryImpact: q * (price - bar.open),
               checkedThrough: bar.startMs,
+              position,
             };
             cash -= q * price + held.fee;
           } else {
             result.missed++;
-            addBlock("liquidity_or_deviation");
+            addBlock(!position && plan.managed ? "invalid_stop" : "liquidity_or_deviation");
           }
           pending = null;
         }
@@ -773,9 +1136,9 @@ export function replayCT(
           result.maxDrawdownPct,
           (1 - lowEquity / peak) * 100,
         );
-        const exit =
-          ctExit(spec, held.signal, held.entry, held.at, bar) ??
-          ctForcedExit(spec, contract.market, bar);
+        const step = ctExitStep(spec, held.signal, held.position, bar, ctForcedExit(spec, contract.market, bar));
+        held.position = step.position;
+        const exit = step.exit;
         if (exit) {
           const price = ctFillPrice(
             exit.price *
@@ -811,6 +1174,7 @@ export function replayCT(
             reason: exit.reason,
             specHash: hash,
             compliant: true,
+            ...(plan.managed ? { management: ctManagement(held.position) } : {}),
           });
           lastExit = time;
           held = null;
@@ -847,7 +1211,7 @@ export function replayCT(
           Math.max(0, i - history, firstInRange[symbol]),
           i + 1,
         );
-        const signal = detectCT(spec, symbol, rows, time, featureCaches[symbol], higherSets[symbol]);
+        const signal = detectCT(spec, symbol, rows, time, featureCaches[symbol], higherSets[symbol], levelSets[symbol]);
         if (signal) {
           result.signals++;
           pending = { symbol, signal, index: i };
@@ -896,6 +1260,7 @@ export function replayCT(
       reason: "boundary",
       specHash: hash,
       compliant: true,
+      ...(plan.managed ? { management: ctManagement(held.position) } : {}),
     });
     marked = cash;
   }

@@ -12,12 +12,15 @@ import {
   ctDayEndMs,
   ctEntryBlocked,
   ctExit,
+  ctExitStep,
   ctForcedExit,
   ctHigherSets,
   ctHistoryBars,
+  ctLevelSets,
   ctNeedsHigher,
   ctImpactPct,
   ctNetTradePct,
+  ctOpenPosition,
   ctRoundTripCostPct,
   detectCT,
   validCTBar,
@@ -32,6 +35,7 @@ import {
   ctConditionSchema,
   validateCTSpec,
   type CTContract,
+  type CTManagedExit,
   type CTSpec,
 } from "./ct-spec.ts";
 
@@ -240,6 +244,21 @@ export type CTCostHurdle = ReturnType<typeof ctCostHurdle>;
 
 // Up to a full UTC day for crypto; stock horizons above 390 are refused when the probe spec is validated.
 const horizon = z.number().int().min(1).max(1440);
+/**
+ * Exit-structure comparison grid. For every stop distance and R-multiple target it runs the fixed
+ * exit; with breakevenTriggerR / timeStop set it also runs that variant of every fixed row; with
+ * trail set it runs a no-target trailing exit per stop. At most 3 stops × (2 targets × 3 modes) + 3 trails = 21 rows.
+ */
+export const ctExitCompareSchema = z
+  .object({
+    stopPcts: z.array(z.number().min(0.2).max(15)).min(1).max(3),
+    targetRs: z.array(z.number().min(0.5).max(10)).min(1).max(2),
+    breakevenTriggerR: z.number().min(0.25).max(10).nullable(),
+    trail: z.object({ pct: z.number().min(0.1).max(10), activateR: z.number().min(0).max(10) }).strict().nullable(),
+    timeStop: z.object({ bars: z.number().int().min(2).max(1440), minR: z.number().min(-1).max(5) }).strict().nullable(),
+  })
+  .strict();
+export type CTExitCompare = z.infer<typeof ctExitCompareSchema>;
 /** What the designer sends. Stages use the rule DSL's own condition schema. */
 export const ctQuerySchema = z
   .object({
@@ -263,12 +282,28 @@ export const ctQuerySchema = z
       .strict()
       .nullable(),
     cooldownBars: z.number().int().min(1).max(390),
+    // ct-pattern-3: only events whose signal bar closes inside a window (minutes since the day start, both ends included).
+    entryWindows: z
+      .array(
+        z
+          .object({ fromMinute: z.number().int().min(0).max(1439), toMinute: z.number().int().min(0).max(1439) })
+          .strict()
+          .refine((w) => w.fromMinute <= w.toMinute, "fromMinute ≤ toMinute"),
+      )
+      .max(3)
+      .optional(),
+    // ct-pattern-3: the same events under different exit structures, side by side (training only, size-capped).
+    exitCompare: ctExitCompareSchema.nullable().optional(),
   })
   .strict();
 export type CTQuery = z.infer<typeof ctQuerySchema>;
 
 /** The probe spec a query runs through detectCT and ctExit. Never registered or traded. */
-export function ctQuerySpec(query: CTQuery, contract: CTContract, exit = { stopPct: 15, targetPct: 40 }): CTSpec {
+export function ctQuerySpec(
+  query: CTQuery,
+  contract: CTContract,
+  exit: { stopPct: number; targetPct: number } | CTManagedExit = { stopPct: 15, targetPct: 40 },
+): CTSpec {
   return validateCTSpec(
     {
       version: 1,
@@ -278,8 +313,14 @@ export function ctQuerySpec(query: CTQuery, contract: CTContract, exit = { stopP
       symbols: contract.symbols,
       minutes: contract.minutes,
       stages: query.stages.map((s, i) => ({ label: `stage ${i + 1}`, ...s })),
-      entry: { order: "marketable_limit", validBars: 1, maxSpreadPct: 1, maxDeviationPct: 2 },
-      exit: { ...exit, maxHoldBars: Math.max(...query.horizons), invalidation: "stop" },
+      entry: {
+        order: "marketable_limit",
+        validBars: 1,
+        maxSpreadPct: 1,
+        maxDeviationPct: 2,
+        ...(query.entryWindows?.length ? { entryWindows: query.entryWindows } : {}),
+      },
+      exit: "stop" in exit ? exit : { ...exit, maxHoldBars: Math.max(...query.horizons), invalidation: "stop" },
       sizing: { riskPct: 1, allocationPct: 25, maxPositions: 1, cooldownBars: query.cooldownBars, participationPct: 1 },
       sourceIds: ["query"],
       assumptions: ["Conditional return probe; not a strategy."],
@@ -313,16 +354,16 @@ export function ctQueryEvents(
     if (first < 0) continue;
     const cache: CTFeatureCache = new Map();
     // Completed 60/240/1440-minute bars of the training range only (same as the replay builds).
-    const higher = ctNeedsHigher(spec)
-      ? ctHigherSets(spec, rows.filter((b) => b.startMs >= contract.fromMs && b.endMs <= contract.trainingToMs), symbol)
-      : undefined;
+    const trainingRows = rows.filter((b) => b.startMs >= contract.fromMs && b.endMs <= contract.trainingToMs);
+    const higher = ctNeedsHigher(spec) ? ctHigherSets(spec, trainingRows, symbol) : undefined;
+    const levels = ctLevelSets(spec, trainingRows);
     let last = -Infinity;
     for (let i = first; i < rows.length && rows[i].endMs <= contract.trainingToMs; i++) {
       if (options.deadline && (i & 1023) === 0 && Date.now() > options.deadline) throw new Error("CT 계산 시간 상한");
       if (i - last < query.cooldownBars) continue;
       // ct-pattern-2: the replay never enters on the day's last bar or inside noEntryBeforeDayEndMinutes.
       if (dayBounded && ctEntryBlocked(spec, contract.market, rows[i].endMs)) continue;
-      const signal = detectCT(spec, symbol, rows.slice(Math.max(0, i - history, first), i + 1), rows[i].endMs, cache, higher);
+      const signal = detectCT(spec, symbol, rows.slice(Math.max(0, i - history, first), i + 1), rows[i].endMs, cache, higher, levels);
       if (!signal) continue;
       last = i;
       const e = i + 1;
@@ -454,6 +495,8 @@ export function ctQueryReturns(
       )
     : [];
 
+  const exitCompare = query.exitCompare ? ctExitCompareRows(query, query.exitCompare, usable, data, contract, dayBounded) : null;
+
   const months = new Map<string, number[]>();
   for (const x of usable) {
     const month = ctDate(x.ev.at, contract.market, contract.timezone).slice(0, 7);
@@ -478,6 +521,7 @@ export function ctQueryReturns(
     roundTripCostPct: round(cost),
     horizons,
     grid,
+    ...(exitCompare ? { exitCompare } : {}),
     monthly: [...months].map(([month, xs]) => ({
       month,
       events: xs.length,
@@ -487,6 +531,77 @@ export function ctQueryReturns(
     anchors,
     note: "진입 = 신호 봉 다음 봉 시가 · 수익은 계약 비용(수수료·스프레드·슬리피지) 차감 · 학습 구간만",
   };
+}
+
+/**
+ * Same events, different exit structures. Each row replays every event through ctOpenPosition +
+ * ctExitStep — the functions the replay and the live runner use — and reports the after-cost
+ * result. "dailyNetPct" is the sum of event nets divided by the training days (overlapping holds
+ * are not netted), so it is an upper-bound feel for the daily mean, not the replay's number.
+ */
+function ctExitCompareRows(
+  query: CTQuery,
+  compare: CTExitCompare,
+  usable: Array<{ ev: CTEvent }>,
+  data: Record<string, CTBar[]>,
+  contract: CTContract,
+  dayBounded: boolean,
+) {
+  const maxH = Math.max(...query.horizons);
+  if (compare.timeStop && compare.timeStop.bars >= maxH) throw new Error("exitCompare.timeStop.bars는 horizons의 최댓값보다 작아야 합니다");
+  const days = Math.max(1, Math.round((contract.trainingToMs - contract.fromMs) / 86_400_000));
+  type Config = { mode: string; label: string; exit: CTManagedExit };
+  const configs: Config[] = [];
+  for (const stopPct of compare.stopPcts) {
+    const base = { stop: { type: "pct" as const, value: stopPct }, maxHoldBars: maxH };
+    for (const r of compare.targetRs) {
+      const target = { type: "r" as const, value: r };
+      configs.push({ mode: "fixed", label: `손절 ${stopPct}% · 목표 ${r}R`, exit: { ...base, target } });
+      if (compare.breakevenTriggerR !== null)
+        configs.push({ mode: "breakeven", label: `손절 ${stopPct}% · 목표 ${r}R · +${compare.breakevenTriggerR}R에서 본전`, exit: { ...base, target, breakeven: { triggerR: compare.breakevenTriggerR } } });
+      if (compare.timeStop)
+        configs.push({ mode: "time_stop", label: `손절 ${stopPct}% · 목표 ${r}R · ${compare.timeStop.bars}봉 ${compare.timeStop.minR}R 미만 정리`, exit: { ...base, target, timeStop: compare.timeStop } });
+    }
+    if (compare.trail)
+      configs.push({ mode: "trail", label: `손절 ${stopPct}% · 목표 없음 · +${compare.trail.activateR}R부터 ${compare.trail.pct}% 트레일`, exit: { ...base, trail: { type: "pct", value: compare.trail.pct, activateR: compare.trail.activateR } } });
+  }
+  return configs.map((cfg) => {
+    const spec = ctQuerySpec(query, contract, cfg.exit);
+    const out: Array<{ net: number; net2: number; r: number; reason: string }> = [];
+    for (const { ev } of usable) {
+      const rows = data[ev.symbol];
+      const fill = rows[ev.e].open * (1 + ctImpactPct(contract) / 100);
+      let position = ctOpenPosition(spec, ev.signal, fill, rows[ev.e].startMs);
+      if (!position) continue;
+      for (let k = ev.e; k < rows.length; k++) {
+        const step = ctExitStep(spec, ev.signal, position, rows[k], dayBounded ? ctForcedExit(spec, contract.market, rows[k]) : null);
+        position = step.position;
+        if (step.exit) {
+          out.push({
+            reason: step.exit.reason,
+            net: ctNetTradePct(contract, rows[ev.e].open, step.exit.price),
+            net2: ctNetTradePct(contract, rows[ev.e].open, step.exit.price, 2),
+            r: (step.exit.price - fill) / position.initialRisk,
+          });
+          break;
+        }
+      }
+    }
+    const n = out.length,
+      reasons: Record<string, number> = {};
+    for (const o of out) reasons[o.reason] = (reasons[o.reason] ?? 0) + 1;
+    return {
+      mode: cfg.mode,
+      label: cfg.label,
+      events: n,
+      winRatePct: share(out.filter((o) => o.net > 0).length, n),
+      avgR: round(mean(out.map((o) => o.r)), 3),
+      netMeanPct: round(mean(out.map((o) => o.net))),
+      netMean2xCostPct: round(mean(out.map((o) => o.net2))),
+      dailyNetPct: round(out.reduce((sum, o) => sum + o.net, 0) / days, 4),
+      exits: Object.fromEntries(Object.entries(reasons).map(([k, v]) => [k, share(v, n)])),
+    };
+  });
 }
 export type CTQueryResult = ReturnType<typeof ctQueryReturns>;
 

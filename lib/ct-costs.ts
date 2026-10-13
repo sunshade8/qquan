@@ -94,26 +94,28 @@ export const CT_COST_PROFILES: Record<string, CTCostProfile> = {
   },
   "upbit-krw": {
     id: "upbit-krw",
-    version: 1,
+    version: 2,
     label: "Upbit KRW",
     market: "crypto",
     venue: "upbit",
     currency: "KRW",
-    // Unconfirmed: the official fee page needs a browser and its help article answered 403.
-    // 0.139% is the rate Upbit's own help text uses in its worked example; press reports 0.05%.
-    // Taking the larger keeps the profile conservative. Not used by any new contract: CT research
-    // data is Binance, and Binance-researched strategies cannot start on Upbit.
-    feePct: 0.139,
+    // v2 (2026-10-14): 0.05%. v1 carried 0.139% because no official page could be read; that is the
+    // 예약주문(reserved order) rate, which the Open API does not use. The Open API's order-chance
+    // documentation shows bid_fee/ask_fee/maker_bid_fee/maker_ask_fee = "0.0005", and the live
+    // entry guard (ct-trading.ts entryProblem) already blocks any account fee above 0.05%.
+    // Not used by any new contract: CT research data is Binance, and Binance-researched
+    // strategies cannot start on Upbit.
+    feePct: 0.05,
     sellTaxPct: 0,
     minimumOrder: 5000,
     quantityDecimals: 8,
     provisional: true,
-    feeVerified: false,
+    feeVerified: true,
     source: {
       fee: {
-        url: "https://support.upbit.com/hc/ko/articles/900006143046",
+        url: "https://docs.upbit.com/kr/reference/available-order-information",
         checkedAt: "2026-10-14",
-        note: "공식 안내 문서 본문 미확인(403). 도움말 예시 0.139%, 언론 보도 0.05% — 큰 값을 보수적으로 사용",
+        note: "Open API 주문 가능 정보 문서(수정 2026-10-07)의 bid_fee·ask_fee·maker_* 예시 0.0005 = 0.05%, 적용 수수료율은 주문 요청 시점 기준. 원화마켓 0.05%·예약주문 0.139%는 언론·정보 사이트와 일치(API 일반 주문은 0.05%). 계정별 실제 값은 실행 때 주문 가능 정보로 재확인",
       },
       measurement: { script: CT_MEASUREMENT_SCRIPT, note: "공개 orderbook 스냅샷 · KRW/USD는 KRW-USDT 시세로 환산" },
     },

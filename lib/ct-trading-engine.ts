@@ -13,11 +13,15 @@ import {
 } from "./trading-engine.ts";
 import {
   detectCT,
-  ctExit,
+  ctExitStep,
+  ctForcedExit,
+  ctOpenPosition,
   ctQuantity,
   ctDate,
   ctDayClosing,
   ctEntryBlocked,
+  ctExitPlan,
+  ctRiskPct,
   type CTBar,
 } from "./ct-engine.ts";
 import { CT_ENGINE_V1, ctHash, executableCT } from "./ct-spec.ts";
@@ -324,48 +328,52 @@ export async function tickCTDashboard(
     const quote = await deps.broker.quote(trade.symbol);
     trade.markPrice = quote.price;
     const bars = await deps.bars(trade.symbol);
+    // The entry bar opens when the signal bar closes — the backtest's entryAt. The bar loop below judges that
+    // bar and every later one, exactly as replayCT does, whatever second the fill was noticed in.
+    const entryAt = trade.ctSignal.decidedAt;
+    // The position (stop/target levels and how they moved) is the one ctExitStep keeps for the backtest too.
+    // A stored one continues; a missing one (older trade) is opened from the actual fill.
+    const opened = trade.ctPosition ?? ctOpenPosition(rule.spec, trade.ctSignal, trade.entryPrice!, entryAt);
     let exit = trade.pendingExit;
-    for (const bar of bars.filter(
-      (b) =>
-        b.startMs >= Date.parse(trade.entryAt!) &&
-        b.endMs > (trade.checkedThroughMs ?? 0),
-    )) {
-      const hit = ctExit(
-        rule.spec,
-        trade.ctSignal,
-        trade.entryPrice!,
-        Date.parse(trade.entryAt!),
-        bar,
-      );
-      trade.checkedThroughMs = bar.endMs;
-      if (hit) {
-        exit =
-          hit.reason === "stop"
-            ? "stop"
-            : hit.reason === "target"
-              ? "target"
-              : "slot_end";
-        break;
+    let detail = trade.ctExitReason;
+    const toExit = (reason: string) => (reason === "stop" || reason === "breakeven" || reason === "trail" ? "stop" : reason === "target" ? "target" : "slot_end");
+    if (!opened) {
+      // The rule has no valid stop for the actual fill: do not hold a position that cannot be stopped.
+      exit = "stop";
+      detail = "invalid_stop";
+    } else {
+      trade.ctPosition = opened;
+      for (const bar of bars.filter(
+        (b) => b.startMs >= entryAt && b.endMs > (trade.checkedThroughMs ?? 0),
+      )) {
+        const step = ctExitStep(rule.spec, trade.ctSignal, trade.ctPosition!, bar);
+        trade.ctPosition = step.position;
+        trade.checkedThroughMs = bar.endMs;
+        if (step.exit) {
+          exit = toExit(step.exit.reason);
+          detail = step.exit.reason;
+          break;
+        }
+      }
+      // Live price against the level that stood after the last closed bar.
+      const position = trade.ctPosition!;
+      if (quote.price <= position.stopLevel) {
+        exit = "stop";
+        detail = position.stopSource === "initial" ? "stop" : position.stopSource;
+      } else if (position.targetLevel !== null && quote.price >= position.targetLevel) {
+        exit = "target";
+        detail = "target";
       }
     }
-    const stop = Math.max(
-      trade.entryPrice! * (1 - rule.spec.exit.stopPct / 100),
-      rule.spec.exit.invalidation === "last_stage_low"
-        ? trade.ctSignal.patternLow
-        : 0,
-    );
-    if (quote.price <= stop) exit = "stop";
-    else if (
-      quote.price >=
-      trade.entryPrice! * (1 + rule.spec.exit.targetPct / 100)
-    )
-      exit = "target";
     if (
       now >= Date.parse(trade.slotEndsAt) ||
       // The same day-end rule the backtest uses: stock session close, ct-pattern-2 crypto UTC 00:00.
       ctDayClosing(rule.spec, rule.contract.market, now)
-    )
+    ) {
       exit = "slot_end";
+      detail = ctForcedExit(rule.spec, rule.contract.market, { endMs: now } as CTBar)?.reason ?? (ctExitPlan(rule.spec).managed ? "max_hold" : "time");
+    }
+    if (exit && detail) trade.ctExitReason = detail;
     if (exit) {
       trade.pendingExit = exit;
       const buys = state.orders.filter(
@@ -441,11 +449,13 @@ export async function tickCTDashboard(
         continue;
       if (
         (rule.spec.engine !== CT_ENGINE_V1 || rule.spec.entry.noEntryBeforeDayEndMinutes) &&
-        ctEntryBlocked(rule.spec, rule.contract.market, now)
+        ctEntryBlocked(rule.spec, rule.contract.market, now, true)
       )
         continue;
       const signal = detectCT(rule.spec, symbol, bars, now);
       if (!signal || now >= signal.validUntil) continue;
+      // Entry windows are judged at the signal bar's close — the same instant the backtest uses.
+      if (rule.spec.entry.entryWindows?.length && ctEntryBlocked(rule.spec, rule.contract.market, signal.decidedAt)) continue;
       const quote = await deps.broker.quote(symbol),
         quoteTime = Date.parse(quote.timestamp ?? ""),
         bookTime = Date.parse(quote.bookTimestamp ?? "");
@@ -468,11 +478,11 @@ export async function tickCTDashboard(
         (await deps.broker.buyingPowerUsd?.()) ??
         (state.mode === "paper" ? state.cashUsd : NaN);
       if (!Number.isFinite(buyingPower) || buyingPower <= 0) continue;
-      if (
-        rule.spec.exit.invalidation === "last_stage_low" &&
-        quote.ask <= signal.patternLow
-      )
-        continue;
+      const plan = ctExitPlan(rule.spec);
+      if (plan.invalidationLow && quote.ask <= signal.patternLow) continue;
+      // A managed exit sizes from the stop distance at the price we would pay; no valid stop, no entry.
+      const probe = plan.managed ? ctOpenPosition(rule.spec, signal, quote.ask, now) : null;
+      if (plan.managed && !probe) continue;
       const quantity = ctQuantity(
         rule.spec,
         rule.contract,
@@ -480,6 +490,7 @@ export async function tickCTDashboard(
         equity,
         quote.ask,
         last.volume,
+        probe ? ctRiskPct(probe) : undefined,
       );
       if (!quantity) continue;
       if (
@@ -507,8 +518,8 @@ export async function tickCTDashboard(
         signalTime: new Date(signal.decidedAt).toISOString(),
         decidedAt: new Date(signal.decidedAt).toISOString(),
         referencePrice: signal.reference,
-        stopPct: rule.spec.exit.stopPct,
-        targetPct: rule.spec.exit.targetPct,
+        stopPct: probe ? ctRiskPct(probe) : "stopPct" in rule.spec.exit ? rule.spec.exit.stopPct : 0,
+        targetPct: plan.target ? (plan.target.type === "pct" ? plan.target.value : null) : null,
         slotEndsAt: new Date(
           signal.decidedAt +
             rule.spec.exit.maxHoldBars * rule.spec.minutes * 60000,

@@ -27,7 +27,7 @@ Binance USDT 연구의 Upbit KRW 실행은 차단한다. 기존 Upbit 기록·�
 | 프로필 | 수수료 | 스프레드·슬리피지 | 출처 |
 | --- | --- | --- | --- |
 | `binance-spot-usdt` v1 (새 코인 연구) | 편도 0.1%(Regular User maker/taker 0.100%, BNB 할인은 가정하지 않음) | **실측 p90**, 종목·주문 규모별(`lib/ct-cost-measurements.ts`) | [Binance 수수료표](https://www.binance.com/en/fee/schedule), 2026-10-14 확인 |
-| `upbit-krw` v1 (참고, 새 계약에 쓰지 않음) | 0.139% — **공식 문서로 확인하지 못함**(고객센터 문서 403, 공식 도움말 예시 0.139%·언론 0.05%, 큰 값을 보수적으로 사용) | 실측 p90 | [Upbit 도움말](https://support.upbit.com/hc/ko/articles/900006143046) |
+| `upbit-krw` v2 (참고, 새 계약에 쓰지 않음) | **0.05%**(원화마켓 일반 주문, 매수·매도 동일) — [Open API 주문 가능 정보 문서](https://docs.upbit.com/kr/reference/available-order-information)(수정 2026-10-07)의 `bid_fee`·`ask_fee`·`maker_*` 값 0.0005, 2026-10-14 확인. v1의 0.139%는 **예약주문** 요율로 Open API 일반 주문에 적용되지 않는다. 실전 진입은 주문 가능 정보의 실제 수수료가 0.05%를 넘으면 계속 차단한다 | 실측 p90 | [Upbit Open API](https://docs.upbit.com/kr/reference/available-order-information) |
 | `toss-us-equity` v1 (주식) | 기존 `lib/broker-costs.ts`(편도 0.1% + SEC 매도 0.0008%) | 기존 가정 0.05%/0.03%, **측정하지 않음** | `docs/toss-api.md` |
 
 **스프레드·슬리피지 측정** (`scripts/data/measure-orderbook.mjs`, 인증 없는 공개 API만): Binance `depth`(500호가)와 Upbit `orderbook`을 1분마다 BTC·ETH·SOL 스냅샷으로 저장(SQLite `ct_orderbook_samples`)하고, $1,000와 $10,000(자본의 10배) 시장가 매수·매도가 mid를 얼마나 미는지 호가를 직접 걸어 계산한다(Upbit은 KRW-USDT 환산). 프로필 값은 **측정 p90을 올림**한 값이고 측정값 아래로 내려가지 않는다(`--check`가 이를 확인하고 낮으면 실패). 스프레드 = p90 스프레드, 슬리피지 = p90 편도 충격이 반 스프레드를 넘는 부분이라 `spread/2 + slippage ≥ p90 충격`이다. 자본이 1,000 이하면 $1,000 값, 그 이상이면 $10,000 값을 쓰고 선택한 종목 중 최악의 값으로 계약을 만든다.
@@ -94,7 +94,101 @@ CT는 단타다: 포지션은 하루를 넘기지 않는다. **코인의 하루�
 
 처리량은 충분하다 — 병목은 리플레이가 아니라 도구마다 반복되는 로컬 데이터 적재와 모델 호출이다. 새 계약의 `maxComputeMs`를 1,200초로 올린 것은 3년·세션 3회·실험 묶음이 겹치는 최악의 경우를 위한 여유이고, 365일 기본 실행은 212초를 썼다.
 
-### 엔진 버전
+## 단타 트레이더의 어휘 (2026-10-14, 엔진 `ct-pattern-3`)
+
+`docs/prompts/ct-stage2-dsl-vocabulary.md`의 작업 결과다. 이유(지시서 1절): 규칙 언어에 고수가 실제로 쓰는 어휘가 빠져 있었다 — 시간 조건이 없었고, 레벨(VWAP·전일 고가·저가·종가, 시가 범위, 갭, 당일 고저)이 없었고, 모든 임계값이 고정 %라 조용한 날과 요동치는 날을 구분하지 못했고, 청산은 고정 손절·고정 목표·시간뿐이었다. 비용 장벽이 높은 판에서는 "작게 잃고 크게 먹는" 청산 구조가 진입만큼 중요하다. 어휘가 늘면 탐색 공간이 커져 우연히 좋아 보이는 규칙도 늘기 때문에 **다중 검정 장부와 검토자 정보 강화**를 어휘와 함께 넣었다. 게이트(거래 20건, 총수익·일평균 > 0, 비용 2배·1봉 지연·손절 ±10%, 낙폭 15%, 집중도)는 바꾸지 않았다.
+
+천장 측정([보고서](research/ct-ceiling-2026-10-14.md))이 어떤 조합에서도 비용 2배 워크포워드 일평균 양수를 찾지 못했다는 사실은 알고 시작했다. 그 보고서의 결론("단순 피처 세트의 얕은 트리가 못 찾는다는 뜻이지 어떤 규칙도 없다는 증명이 아니다")이 이 작업의 근거이고, 이 작업이 수익 전략을 약속하지는 않는다.
+
+### 엔진 버전과 호환
+
+| 엔진 | 규칙 언어 |
+| --- | --- |
+| `ct-pattern-1` | 1/3/12분 시간대, 보유 ≤ 390봉, 코인 연속(강제 청산 없음) |
+| `ct-pattern-2` | + 60/240/1440분 시간대, 보유 ≤ 1,440봉(코인), `noEntryBeforeDayEndMinutes`, 당일 경계 강제 청산 |
+| `ct-pattern-3` (새 계약) | + 진입 시간 창, 레벨·ATR 피처, `atr` 단위, 관리형 청산(본전·트레일·시간 손절·R 목표) |
+
+새 필드는 `ct-pattern-3` spec에서만 허용되고 이전 엔진 spec이 쓰면 스키마가 거부한다. 이전 엔진의 판정·거래·일별 곡선·게이트는 **비트 단위로 같다**: `tests/ct-pattern-1-regression.test.mjs`(기존)에 더해 `tests/ct-pattern-2-regression.test.mjs`가 ct-pattern-1/2의 고정 손절·목표 규칙(상위 시간대, 당일 청산, 주식 세션, `last_stage_low`, 비용 2배·1봉 지연 실행)을 30개 조합의 전체 결과 해시로 고정한다 — 해시는 변경 전 커밋의 엔진으로 만들었다(`tests/helpers/ct-golden-v2.mjs`). 같은 고정 손절·목표 규칙은 `ct-pattern-3` 계약 위에서도 같은 거래를 낸다(테스트 `tests/ct-pattern-3-exits.test.mjs`).
+
+### 진입 시간 창
+
+`entry.entryWindows`(최대 3개, `{fromMinute, toMinute}`)는 **하루 시작 후 경과 분**으로 쓴다: 코인은 UTC 00:00(KST 09:00), 주식은 정규장 개장(0–389). 신호 판정 시각(마지막 단계 완성 봉의 끝)의 경과 분이 `fromMinute ≤ m ≤ toMinute`일 때만 진입한다(양끝 포함; `{0, 30}` = 개장 후 30분 = 봉 마감 1…30분). 창은 개장 기준이라 조기 폐장일은 하루가 더 일찍 끝날 뿐이다. `noEntryBeforeDayEndMinutes`와 함께 동작한다. 라이브 러너는 `signal.decidedAt`(백테스트와 같은 시각)로 판단한다.
+
+### 레벨·ATR 피처
+
+모두 그 시점까지 완성된 봉만 쓴다. 하루는 코인 UTC 일자, 주식 정규장 세션이다. 하루의 첫 봉이 하루 시작에 정확히 시작하고 그 뒤 봉이 빠짐없이 이어질 때만 값이 있다(분 하나가 빠진 날의 VWAP은 VWAP이 아니다) — 아니면 null. 전일 값은 직전 **완성** 일봉(`prevDailyBar`)에서 오고, 직전 세션이 비었거나 분할 경계를 넘으면 null이다(주말·휴장은 이어진다).
+
+| feature | 정의 | 고정 파라미터 |
+| --- | --- | --- |
+| `vwap_distance_pct` | 종가 / 당일 누적 VWAP − 1 (VWAP = Σ(전형가×거래량)/Σ거래량, 전형가 = (고+저+종)/3) | lookback 2 · offset 0 · timeframe 1 |
+| `prev_day_high/low/close_distance_pct` | 종가 / 전일 고가·저가·종가 − 1 (개장 직후 종가 대비는 갭) | 같음 |
+| `day_open_distance_pct` | 종가 / 당일 시가 − 1 | 같음 |
+| `opening_range_position` | (종가 − OR 저가)/(OR 고가 − OR 저가), OR = 당일 첫 `lookback`분. 0–1 밖 = 돌파. OR 미완성·고저 같음 → null | `lookback` = OR 길이(≥5분), offset 0, timeframe 1 |
+| `day_range_position` | 당일(그 봉까지) 고저 안 위치 0–1 | 고정 |
+| `atr_pct` | `lookback`봉 평균 진폭(TR 평균) / 종가 × 100, `timeframe` 완성봉 | |
+| `atr_percentile` | 현재 ATR이 최근 `lookback`개 ATR 중 몇 분위(앞선 값 중 현재 이하 비율, 0–1), ATR 길이 `atrLookback`(기본 14) | |
+
+의미 없는 파라미터는 스키마가 고정값을 강제한다(설계자가 쓸모없는 숫자를 탐색하지 못하게). 차트 근거(`signal.references`)는 실제로 쓴 선(VWAP, 전일 고가·저가·종가, 당일 시가, 당일 고저, 시가 범위 상·하단)을 표시한다.
+
+**`unit: "atr"`**: 수익률·거리 조건(`return_pct`, `*_distance_pct`, `range_pct`)의 값을 고정 %가 아니라 **ATR 배수**로 비교한다 — 값(%) ÷ ATR%. ATR은 `atrTimeframe`(기본 조건의 timeframe)의 `atrLookback`(기본 14)봉을 판단 시점(offset 0)에서 읽는다. 1분봉 조건에 `atrTimeframe: 60|1440`을 쓰면 시간·일 단위 변동폭으로 거리를 잰다. 비율·위치 피처와 ATR 피처에는 쓸 수 없다. 기본값을 명시한 것(`unit` 생략, `atrLookback 14`, `atrTimeframe` = 자기 시간대)은 같은 실행 해시다.
+
+### 관리형 청산과 `ctExitStep`
+
+`exit`는 두 모양 중 하나다. 고정형(`stopPct`, `targetPct`, `maxHoldBars`, `invalidation`)은 모든 엔진에서 그대로이고, 관리형은 `ct-pattern-3`에서만:
+
+```
+exit: { stop: {type: pct|atr|pattern_low|swing_low, value}, target?: {type: pct|atr|r, value},
+        breakeven?: {triggerR, offsetPct?}, trail?: {type: pct|atr|swing_low, value, activateR},
+        timeStop?: {bars, minR}, atr?: {timeframe, lookback}, maxHoldBars }
+```
+
+R = 초기 위험 = 진입가 − 초기 손절. `pattern_low`·`swing_low`의 `value`는 그 레벨 아래 여유폭(%)이다. 초기 손절이 진입가 이상이거나 15%보다 멀거나(또는 ATR·확정 스윙이 없으면) 그 신호는 **진입하지 않는다**(`blocked.invalid_stop`) — 추측한 손절로 거래하지 않는다.
+
+**하나의 순수 함수**: `ctExitStep(spec, signal, position, bar, forced) → {position', exit | null}`을 `replayCT`, 모의·실전 러너(`ct-trading-engine.ts`), 설계 도구(손절·목표 격자, 청산 모드 비교)가 모두 쓴다. 러너의 손절가 인라인 재계산은 없앴고 `position.stopLevel`을 읽는다. 백테스트와 운용의 손절가가 갈라질 경로가 없다.
+
+봉 안의 순서(보수적):
+
+1. 그 봉 **이전에** 서 있던 손절을 먼저 검사한다(불리한 갭은 시가 체결, 손절·목표가 같은 봉이면 손절 먼저).
+2. 목표, 시간 손절(`bars`번째 봉에서 한 번), 최대 보유(고정형 사유 `time`, 관리형 `max_hold`), 호출자가 넘긴 당일 경계 강제 청산(`day_end`/주식 `session`) 순이다.
+3. 봉이 살아남은 뒤에만 그 봉의 고가로 `highestHigh`·본전·트레일을 갱신한다. 올라간 손절은 **다음 봉부터** 적용된다 — 같은 봉에서 트레일을 올리고 같은 봉 저가로 그 트레일에 걸리는 낙관·비관 혼합이 없다.
+
+손절은 올라가기만 한다. 본전은 `+triggerR` 도달 시 `진입가 × (1 + offsetPct/100)`로, 트레일은 `+activateR` 도달 뒤 `pct`(최고가 × (1 − v)), `atr`(최고가 − v × 판단 시점 ATR), `swing_low`(진입 후 확정된 마지막 스윙 저점 × (1 − v), 5봉 중앙이 가장 낮을 때 확정)를 따른다.
+
+**청산 사유**: `stop`, `breakeven`, `trail`, `target`, `time_stop`, `max_hold`(고정형은 `time`), `day_end`(주식 `session`), 구간 경계 `boundary`, 라이브에서 손절을 만들 수 없을 때 `invalid_stop`. 거래 기록(`CTTrade.management`: 초기 손절·목표·손절선 이동 이력, 고정형 거래에는 이 필드가 없다)과 차트(손절선 계단, 사유 라벨)에 남는다. 운용 거래는 `ctPosition`·`ctExitReason`을 거래 레코드에 저장한다.
+
+**운용 상태**: 러너가 재시작하면 저장된 `ctPosition`에서 이어 가거나, 없으면 진입 봉부터 `ctRebuildPosition`으로 결정적으로 다시 계산한다. 두 방식이 같은 결과를 낸다는 테스트가 있다. 운용은 진입 봉(신호 봉이 닫힐 때 열리는 봉)부터 판단한다 — 백테스트가 진입 봉도 판단하는 것과 같다(이전에는 체결을 확인한 시각 이후 봉만 봤다).
+
+**스트레스 "손절 ±10%"의 정의**: 고정형은 이전과 같이 `stopPct`에 ×0.9/×1.1(0.2–15%로 자름)을 적용한다. 관리형은 **초기 손절 거리**(`진입가 − 초기 손절`)에 ×0.9/×1.1(`replayCT`의 `stopScale` 옵션)을 적용하고 본전·트레일·시간 손절 파라미터는 그대로 둔다(R 목표는 그 R에 정의되어 있으므로 함께 움직인다).
+
+### 설계 도구
+
+- `query_conditional_returns`: 새 피처·`unit`·`entryWindows`를 받는다. `exitCompare`(선택)는 **같은 이벤트**를 고정 손절·R 목표 / 본전 이동 / 트레일(목표 없음) / 시간 손절로 나란히 돌려 행마다 이벤트 수, 승률, 평균 R, 비용 후 평균, 비용 2배 평균, 일평균(이벤트 합 ÷ 학습 일수; 겹침 무시한 상한 감각), 청산 사유 비율을 준다(학습 구간만, 손절 ≤ 3 × 목표 R ≤ 2 × 모드 3 + 트레일 ≤ 21행). 이벤트 목록과 청산 규칙은 `ctOpenPosition`+`ctExitStep` 그대로다.
+- `screen_rule`은 새 spec을 받고 결과에 `freedom`(자유도)과 `multipleTesting`을 붙인다. `ctRuleText`는 새 요소를 한국어로 쓴다(고정형 규칙의 문장은 이전과 같다).
+- `CT_DESIGNER_SYSTEM`: 새 어휘를 나열하는 데서 그치지 않고 각 어휘를 언제·왜 쓰는지 설명한다. "청산 구조로 비용을 이기는 방법"(R로 본 비용, 손실·이익의 비대칭, 변동성에 맞춘 손절, 본전·트레일·시간 손절의 이유)은 비용 장벽 설명 바로 뒤에 있다. 시스템 프롬프트와 도구 정의는 상수라 실행 중 바이트가 바뀌지 않는다(캐시 유지).
+
+### 다중 검정 장부와 자유도
+
+설계 세션의 모든 `query_conditional_returns`·`screen_rule` 호출을 **가설 서명**으로 센다: 단계별 `feature|timeframe|방향|단위`의 집합과 시간 창 사용 여부. 임계값·lookback·offset·maxGapBars·청산 숫자가 다른 변형은 같은 서명(1회), 다른 feature 조합·반대 방향·ATR 단위·시간 창은 새 검정이다. 연구 단위로 누적(`ct.tests`)하고,
+
+- 설계자에게는 매 도구 결과에 `multipleTesting: {hypothesisTests, toolCalls}`로 짧게,
+- 위험·증거 검토자에게는 `research.multipleTesting`(검정 수 + 후보 자유도)과 새 지시("검정 수 대비 개발·최종 결과의 유의성을 판단하라, 어휘가 늘었으니 단순한 규칙을 선호하라")로 전달한다.
+
+후보의 **자유도** = 조건 수 + 청산 숫자(손절·목표·본전·트레일·시간 손절·최대 보유·ATR 설정) + 시간 창 끝점·진입 금지·ATR 단위 등 기타. 결과 요약(`screen_rule`, 이전 세션 후보 기록)과 검토 입력에 표시한다. 게이트는 바꾸지 않았다.
+
+### 처리 시간 (BTCUSDT 1분봉 1년 525,600봉, `replayCT`, 이 개발 맥)
+
+| 규칙 | 변경 전 | 변경 후 |
+| --- | --- | --- |
+| 고정형, 1분 조건 2개 | 980 ms | 975 ms |
+| 고정형 + 1시간·일봉 조건 | 1,149 ms | 1,145 ms |
+| VWAP + 전일 저가 + 관리형 청산(본전·트레일) | — | 1,396 ms |
+| ATR 단위(60분 ATR) + 시가 범위 + ATR 분위 + ATR 손절 + 시간 창 | — | 3,590 ms |
+
+고정형 규칙의 처리 시간은 같다. 가장 무거운 새 규칙도 1년에 약 3.6초라 3년은 약 11초, 계약 계산 예산(1,200초)에 영향이 없다.
+
+<!--RUN-->
+
+### 엔진 버전 (`ct-pattern-2`까지)
 
 `ct-pattern-1`은 이전 DSL(1/3/12, 보유 ≤ 390, 코인 연속)이고 `ct-pattern-2`가 새 규칙(60/240/1440, 보유 ≤ 1,440, `noEntryBeforeDayEndMinutes`, 당일 강제 청산)이다. 명세는 계약의 엔진과 같아야 하고(`validateCTSpec`), `ct-pattern-1` 명세가 새 기능을 쓰면 스키마가 거부한다. 도구 캐시 키는 계약의 엔진을 포함하므로 이전 실행을 재개해도 같은 도구 결과를 재사용한다.
 
@@ -172,11 +266,11 @@ CT의 단계별 실제 수행은 다음과 같다.
 
 ## 실행 명세와 동일 코드 계약
 
-`ct-pattern-1`·`ct-pattern-2`의 JSON DSL만 실행한다(계약의 엔진과 명세의 엔진이 같아야 하고 새 연구는 `ct-pattern-2`). 한 패턴은 시간순 1–4개 단계, 단계마다 AND 조건 1–6개와 단계 간 최대 봉 수로 구성된다. feature는 수익률, SMA 거리, 가격 범위, 상대 거래량, 변동성 수축 비율, 이전 고점/저점 거리, 범위 내 위치, 확정 스윙 고점/저점 거리다. lookback/offset은 과거의 2–120/0–120봉, 시간배수는 1/3/12(1분 기준 1/3/12분 완성 봉)와 `ct-pattern-2`의 60/240/1440(위 「관찰 창」)이다. 최대 보유는 주식 390봉(정규장 한 세션), 코인 `ct-pattern-2`는 1,440봉이며 어느 쪽이든 포지션은 당일 경계에서 닫힌다. 2026-10-13 이전 엔진은 상위 봉 묶음의 연속성을 상위 봉 크기로 비교해 시간배수 3/12 조건이 항상 null이었다. 수정 후에야 실제로 평가된다. 스윙은 오른쪽 2봉 이후에만 확정한다. 상위 봉은 완성된 봉만 사용한다.
+`ct-pattern-1`·`ct-pattern-2`의 JSON DSL만 실행한다(계약의 엔진과 명세의 엔진이 같아야 하고 새 연구는 `ct-pattern-2`). 한 패턴은 시간순 1–4개 단계, 단계마다 AND 조건 1–6개와 단계 간 최대 봉 수로 구성된다. feature는 수익률, SMA 거리, 가격 범위, 상대 거래량, 변동성 수축 비율, 이전 고점/저점 거리, 범위 내 위치, 확정 스윙 고점/저점 거리이고 `ct-pattern-3`에서 VWAP·전일 고저종·당일 시가·시가 범위·당일 고저 위치와 ATR 피처가 더해진다(위 「단타 트레이더의 어휘」). lookback/offset은 과거의 2–120/0–120봉, 시간배수는 1/3/12(1분 기준 1/3/12분 완성 봉)와 `ct-pattern-2`의 60/240/1440(위 「관찰 창」)이다. 최대 보유는 주식 390봉(정규장 한 세션), 코인 `ct-pattern-2`는 1,440봉이며 어느 쪽이든 포지션은 당일 경계에서 닫힌다. 2026-10-13 이전 엔진은 상위 봉 묶음의 연속성을 상위 봉 크기로 비교해 시간배수 3/12 조건이 항상 null이었다. 수정 후에야 실제로 평가된다. 스윙은 오른쪽 2봉 이후에만 확정한다. 상위 봉은 완성된 봉만 사용한다.
 
-진입 유효기간, 최대 스프레드/괴리, 손절/목표/시간 청산, 마지막 단계 저점 무효화, 위험/배분/거래량 참여 한도, 쿨다운을 수치로 고정한다. 롱 현물/주식만 지원한다. 추세선 작도, 자유 코드, 임의 지표, 숏/레버리지, 재량 판단은 지원하지 않는다. 표현할 수 없는 조건은 설명에만 넣어 통과시킬 수 없다.
+진입 유효기간, 최대 스프레드/괴리, 손절/목표/시간 청산(`ct-pattern-3`: 본전·트레일·시간 손절·R 목표), 진입 시간 창, 마지막 단계 저점 무효화, 위험/배분/거래량 참여 한도, 쿨다운을 수치로 고정한다. 롱 현물/주식만 지원한다. 추세선 작도, 자유 코드, 임의 지표, 숏/레버리지, 재량 판단은 지원하지 않는다. 표현할 수 없는 조건은 설명에만 넣어 통과시킬 수 없다.
 
-`lib/ct-engine.ts`의 `detectCT`, `ctExit`, `ctQuantity`를 백테스트와 모의/실전이 공유한다. 실시간 판단 경로에는 모델/연구 실행기 호출이 없다. 거래마다 시작 당시 spec/hash와 실제 신호 관측값을 저장한다. 이름·설명만 다른 동일 규칙은 정규화 해시로 탐지한다. 실제 실행 전에도 승인 해시를 확인한다.
+`lib/ct-engine.ts`의 `detectCT`, `ctExitStep`(고정형 청산의 `ctExit`와 같은 판정), `ctQuantity`를 백테스트와 모의/실전이 공유한다. 실시간 판단 경로에는 모델/연구 실행기 호출이 없다. 거래마다 시작 당시 spec/hash와 실제 신호 관측값을 저장한다. 이름·설명만 다른 동일 규칙은 정규화 해시로 탐지한다. 실제 실행 전에도 승인 해시를 확인한다.
 
 ## 검증과 시장 차이
 
@@ -245,7 +339,7 @@ node --env-file=.dev.vars scripts/trading-runner.mjs --generation-only
 
 ## 공식 API 근거
 
-- [Upbit 개요](https://docs.upbit.com/kr/reference/api-overview), [인증](https://docs.upbit.com/kr/reference/auth), [요청 제한](https://docs.upbit.com/kr/reference/rate-limits)
+- [Upbit 개요](https://docs.upbit.com/kr/reference/api-overview), [Upbit 주문 가능 정보(수수료율 필드)](https://docs.upbit.com/kr/reference/available-order-information), [인증](https://docs.upbit.com/kr/reference/auth), [요청 제한](https://docs.upbit.com/kr/reference/rate-limits)
 - [호가 정책](https://docs.upbit.com/kr/reference/list-orderbook-instruments), [주문 가능 정보](https://docs.upbit.com/kr/reference/get-order-chance), [주문](https://docs.upbit.com/kr/reference/new-order)
 - [NYSE 캘린더](https://www.nyse.com/trade/hours-calendars), [2025 캘린더](https://www.nyse.com/publicdocs/ICE_NYSE_2025_Yearly_Trading_Calendar.pdf)
 - [D1 REST query](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/query/), [D1 REST 운용 제한](https://developers.cloudflare.com/d1/tutorials/build-an-api-to-access-d1/)

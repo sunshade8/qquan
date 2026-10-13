@@ -405,6 +405,36 @@ test("a runner killed after a paid turn resumes without paying again; a late ans
   assert.equal(job.ct.sessions[0].turns, 4);
 });
 
+/* ----------------------------------- 7b multiple-testing ledger (ct-pattern-3) */
+
+test("the designer sees how many distinct hypotheses the run has tested: threshold variants count once, another feature is a new test", async () => {
+  const replies = [];
+  globalThis.__strategyTestHooks.turn = async () => replies.shift();
+  const q = (feature, lookback, value) => query({ stages: [{ maxGapBars: 1, conditions: [{ feature, lookback, offset: 0, timeframe: 1, op: "gte", value }] }], horizons: [3], grid: null, cooldownBars: 3 });
+  replies.push(
+    reply(toolUse("l1", "query_conditional_returns", q("return_pct", 4, 0))),
+    reply(toolUse("l2", "query_conditional_returns", q("return_pct", 9, 0.1))),
+    reply(toolUse("l3", "query_conditional_returns", q("volume_ratio", 4, 1))),
+  );
+  const created = await sessionJob();
+  let job = await advance(created.id); // session opened
+  for (let k = 0; k < 3; k++) {
+    job = await advance(created.id); // turn
+    job = await advance(created.id); // tools
+  }
+  const results = sessionMessages(created.id)
+    .filter((m) => m.role === "user" && Array.isArray(m.content))
+    .flatMap((m) => m.content.filter((b) => b.type === "tool_result"))
+    .map((b) => JSON.parse(b.content));
+  assert.deepEqual(results.map((r) => r.multipleTesting.hypothesisTests), [1, 1, 2]);
+  assert.deepEqual(results.map((r) => r.multipleTesting.toolCalls), [1, 2, 3]);
+  assert.equal(Object.keys(job.ct.tests.signatures).length, 2);
+  assert.equal(job.ct.queries.length, 3);
+  assert.ok(job.ct.queries.every((r) => typeof r.signature === "string"));
+  assert.equal(job.ct.queries[0].signature, job.ct.queries[1].signature);
+  assert.notEqual(job.ct.queries[0].signature, job.ct.queries[2].signature);
+});
+
 /* -------------------------------------------- 8 multiple candidates */
 
 test("submitted candidates are de-duplicated, training failures skip development, and submissions count against the limit", async () => {

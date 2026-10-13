@@ -28,9 +28,12 @@ import { researchFailure } from "./research-recovery.ts";
 import {
   CT_ENGINE,
   CT_POLICY,
+  ctFreedom,
   ctHash,
+  ctIsManagedExit,
   ctRuleText,
   ctSessionPolicy,
+  ctTestSignature,
   executableCT,
   ctSpecSchema,
   validateCTSpec,
@@ -42,7 +45,10 @@ import {
   CT_EVIDENCE_VERSION,
   ctBrief,
   ctEvidenceIds,
+  ctIssueText,
+  ctRecordTest,
   ctRequestSchema,
+  ctTestLedger,
   ctSearchSchema,
   ctApproachSchema,
   ctSessionContext,
@@ -465,7 +471,7 @@ export const CT_SESSION_TOOLS: Anthropic.Tool[] = [
   {
     name: "query_conditional_returns",
     description:
-      "Measure what happened after a condition sequence on the TRAINING split only. Same stages/conditions as the rule DSL (1–4 stages, 1–6 AND conditions each, maxGapBars between stages). For every event (pattern completes at a bar close; entry at the next bar open; cooldownBars between events) returns: event count and unique days, per holding horizon the gross return quantiles, net mean/median after contract costs (and with doubled costs), MFE/MAE quantiles, the share whose MFE clears twice the round-trip cost, and the difference from an unconditional baseline with the same time-of-day mix; an optional stop/target grid (engine exit rule, stop first on ambiguous bars) with target-first/stop-first/time-exit shares and net expectancy; month-by-month events and net mean; anchors (event times) you may open with read_bars. Events whose look-ahead would pass the training end are dropped. The result's queryId is citable evidence.",
+      "Measure what happened after a condition sequence on the TRAINING split only. Same stages/conditions as the rule DSL (1–4 stages, 1–6 AND conditions each, maxGapBars between stages). For every event (pattern completes at a bar close; entry at the next bar open; cooldownBars between events) returns: event count and unique days, per holding horizon the gross return quantiles, net mean/median after contract costs (and with doubled costs), MFE/MAE quantiles, the share whose MFE clears twice the round-trip cost, and the difference from an unconditional baseline with the same time-of-day mix; an optional stop/target grid (engine exit rule, stop first on ambiguous bars) with target-first/stop-first/time-exit shares and net expectancy; month-by-month events and net mean; anchors (event times) you may open with read_bars. Events whose look-ahead would pass the training end are dropped. ct-pattern-3 adds entryWindows (only events whose signal bar closes inside a minutes-since-day-start window) and exitCompare (the SAME events under fixed, breakeven, trailing and time-stop exits side by side: events, win rate, average R, net mean and doubled-cost net per exit structure, exit-reason shares). The result's queryId is citable evidence; multipleTesting reports how many distinct hypothesis tests the run has made so far (threshold variants of one condition combination count once).",
     input_schema: jsonSchema(ctQuerySchema),
   },
   {
@@ -477,7 +483,7 @@ export const CT_SESSION_TOOLS: Anthropic.Tool[] = [
   {
     name: "screen_rule",
     description:
-      "Replay a complete candidate spec on the TRAINING split with the real engine (same detector, exits, sizing, costs) and get the server's gate verdict: net and mean daily return, positive-day share, worst day, trades, drawdown, win rate and the gate reasons it fails. Development results are never returned. Limited calls per session. A rule that fails here would fail the server's training gate after submission, so do not submit it.",
+      "Replay a complete candidate spec on the TRAINING split with the real engine (same detector, exits, sizing, costs) and get the server's gate verdict: net and mean daily return, positive-day share, worst day, trades, drawdown, win rate and the gate reasons it fails. Development results are never returned. Limited calls per session. A rule that fails here would fail the server's training gate after submission, so do not submit it. The result also carries the rule's freedom (conditions + free exit/window numbers) and the run's multipleTesting count.",
     input_schema: jsonSchema(z.object({ spec: ctSpecSchema }).strict()),
   },
   {
@@ -748,7 +754,7 @@ export async function advanceCTResearch(
       kind: string,
       from: number,
       to: number,
-      options: { costMultiplier?: number; delayBars?: number } = {},
+      options: { costMultiplier?: number; delayBars?: number; stopScale?: number } = {},
     ) => {
       const hash = await ctHash(executableCT(spec));
       const replayInput = {
@@ -968,11 +974,13 @@ export async function advanceCTResearch(
                 events: out.events,
                 uniqueDays: out.uniqueDays,
                 summary: querySummary(out),
+                signature: ctTestSignature(query.stages, !!query.entryWindows?.length),
               };
               ct.queries.push(record);
             }
+            ctRecordTest(ct, ctTestSignature(query.stages, !!query.entryWindows?.length));
             anchor(...out.anchors.map((a) => a.at));
-            answer(out);
+            answer({ ...out, multipleTesting: ctTestLedger(ct) });
           } else if (use.name === "read_bars") {
             const request = ctReadBarsSchema.parse(use.input);
             const out = await tool(job, token, "read_bars", { request, dataHash: ct.dataHash }, async () =>
@@ -1021,7 +1029,8 @@ export async function advanceCTResearch(
               },
             );
             anchor(...out.sampleTrades.map((t: { entryAt: number }) => t.entryAt).filter((at: number) => at < c.trainingToMs));
-            answer(out);
+            ctRecordTest(ct, ctTestSignature(spec.stages, !!spec.entry.entryWindows?.length));
+            answer({ ...out, freedom: ctFreedom(spec), multipleTesting: ctTestLedger(ct) });
           } else if (use.name === "submit_candidates") {
             const parsed = ctSubmissionSchema.parse(use.input);
             const left = c.policy.maxCandidates - submittedCount(ct);
@@ -1069,7 +1078,7 @@ export async function advanceCTResearch(
         } catch (error) {
           if (fatalToolError(error)) throw error;
           const message = error instanceof z.ZodError
-            ? error.issues.slice(0, 8).map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")
+            ? ctIssueText(error)
             : error instanceof Error ? error.message : String(error);
           answer(message, true);
         }
@@ -1201,11 +1210,12 @@ export async function advanceCTResearch(
           );
         const sensitivity: CTTrial["sensitivity"] = [];
         for (const factor of [0.9, 1.1]) {
+          // Classic exits scale stopPct in the rule itself (as always); a managed exit scales the
+          // INITIAL stop distance in the replay and leaves breakeven/trail/target parameters alone.
           const modified = structuredClone(candidate.spec);
-          modified.exit.stopPct = Math.max(
-            0.2,
-            Math.min(15, modified.exit.stopPct * factor),
-          );
+          const managed = ctIsManagedExit(modified.exit);
+          if (!ctIsManagedExit(modified.exit))
+            modified.exit.stopPct = Math.max(0.2, Math.min(15, modified.exit.stopPct * factor));
           sensitivity.push({
             change: `손절폭 ×${factor}`,
             result: ctSummary(
@@ -1214,6 +1224,7 @@ export async function advanceCTResearch(
                 `sensitivity_${factor}`,
                 c.trainingToMs,
                 c.developmentToMs,
+                managed ? { stopScale: factor } : {},
               ),
             ),
           });
@@ -1273,6 +1284,8 @@ export async function advanceCTResearch(
       queries: (ct.queries ?? []).map((q) => ({ queryId: q.queryId, session: q.session + 1, stages: q.stages, horizons: q.horizons, events: q.events, uniqueDays: q.uniqueDays, summary: q.summary })),
       sessions: (ct.sessions ?? []).map((s) => ({ session: s.index + 1, turns: s.turns, toolCalls: s.toolCalls, screens: s.screens, status: s.status, endReason: s.endReason, submission: s.submission })),
       candidatesSubmitted: submittedCount(ct),
+      // Distinct hypothesis tests (feature · timeframe · direction · unit combinations; threshold variants count once) and the candidate's free numbers.
+      multipleTesting: { ...ctTestLedger(ct), candidateFreedom: ctFreedom(selected.spec) },
       rejectedAtTraining: (ct.screened ?? []).map((t) => ({ id: t.id, rule: ctRuleText(t.candidate.spec), training: ctBrief(t.training), reasons: t.reasons })),
       developmentTrials: ct.trials.map((t) => ({ id: t.id, rule: ctRuleText(t.spec), development: ctBrief(t.development), reasons: t.reasons })),
       mapping: selected.mapping,
@@ -1283,7 +1296,7 @@ export async function advanceCTResearch(
       ct.riskReview = await ask(
         roles.risk,
         reviewSchema,
-        `Independent critical CT review; reject source/rule mismatch, discretion falsely claimed implemented, leakage, unconfirmed pivots, incomplete higher bars, selection/survivorship bias, unrealistic costs/fills. OHLCV cannot prove orderbook liquidity; current sources may postdate history; require forward paper evidence before live. Check EVERY mapping against its actual evidence (web source text or the training-only query it cites: same feature and timeframe) and the rules. Judge data snooping and multiple testing explicitly: how many queries, hypotheses and candidates preceded this rule, whether the effect rests on few events or months, and whether the development pass could be luck given that search. Numeric gates binding. No tuning on final. ${JSON.stringify({ contract: c, sources: ct.sources.filter((s) => cited.has(s.id)), approaches: ct.approaches, candidate: { ...selected, training: ctSummary(selected.training), development: ctSummary(selected.development), developmentStability: ctStability(selected.development), stress: ctSummary(selected.stress), delayed: ctSummary(selected.delayed) }, ruleText: ctRuleText(selected.spec), trials: ct.trials.length, research })}`,
+        `Independent critical CT review; reject source/rule mismatch, discretion falsely claimed implemented, leakage, unconfirmed pivots, incomplete higher bars, selection/survivorship bias, unrealistic costs/fills. OHLCV cannot prove orderbook liquidity; current sources may postdate history; require forward paper evidence before live. Check EVERY mapping against its actual evidence (web source text or the training-only query it cites: same feature and timeframe) and the rules. Judge data snooping and multiple testing explicitly: how many queries, hypotheses and candidates preceded this rule (research.multipleTesting.hypothesisTests counts the distinct condition combinations tested; threshold variants of one combination count once), whether the effect rests on few events or months, and whether the development pass could be luck given that search. The rule language now includes time windows, VWAP/previous-day/opening-range levels, ATR units and managed exits, so the search space is larger: weigh the development result against the number of tests, treat candidateFreedom (conditions + free exit/window numbers) as a cost of complexity, and prefer the simpler rule. Numeric gates binding. No tuning on final. ${JSON.stringify({ contract: c, sources: ct.sources.filter((s) => cited.has(s.id)), approaches: ct.approaches, candidate: { ...selected, training: ctSummary(selected.training), development: ctSummary(selected.development), developmentStability: ctStability(selected.development), stress: ctSummary(selected.stress), delayed: ctSummary(selected.delayed) }, ruleText: ctRuleText(selected.spec), trials: ct.trials.length, research })}`,
       );
       if (!ct.riskReview.approved || ct.riskReview.blockers.length) {
         done("독립 위험 검토 반려 · 통과 전략 없음");
@@ -1381,7 +1394,7 @@ export async function advanceCTResearch(
       ct.finalReview = await ask(
         roles.evidence,
         reviewSchema,
-        `Independent frozen CT evidence review. No revisions permitted after final exposure. Server gates binding. Audit repeated selection, sample size, dependence, costs and execution limits. Judge data snooping and multiple testing: weigh the final result against the number of training queries, hypotheses and candidates searched before freezing. Do not claim unused historical data across training/LLM pretraining or original-source dates. Forward paper verification required for live. ${JSON.stringify({ contract: c, hash: ct.frozenHash, trials: ct.trials.length, candidate: { spec: selected.spec, hypothesis: selected.hypothesis, mapping: selected.mapping, training: ctSummary(selected.training), development: ctSummary(selected.development), sensitivity: selected.sensitivity, developmentStability: ctStability(selected.development) }, final: ctSummary(ct.final!), finalStability: ctStability(ct.final!), stress: ctSummary(ct.finalStress!), delay: ctSummary(ct.finalDelayed!), research })}`,
+        `Independent frozen CT evidence review. No revisions permitted after final exposure. Server gates binding. Audit repeated selection, sample size, dependence, costs and execution limits. Judge data snooping and multiple testing: weigh the final result against the number of training queries, hypotheses and candidates searched before freezing (research.multipleTesting.hypothesisTests = distinct condition combinations tested; the vocabulary is now large, so a single positive final is weaker evidence than before) and against the candidate's free numbers (multipleTesting.candidateFreedom). Do not claim unused historical data across training/LLM pretraining or original-source dates. Forward paper verification required for live. ${JSON.stringify({ contract: c, hash: ct.frozenHash, trials: ct.trials.length, candidate: { spec: selected.spec, hypothesis: selected.hypothesis, mapping: selected.mapping, training: ctSummary(selected.training), development: ctSummary(selected.development), sensitivity: selected.sensitivity, developmentStability: ctStability(selected.development) }, final: ctSummary(ct.final!), finalStability: ctStability(ct.final!), stress: ctSummary(ct.finalStress!), delay: ctSummary(ct.finalDelayed!), research })}`,
       );
       done(
         ct.finalReview.approved && !ct.finalReview.blockers.length

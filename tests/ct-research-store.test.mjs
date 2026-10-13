@@ -230,6 +230,9 @@ test("CT measured passing fixture freezes, independently reviews, consumes final
   const review = async (role, _schema, prompt) => {
     reviewed.push(role);
     assert.ok(prompt.includes(hash) || role === "riskReviewer");
+    // Both reviewers weigh the result against the number of tests and the candidate's free numbers.
+    assert.match(prompt, /"multipleTesting":\{"hypothesisTests":\d+,"toolCalls":\d+,"note":"[^"]*","candidateFreedom":\{"conditions":\d+,"exit":\d+,"other":\d+,"total":\d+\}\}/);
+    assert.match(prompt, /distinct condition combinations/);
     return { approved: true, blockers: [], findings: [], suggestions: [] };
   };
   await research.advanceCTResearch(j, "fixture", review);

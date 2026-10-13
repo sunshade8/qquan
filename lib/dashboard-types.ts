@@ -52,6 +52,10 @@ export type DashboardOrder = {
 export type DashboardTrade = {
   ctSignal?: import("./ct-engine.ts").CTSignal;
   ctHash?: string;
+  /** CT: stop/target levels and what moved them, advanced bar by bar by ctExitStep (rebuildable from the bars since entry). */
+  ctPosition?: import("./ct-engine.ts").CTPosition;
+  /** CT: why the position is being closed (stop, breakeven, trail, target, time_stop, max_hold, day_end, session, invalid_stop). */
+  ctExitReason?: string;
   barMinutes?: 1 | 3 | 5;
   id: string;
   strategyId: string;

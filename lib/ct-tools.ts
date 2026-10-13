@@ -229,6 +229,7 @@ export const CT_TOOLS = {
           .object({
             costMultiplier: z.number().min(1).max(2).optional(),
             delayBars: z.number().int().min(0).max(1).optional(),
+            stopScale: z.number().min(0.5).max(2).optional(),
           })
           .strict(),
       })

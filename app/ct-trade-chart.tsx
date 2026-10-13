@@ -45,9 +45,12 @@ export function CTTradeChart({
     quantity: t.boughtQuantity,
     fees: t.commissionUsd,
     pnl: t.pnlUsd ?? 0,
-    reason: t.exit ?? t.status,
+    reason: t.ctExitReason ?? t.exit ?? t.status,
     specHash: t.ctHash!,
     compliant: t.compliant ?? false,
+    ...(t.ctPosition && "stop" in packet.rule.spec.exit
+      ? { management: { initialStop: t.ctPosition.initialStop, target: t.ctPosition.targetLevel, initialRisk: t.ctPosition.initialRisk, moves: t.ctPosition.moves } }
+      : {}),
   };
   const download = () => {
     const url = URL.createObjectURL(

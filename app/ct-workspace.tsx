@@ -17,6 +17,7 @@ import type { CTBar, CTResult } from "@/lib/ct-engine";
 import type { CTResearch, CTSource, CTTrial } from "@/lib/ct-research";
 import { ctRuleText, type CTSpec, type CTMarket } from "@/lib/ct-spec";
 import { CTEvidenceChart } from "./ct-evidence-chart";
+import { CT_EXIT_REASON_TEXT } from "@/lib/ct-trade-levels";
 import { TradingDashboards } from "./trading-dashboards";
 import {
   ActivityFeed,
@@ -333,7 +334,7 @@ function TradeEvidence({
           >
             {trades.map((t, i) => (
               <option key={`${t.symbol}${t.entryAt}${i}`} value={i}>
-                {t.symbol} · {new Date(t.entryAt).toLocaleDateString("ko-KR")} · {t.reason} · {t.pnl.toFixed(2)} {currency}
+                {t.symbol} · {new Date(t.entryAt).toLocaleDateString("ko-KR")} · {CT_EXIT_REASON_TEXT[t.reason] ?? t.reason}{t.management?.moves.length ? ` · 손절선 ${t.management.moves.length}회 상향` : ""} · {t.pnl.toFixed(2)} {currency}
               </option>
             ))}
           </select>

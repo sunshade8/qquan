@@ -3,6 +3,7 @@ import "./ct.css";
 import { useState } from "react";
 import type { CTSpec } from "@/lib/ct-spec";
 import type { CTBar, CTTrade } from "@/lib/ct-engine";
+import { CT_EXIT_REASON_TEXT, CT_REFERENCE_TEXT, ctTradeLevels } from "@/lib/ct-trade-levels";
 export function CTEvidenceChart({
   bars,
   trade,
@@ -27,17 +28,14 @@ export function CTEvidenceChart({
         ? observedAt
         : (visible.at(-1)?.endMs ?? 0);
   if (!visible.length) return <p>차트 데이터 없음</p>;
+  const levels = ctTradeLevels(spec, trade);
   const knownLevels = [
-    ...(now >= trade.entryAt
+    ...(now >= trade.entryAt && levels
       ? [
           trade.entry,
-          Math.max(
-            trade.entry * (1 - spec.exit.stopPct / 100),
-            spec.exit.invalidation === "last_stage_low"
-              ? trade.signal.patternLow
-              : 0,
-          ),
-          trade.entry * (1 + spec.exit.targetPct / 100),
+          levels.stop,
+          ...levels.moves.filter((m) => m.at <= now).map((m) => m.to),
+          ...(levels.target !== null ? [levels.target] : []),
         ]
       : []),
     ...(now >= trade.exitAt ? [trade.exit] : []),
@@ -150,25 +148,41 @@ export function CTEvidenceChart({
         {line(signal.resistance, "참고 20봉 고점", signal.decidedAt, "var(--secondary)")}
         {line(signal.support, "참고 20봉 저점", signal.decidedAt, "var(--secondary)")}
         {signal.references?.map((r, i) =>
-          line(r.price, `${r.feature} (${i + 1})`, signal.decidedAt, "var(--secondary)"),
+          line(r.price, `${CT_REFERENCE_TEXT[r.feature] ?? r.feature} (${i + 1})`, signal.decidedAt, "var(--secondary)"),
         )}
         {line(trade.entry, "진입", trade.entryAt, "var(--accent)")}
-        {line(
-          Math.max(
-            trade.entry * (1 - spec.exit.stopPct / 100),
-            spec.exit.invalidation === "last_stage_low" ? signal.patternLow : 0,
-          ),
-          "손절·무효화",
-          trade.entryAt,
-          "var(--down)",
-        )}
-        {line(
-          trade.entry * (1 + spec.exit.targetPct / 100),
-          "목표",
-          trade.entryAt,
-          "var(--up)",
-        )}
-        {line(trade.exit, "청산", trade.exitAt, "var(--warn)")}
+        {levels && !levels.moves.length
+          ? line(levels.stop, "손절·무효화", trade.entryAt, "var(--down)")
+          : null}
+        {levels && levels.moves.length && now >= trade.entryAt ? (
+          // Managed exit: the stop is a staircase — initial level, then every move from the bar after it was decided.
+          <g key="stop-path">
+            <path
+              d={(() => {
+                const end = Math.min(now, trade.exitAt),
+                  moves = levels.moves.filter((m) => m.at <= end);
+                let d = `M ${x(trade.entryAt)} ${y(levels.stop)}`;
+                for (const m of moves) d += ` H ${x(m.at)} V ${y(m.to)}`;
+                return d + ` H ${x(end)}`;
+              })()}
+              fill="none"
+              stroke="var(--down)"
+              strokeWidth="1.5"
+            />
+            {levels.moves
+              .filter((m) => m.at <= now)
+              .map((m) => (
+                <text key={m.at} x={x(m.at) + 3} y={y(m.to) - 4} fontSize="10" fill="var(--down)">
+                  {m.source === "breakeven" ? "본전" : "트레일"} {m.to.toLocaleString("ko-KR", { maximumFractionDigits: 8 })}
+                </text>
+              ))}
+            <text x={width - pad} y={y(levels.moves.filter((m) => m.at <= now).at(-1)?.to ?? levels.stop) + 12} textAnchor="end" fontSize="11" fill="var(--down)">
+              손절선 이동 {levels.moves.filter((m) => m.at <= now).length}회
+            </text>
+          </g>
+        ) : null}
+        {levels?.target != null ? line(levels.target, "목표", trade.entryAt, "var(--up)") : null}
+        {line(trade.exit, `청산 · ${CT_EXIT_REASON_TEXT[trade.reason] ?? trade.reason}`, trade.exitAt, "var(--warn)")}
         {signal.stages
           .filter((s) => now >= signal.decidedAt && s.at <= now)
           .map((s, i) => (

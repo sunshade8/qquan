@@ -174,6 +174,30 @@ export function higherWindow(series: CTHigherSeries, nowMs: number, lookback: nu
   return series.bars.slice(start, end);
 }
 
+/**
+ * The previous day's complete daily bar for a decision at `nowMs` (the close of a one-minute bar):
+ * crypto — the UTC day that ends exactly where today starts; stocks — the session immediately before
+ * today's in the NYSE calendar. A day with a missing minute is not a bar, a missing session is not
+ * bridged, and a window never spans a split (raw prices on both sides are not comparable).
+ */
+export function prevDailyBar(series: CTHigherSeries, market: CTMarket, symbol: string, nowMs: number): CTBar | null {
+  const DAY = 86_400_000;
+  if (market === "crypto") {
+    const dayStart = Math.floor((nowMs - 1) / DAY) * DAY,
+      i = higherCount(series, dayStart) - 1;
+    return i >= 0 && series.bars[i].endMs === dayStart ? series.bars[i] : null;
+  }
+  const today = sessionAt(nowMs - 1);
+  if (!today) return null;
+  const i = higherCount(series, today.openMs) - 1;
+  if (i < 0) return null;
+  const bar = series.bars[i],
+    before = sessionAt(bar.startMs);
+  if (!before || before.ord + 1 !== today.ord) return null;
+  if ((CT_STOCK_SPLITS[symbol] ?? []).some((d) => before.date < d && today.date >= d)) return null;
+  return bar;
+}
+
 /** Base one-minute bars a live caller must supply for a higher-timeframe window of (lookback + offset + 2) bars. */
 export function higherWarmupMinutes(market: CTMarket, minutes: number, lookback: number, offset: number) {
   const bars = lookback + offset + 2;

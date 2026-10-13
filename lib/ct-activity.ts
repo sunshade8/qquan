@@ -106,9 +106,10 @@ const trialNo = (id: unknown) => {
 
 /** "return_pct(3분)·volume_ratio" — the features a query measured. */
 export function queryFeatures(input: Record<string, unknown>) {
-  const stages = ((input.query as { stages?: Array<{ conditions?: Array<{ feature: string; timeframe: number }> }> } | undefined)?.stages) ?? [];
-  const names = stages.flatMap((s) => s.conditions ?? []).map((c) => (c.timeframe > 1 ? `${c.feature}(${c.timeframe}분)` : c.feature));
-  return [...new Set(names)].join(" · ") || "조건";
+  const query = input.query as { stages?: Array<{ conditions?: Array<{ feature: string; timeframe: number; unit?: string }> }>; entryWindows?: unknown[]; exitCompare?: unknown } | undefined;
+  const stages = query?.stages ?? [];
+  const names = stages.flatMap((s) => s.conditions ?? []).map((c) => `${c.timeframe > 1 ? `${c.feature}(${c.timeframe}분)` : c.feature}${c.unit === "atr" ? "[ATR]" : ""}`);
+  return ([...new Set(names)].join(" · ") || "조건") + (query?.entryWindows?.length ? " · 시간 창" : "") + (query?.exitCompare ? " · 청산 구조 비교" : "");
 }
 /** What a running tool is doing, as a sentence. */
 export function toolDoing(t: Pick<CTToolTrace, "name" | "input">) {
@@ -157,7 +158,8 @@ export function sessionProgress(ct: CTResearch) {
   const p = ct.contract.policy;
   const max = { turns: p.sessionMaxTurns ?? 12, tools: p.sessionMaxToolCalls ?? 24, sessions: p.maxSessions ?? 3 };
   const queries = (ct.queries ?? []).filter((q) => q.session === s.index).length;
-  return `세션 ${s.index + 1}/${max.sessions} · 턴 ${s.turns}/${max.turns} · 도구 ${s.toolCalls}/${max.tools} · 조회 ${queries} · 사전 검사 ${s.screens}`;
+  const tests = Object.keys(ct.tests?.signatures ?? {}).length;
+  return `세션 ${s.index + 1}/${max.sessions} · 턴 ${s.turns}/${max.turns} · 도구 ${s.toolCalls}/${max.tools} · 조회 ${queries} · 사전 검사 ${s.screens}${tests ? ` · 가설 검정 ${tests}회` : ""}`;
 }
 
 /** Concrete context for the current phase, built from counts the job already has. */

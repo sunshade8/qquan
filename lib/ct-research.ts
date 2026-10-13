@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ctRuleText, ctSessionPolicy, ctSpecSchema, type CTContract, type CTSpec } from "./ct-spec.ts";
+import { ctFreedom, ctRuleText, ctSessionPolicy, ctSpecSchema, type CTContract, type CTSpec } from "./ct-spec.ts";
 import { ctRoundTripCostPct, ctStability, ctSummary, type CTResult } from "./ct-engine.ts";
 import { ctCostProfileText } from "./ct-costs.ts";
 import type { GenerationReview } from "./strategy-generation-spec.ts";
@@ -189,6 +189,8 @@ export type CTQueryRecord = {
   events: number;
   uniqueDays: number;
   summary: string;
+  /** Hypothesis-test identity (ctTestSignature); absent on queries from before the ledger. */
+  signature?: string;
 };
 export type CTResearch = {
   version: 1;
@@ -224,6 +226,8 @@ export type CTResearch = {
   queries?: CTQueryRecord[];
   /** Training times the server offered as read_bars anchors. */
   anchors?: number[];
+  /** Multiple-testing ledger: hypothesis signature → tool calls (query_conditional_returns and screen_rule), whole run. */
+  tests?: { signatures: Record<string, number> };
   /** Set when research continued without web sources (search optional). */
   sourceNote?: string;
   tools: CTToolTrace[];
@@ -269,6 +273,41 @@ export function ctBrief(r: CTResult) {
   };
 }
 
+/**
+ * The multiple-testing ledger. Each query_conditional_returns / screen_rule call is filed under its
+ * hypothesis signature (ctTestSignature: features · timeframes · directions · units, whether a time
+ * window is used); a threshold, lookback or exit-number variant of the same combination is the same
+ * test, a different combination is a new one. Accumulates over the whole research run.
+ */
+export function ctRecordTest(ct: Pick<CTResearch, "tests">, signature: string) {
+  ct.tests ??= { signatures: {} };
+  ct.tests.signatures[signature] = (ct.tests.signatures[signature] ?? 0) + 1;
+}
+export function ctTestLedger(ct: Pick<CTResearch, "tests">) {
+  const signatures = ct.tests?.signatures ?? {};
+  return {
+    hypothesisTests: Object.keys(signatures).length,
+    toolCalls: Object.values(signatures).reduce((sum, n) => sum + n, 0),
+    note: "서로 다른 feature·시간대·방향·단위 조합의 수 · 같은 조합의 임계값/룩백/청산 숫자 변형은 1회",
+  };
+}
+/** Zod errors as one line each; a failed union reports the branch that failed least (the intended shape). */
+export function ctIssueText(error: z.ZodError) {
+  const lines: string[] = [];
+  const walk = (issues: z.ZodError["issues"], prefix: string[]) => {
+    for (const i of issues) {
+      const path = [...prefix, ...i.path.map(String)];
+      if (i.code === "invalid_union" && Array.isArray((i as { errors?: unknown }).errors)) {
+        const branches = (i as unknown as { errors: Array<z.ZodError["issues"]> }).errors;
+        const best = [...branches].sort((a, b) => a.length - b.length)[0];
+        if (best) walk(best, path);
+      } else lines.push(`${path.join(".")}: ${i.message}`);
+    }
+  };
+  walk(error.issues, []);
+  return lines.slice(0, 8).join("; ");
+}
+
 /** Evidence a v2 candidate may cite: verified web sources and this run's completed training queries. */
 export function ctEvidenceIds(ct: Pick<CTResearch, "sources" | "queries">) {
   return [...ct.sources.map((s) => s.id), ...(ct.queries ?? []).map((q) => q.queryId)];
@@ -284,11 +323,17 @@ What counts as success (the server checks this, you cannot change it): total net
 
 Why costs come first: the context gives a cost_hurdle table computed from the training data. A round trip costs several times the average one-minute bar range, so any rule that captures ordinary small moves loses money by construction. Read the table first and decide where an edge could even exist: which holding times, times of day and volatility regimes produce favorable moves that are large enough, often enough. Then form hypotheses.
 
+How exit structure beats the cost barrier (ct-pattern-3): the round-trip cost is a fixed price per trade, so the question is the payoff in R (R = the initial risk, entry minus the initial stop). With a stop of s percent and a round-trip cost of c percent, a loser costs about (s + c)/s R and a winner of k R nets (k·s − c)/s R: a tight fixed stop makes the cost enormous in R terms, and a small fixed target caps the winners the cost has to be paid from. An edge can only survive by cutting losers early, letting the few real moves run, and not paying for trades that never get going. The exit language gives you each of those, and each has a reason: a stop sized to current volatility (stop type atr) so quiet days are not stopped by noise and wild days do not risk too much; a breakeven move once a trade is +R in profit (the stop goes to the entry plus a little to cover cost, offsetPct), which turns trades that first worked and then failed into scratches instead of losses; a trailing stop (trail) that follows the highest high, so a trend day can pay many R instead of a capped target; a time stop (timeStop) that closes a trade that has shown no reaction within N bars, because holding a trade that is not working costs the same as a loss and it usually will not start working; and a target in R (target type r) so the reward is tied to the risk actually taken. Widen the stop to the volatility before trying anything clever, then compare structures on the SAME events with query_conditional_returns exitCompare (fixed, breakeven, trail, time stop side by side, average R and net after costs): the difference between structures is the measurement — the single best cell of a grid is not.
+
 How to research: for each hypothesis, state the phenomenon, the mechanism (why price should behave that way — who is forced to trade, what information arrives), and what result would falsify it, before you look. Test it with query_conditional_returns, which measures forward returns, MFE/MAE, a stop/target grid after costs, monthly stability and the difference from an unconditional baseline at the same times of day. Look at a few actual events with read_bars when the numbers alone do not explain what is happening. Explore hypotheses with genuinely different mechanisms; varying thresholds of one idea is tuning, not exploration.
 
 Guard against fooling yourself: every query you run raises the chance that something looks good by luck, and the full query log goes to independent reviewers. Distrust effects that rest on few events, on one or two months, or that vanish against the baseline or under doubled costs. Prefer a few simple conditions with a clear mechanism over many tuned ones. Web principles in the context are inspiration only — never evidence of performance.
 
-The rule language (all you can express): a rule is 1–4 ordered stages; each stage is 1–6 AND conditions; a stage must occur within its maxGapBars after the previous one. Features: return_pct, sma_distance_pct, range_pct, volume_ratio, contraction_ratio (recent half vs older half of the window's bar ranges), prior_high_distance_pct, prior_low_distance_pct, range_position (0..1), swing_high_distance_pct, swing_low_distance_pct (swings confirmed two bars later). Percent features are percent; ratios are raw. lookback 2–120 bars, offset 0–120 bars back, timeframe 1/3/12 = closed 1/3/12-minute bars built from the 1-minute bars (stocks: current session only); timeframe 60/240/1440 = closed hourly / 4-hour / daily bars (crypto: UTC grid, daily = the UTC day; stocks: grid from the session open, daily = the regular session) that may use completed bars of earlier sessions and look back at most 30 days (daily lookback+offset+1 ≤ 30) — use them for yesterday's high/low, the multi-day trend and the day's range, and 1-minute conditions only to time the entry. Entry is always the next bar's open; exits are a fixed stop, a fixed target, a time limit (maxHoldBars ≤ 390 for stocks, ≤ 1440 for crypto) and optional invalidation below the pattern low. This is day trading: every position is force-closed on the day's last bar (stocks at the session close, crypto at 00:00 UTC = 09:00 KST) and entry.noEntryBeforeDayEndMinutes (0–240) refuses new entries that close to the day end. Set spec.engine to the contract's engine. Stocks reset 1/3/12-minute history at each session; crypto 1/3/12-minute conditions see at most 1500 contiguous bars. Long only. Trend lines, news, order book, shorting, leverage and discretion cannot be expressed: leave them out of the rule and name them as limitations.
+The rule language (all you can express): a rule is 1–4 ordered stages; each stage is 1–6 AND conditions; a stage must occur within its maxGapBars after the previous one. Classic features: return_pct, sma_distance_pct, range_pct, volume_ratio, contraction_ratio (recent half vs older half of the window's bar ranges), prior_high_distance_pct, prior_low_distance_pct, range_position (0..1), swing_high_distance_pct, swing_low_distance_pct (swings confirmed two bars later). Percent features are percent; ratios are raw. lookback 2–120 bars, offset 0–120 bars back, timeframe 1/3/12 = closed 1/3/12-minute bars built from the 1-minute bars (stocks: current session only); timeframe 60/240/1440 = closed hourly / 4-hour / daily bars (crypto: UTC grid, daily = the UTC day; stocks: grid from the session open, daily = the regular session) that may use completed bars of earlier sessions and look back at most 30 days (daily lookback+offset+1 ≤ 30) — use them for the multi-day trend and the day's range, and 1-minute conditions only to time the entry.
+
+Day levels (ct-pattern-3) — day traders anchor decisions to these prices, they read the trading day so far (crypto: the UTC day, stocks: the regular session) and are null while the day has a missing minute: vwap_distance_pct (close vs the day's cumulative volume-weighted average price, the day's fair value: below it for mean-reversion entries, above it for trend continuation), prev_day_high_distance_pct / prev_day_low_distance_pct / prev_day_close_distance_pct (yesterday's range and close: breakouts, failed breakouts, gap fills — early in the day prev_day_close_distance_pct is the overnight gap), day_open_distance_pct (distance from today's open, the line buyers and sellers of the day defend), opening_range_position (close inside the high–low of the first lookback minutes of the day as 0..1, outside 0..1 means a breakout; lookback is the range length, at least 5 minutes, and the value is null until that range is complete), day_range_position (0..1 inside today's high–low so far). They have fixed lookback 2, offset 0, timeframe 1 (opening_range_position: offset 0, timeframe 1, lookback = length) because they have no other meaning. Volatility features: atr_pct (average true range as percent of price over lookback bars of the timeframe: is the market moving enough to pay the cost?) and atr_percentile (0..1 rank of the current ATR among the last lookback ATR values, ATR length atrLookback default 14: compression versus expansion). unit "atr" on a return or distance condition compares it as a multiple of ATR (atrLookback bars default 14, of atrTimeframe default the condition's own timeframe, read at the decision) instead of a fixed percent, so "1.5 ATR below VWAP" means the same on a quiet day and a wild one; atrTimeframe 60 or 1440 measures it in hourly or daily ranges while the condition itself runs on 1-minute bars. entry.entryWindows (up to 3) limits entries to minutes after the day start (crypto: UTC 00:00; stocks: the session open), both ends included, judged at the signal bar's close — use it only where the cost_hurdle time-of-day table shows moves large enough. entry.noEntryBeforeDayEndMinutes (0–240) refuses new entries that close to the day end.
+
+Entry is always the next bar's open. Exits are either the classic form (stopPct, targetPct, maxHoldBars, invalidation below the pattern low) or the managed form: { stop: {type pct|atr|pattern_low|swing_low, value} (pct: percent below entry; atr: ATR multiples; pattern_low / swing_low: the pattern's lowest low or the latest confirmed swing low, value = extra buffer percent below it), target?: {type pct|atr|r, value}, breakeven?: {triggerR, offsetPct?}, trail?: {type pct|atr|swing_low, value, activateR} (follows the highest high once +activateR R is reached; swing_low follows the latest confirmed swing low since entry), timeStop?: {bars, minR} (after bars bars, the entry bar being the first, exit if the profit is below minR), atr?: {timeframe, lookback} (the ATR every atr-type stop, target and trail uses; default 1-minute ATR(14), so choose a larger timeframe for a stop that is not noise), maxHoldBars }. The stop only ever moves up. Inside one bar the stop that stood before the bar is checked first (a gap through it fills at the open), then the target, then the time stop and the holding limit; highs of that bar raise breakeven and trail only for the NEXT bar. A rule whose stop is not below the entry or farther than 15% for a signal is not entered. This is day trading: every position is force-closed on the day's last bar (stocks at the session close, crypto at 00:00 UTC = 09:00 KST); maxHoldBars ≤ 390 for stocks, ≤ 1440 for crypto. Set spec.engine to the contract's engine; the features, units, windows and managed exits above exist only for ct-pattern-3. Stocks reset 1/3/12-minute history at each session; crypto 1/3/12-minute conditions see at most 1500 contiguous bars. Long only. Trend lines, news, order book, shorting, leverage and discretion cannot be expressed: leave them out of the rule and name them as limitations. More vocabulary is more ways to fit noise: every extra condition and exit number raises the freedom the reviewers count, so prefer the simplest rule that carries the mechanism.
 
 Tools and their limits: every tool sees the training split only; the server rejects anything past it. query_conditional_returns takes the same conditions as the rule language. read_bars only opens times the server offered (query anchors, or a parent candidate's training trades). screen_rule replays a complete rule on training data and returns the server's gate verdict; do not submit a rule that already fails on training. submit_candidates ends the session: 1–3 candidates, or zero candidates with noEdgeReason when nothing survived — record every hypothesis you rejected and why. Each condition in a candidate's mapping cites evidence: a queryId whose query used the same feature at the same timeframe (lookbacks and thresholds may differ — say how in implementationAssumption), or a web source id. spec.sourceIds lists the evidence ids the rule uses. A revision of an earlier measured candidate names it as parentId and states the measured problem, the exact changes and the expected effect; a new idea has parentId null.
 
@@ -306,7 +351,7 @@ function contractView(contract: CTContract) {
     timezone: contract.timezone,
     currency: contract.currency,
     capital: contract.capital,
-    dayEnd: contract.market === "stock" ? "정규장 종료(마지막 1분 전 봉 종가 청산)" : "UTC 00:00 = KST 09:00 (직전 봉 종가 청산, ct-pattern-2)",
+    dayEnd: contract.market === "stock" ? "정규장 종료(마지막 1분 전 봉 종가 청산)" : "UTC 00:00 = KST 09:00 (직전 봉 종가 청산, ct-pattern-2 이상)",
     costProfile: ctCostProfileText(contract, ctRoundTripCostPct(contract)),
     training: { from: iso(contract.fromMs), to: iso(contract.trainingToMs), fromMs: contract.fromMs, toMs: contract.trainingToMs },
     developmentAndFinal: "학습 구간 이후 · 설계 도구로 열람 불가 · 개발은 서버 실험 요약만 전달",
@@ -339,6 +384,7 @@ function candidateRecord(entry: { kind: "trial"; t: CTTrial } | { kind: "screene
       parentId: t.candidate.parentId,
       parentable: false,
       rule: ctRuleText(t.candidate.spec),
+      freedom: ctFreedom(t.candidate.spec).total,
       training: ctBrief(t.training),
       outcome: "학습 게이트 탈락 · 개발 미실행",
       reasons: t.reasons,
@@ -352,6 +398,7 @@ function candidateRecord(entry: { kind: "trial"; t: CTTrial } | { kind: "screene
     parentId: t.parentId,
     parentable: true,
     rule: ctRuleText(t.spec),
+    freedom: ctFreedom(t.spec).total,
     hypothesis: t.hypothesis.mechanism,
     training: ctBrief(t.training),
     development: ctBrief(t.development),
