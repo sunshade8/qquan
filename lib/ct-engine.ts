@@ -70,6 +70,10 @@ export type CTResult = {
   expectancy: number;
   compliancePct: number;
   daily: Array<{ date: string; equity: number; returnPct: number }>;
+  /** Mean of daily net returns (after every cost) over all evaluated days, no-trade days at 0. */
+  meanDailyReturnPct?: number;
+  positiveDayPct?: number;
+  worstDayPct?: number;
   concentrationPct: number;
   maxMonthConcentrationPct: number;
   emptyDays: number;
@@ -135,6 +139,7 @@ export function ctSwings(bars: CTBar[], nowMs: number, width = 2) {
   return result;
 }
 function higherBars(bars: CTBar[], factor: number, nowMs: number) {
+  if (!bars.length) return [];
   if (factor === 1) return bars.filter((b) => b.endMs <= nowMs);
   const size = (bars[0].endMs - bars[0].startMs) * factor;
   const groups = new Map<number, CTBar[]>();
@@ -147,7 +152,8 @@ function higherBars(bars: CTBar[], factor: number, nowMs: number) {
   return [...groups].flatMap(([at, rows]) =>
     rows.length === factor &&
     at + size <= nowMs &&
-    rows.every((b, i) => b.startMs === at + i * size)
+    // Members are consecutive base bars; comparing with the higher size rejected every group.
+    rows.every((b, i) => b.startMs === at + (i * size) / factor)
       ? [
           {
             startMs: at,
@@ -162,12 +168,27 @@ function higherBars(bars: CTBar[], factor: number, nowMs: number) {
       : [],
   );
 }
+/**
+ * Closed base bars that can form the condition's window: lookback + offset + 1 complete
+ * groups, plus one partial group at each end. Older bars cannot change the result.
+ */
+function conditionTail(condition: CTCondition, input: CTBar[], nowMs: number) {
+  let end = input.length;
+  while (end > 0 && input[end - 1].endMs > nowMs) end--;
+  const count =
+    (condition.lookback + condition.offset + 3) * condition.timeframe;
+  return input.slice(Math.max(0, end - count), end);
+}
 export function ctFeature(
   condition: CTCondition,
   input: CTBar[],
   nowMs: number,
 ): number | null {
-  const full = higherBars(input, condition.timeframe, nowMs);
+  const full = higherBars(
+    conditionTail(condition, input, nowMs),
+    condition.timeframe,
+    nowMs,
+  );
   const end = full.length - condition.offset;
   const rows = full.slice(Math.max(0, end - condition.lookback - 1), end);
   if (
@@ -219,7 +240,11 @@ export function ctFeature(
   }
 }
 function ctReference(condition: CTCondition, input: CTBar[], now: number) {
-  const full = higherBars(input, condition.timeframe, now),
+  const full = higherBars(
+      conditionTail(condition, input, now),
+      condition.timeframe,
+      now,
+    ),
     end = full.length - condition.offset,
     rows = full.slice(Math.max(0, end - condition.lookback - 1), end),
     prior = rows.slice(0, -1);
@@ -241,14 +266,48 @@ function ctReference(condition: CTCondition, input: CTBar[], now: number) {
   }
   return null;
 }
+/**
+ * Base bars the detector can read: the deepest condition window (plus one higher-bar
+ * alignment group), every stage gap, and the 120-bar swing/20-bar reference views.
+ * Capped at the historical 1,800 so results match the previous fixed window exactly.
+ */
+export function ctHistoryBars(spec: CTSpec) {
+  const need = Math.max(
+    ...spec.stages.flatMap((s) =>
+      s.conditions.map((c) => (c.lookback + c.offset + 3) * c.timeframe),
+    ),
+  );
+  const gaps = spec.stages.reduce((sum, s) => sum + s.maxGapBars, 0);
+  return Math.min(1800, Math.max(121, need + gaps + 2));
+}
+/**
+ * Feature values per condition, keyed by the closing time of the bar they were read at.
+ * A value depends only on bars closed by then, so a replay can reuse it while later
+ * bars rescan earlier stages.
+ */
+export type CTFeatureCache = Map<CTCondition, Map<number, number | null>>;
 /** One causal detector shared by historical replay and the trading runner. No models. */
 export function detectCT(
   spec: CTSpec,
   symbol: string,
   input: CTBar[],
   nowMs: number,
+  cache?: CTFeatureCache,
 ): CTSignal | null {
-  const bars = input.filter((b) => b.endMs <= nowMs).slice(-1800);
+  const feature = (c: CTCondition, bars: CTBar[], at: number) => {
+    if (!cache) return ctFeature(c, bars, at);
+    let byTime = cache.get(c);
+    if (!byTime) cache.set(c, (byTime = new Map()));
+    let value = byTime.get(at);
+    if (value === undefined) byTime.set(at, (value = ctFeature(c, bars, at)));
+    return value;
+  };
+  let end = input.length;
+  while (end > 0 && input[end - 1].endMs > nowMs) end--;
+  // Inputs are time-ordered, so the closed tail is the last window of the trimmed input.
+  const bars = input
+    .slice(Math.max(0, end - ctHistoryBars(spec)), end)
+    .filter((b) => b.endMs <= nowMs);
   const last = bars.at(-1);
   if (!last || !spec.symbols.includes(symbol) || !validCTBar(last)) return null;
   const matches: CTSignal["stages"] = [];
@@ -261,8 +320,9 @@ export function detectCT(
         : Math.max(0, cursor - spec.stages[phase + 1].maxGapBars + 1);
     let found = false;
     for (let i = cursor; i >= lower; i--) {
+      // Features read only bars closed by bars[i].endMs, so no prefix copy is needed.
       const values = stage.conditions.map((c) =>
-        ctFeature(c, bars.slice(0, i + 1), bars[i].endMs),
+        feature(c, bars, bars[i].endMs),
       );
       if (
         values.every(
@@ -444,6 +504,7 @@ export function replayCT(
     result.diagnostics.push("비정상·중복 데이터");
     return result;
   }
+  const history = ctHistoryBars(spec);
   let cash = contract.capital,
     peak = cash,
     lastExit = -Infinity,
@@ -475,6 +536,15 @@ export function replayCT(
       s,
       new Map((data[s] ?? []).map((b, i) => [b.endMs, i])),
     ]),
+  );
+  const featureCaches = Object.fromEntries(
+    spec.symbols.map((s) => [s, new Map() as CTFeatureCache]),
+  );
+  const firstInRange = Object.fromEntries(
+    spec.symbols.map((s) => {
+      const i = (data[s] ?? []).findIndex((b) => b.startMs >= fromMs);
+      return [s, i < 0 ? Infinity : i];
+    }),
   );
   const addBlock = (reason: string) => {
     result.blocked[reason] = (result.blocked[reason] ?? 0) + 1;
@@ -651,10 +721,11 @@ export function replayCT(
         const i = indexes[symbol].get(time);
         if (i === undefined) continue;
         // Purged split: pattern history and positions never cross the evaluation boundary.
-        const rows = data[symbol]
-          .slice(Math.max(0, i - 1800), i + 1)
-          .filter((b) => b.startMs >= fromMs);
-        const signal = detectCT(spec, symbol, rows, time);
+        const rows = data[symbol].slice(
+          Math.max(0, i - history, firstInRange[symbol]),
+          i + 1,
+        );
+        const signal = detectCT(spec, symbol, rows, time, featureCaches[symbol]);
         if (signal) {
           result.signals++;
           pending = { symbol, signal, index: i };
@@ -707,6 +778,7 @@ export function replayCT(
     marked = cash;
   }
   recordDay();
+  Object.assign(result, ctDailyStats(result));
   const wins = result.trades.filter((t) => t.pnl > 0),
     losses = result.trades.filter((t) => t.pnl <= 0);
   result.status = result.trades.length ? "measured" : "no_trades";
@@ -758,7 +830,34 @@ export function replayCT(
   if (result.concentrationPct > 80) result.diagnostics.push("종목 수익 집중");
   if (result.netReturnPct <= 0)
     result.diagnostics.push("비용 후 양의 엣지 미확인");
+  if ((result.meanDailyReturnPct ?? 0) <= 0)
+    result.diagnostics.push("일평균 비용 후 수익 0 이하");
   return result;
+}
+/**
+ * Day-level view of a replay: what one evaluated day of trading returned after costs.
+ * Results stored before these fields existed are derived from their daily equity rows.
+ */
+export function ctDailyStats(result: Pick<CTResult, "daily">) {
+  const days = result.daily.map((d) => d.returnPct);
+  return {
+    meanDailyReturnPct: days.length
+      ? days.reduce((s, n) => s + n, 0) / days.length
+      : 0,
+    positiveDayPct: days.length
+      ? (days.filter((n) => n > 0).length / days.length) * 100
+      : 0,
+    worstDayPct: days.length ? Math.min(...days) : 0,
+  };
+}
+/** Daily mean net return, read from the result or derived for results saved before it. */
+type CTDailyView = Pick<CTResult, "daily" | "netReturnPct" | "meanDailyReturnPct">;
+export function ctMeanDaily(result: CTDailyView) {
+  return result.meanDailyReturnPct ?? ctDailyStats(result).meanDailyReturnPct;
+}
+/** Positive after costs both in total and per evaluated day. */
+export function ctNetPositive(result: CTDailyView) {
+  return result.netReturnPct > 0 && ctMeanDaily(result) > 0;
 }
 export function ctGate(result: CTResult, contract: CTContract) {
   return [
@@ -767,6 +866,8 @@ export function ctGate(result: CTResult, contract: CTContract) {
       "거래 표본 부족",
     result.netReturnPct <= contract.policy.minNetReturnPct &&
       "비용 후 수익 기준 미달",
+    ctMeanDaily(result) <= (contract.policy.minMeanDailyReturnPct ?? 0) &&
+      "일평균 비용 후 수익 기준 미달",
     result.maxDrawdownPct > contract.policy.maxDrawdownPct && "낙폭 초과",
     result.compliancePct < contract.policy.minCompliancePct && "규칙 준수 미달",
     contract.symbols.length > 1 &&
@@ -777,7 +878,11 @@ export function ctGate(result: CTResult, contract: CTContract) {
 }
 export function ctSummary(result: CTResult) {
   const { trades, ...summary } = result;
-  return { ...summary, tradeCount: result.tradeCount ?? trades.length };
+  return {
+    ...ctDailyStats(result),
+    ...summary,
+    tradeCount: result.tradeCount ?? trades.length,
+  };
 }
 
 /** Small state checkpoint; all executions are persisted separately by the replay tool. */

@@ -102,6 +102,7 @@ export function toolDoing(t: Pick<CTToolTrace, "name" | "input">) {
     case "search_public_approaches": return "검색 결과의 출처를 검증하고 있습니다";
     case "read_public_source": return `${hostOf(i.url)} 원문을 읽고 있습니다`;
     case "analyze_training": return "학습 구간 통계를 계산하고 있습니다";
+    case "read_training_bars": return "무작위 학습 구간의 1분봉을 읽고 있습니다";
     case "compile_strategy": return "후보 규칙을 컴파일하고 실행 가능성을 검사하고 있습니다";
     case "backtest": return `${backtestKind(i.kind)} 백테스트를 실행하고 있습니다`;
     case "failure_diagnosis": return `${trialNo(i.trialId)}의 실패 원인을 진단하고 있습니다`;
@@ -133,7 +134,7 @@ export function phaseContext(ct: CTResearch) {
     case "sources": return `${c.symbols.join(", ")} · ${c.minutes}분봉 관점으로 원문 2–6건 선정`;
     case "read": return `선정 URL ${ct.search?.urls.length ?? 0}건 중 ${ct.sources.length}건 읽음`;
     case "approaches": return `확인된 원문 ${ct.sources.length}건 · 원문에 실제 있는 인용만 허용`;
-    case "design": return `후보 ${next}/${c.policy.maxCandidates} · 출처 ${ct.sources.length}건 · 학습 구간 통계만 사용`;
+    case "design": return `후보 ${next}/${c.policy.maxCandidates} · 출처 ${ct.sources.length}건 · 학습 구간 1분봉·통계만 사용`;
     case "reflect": return `후보 ${next}/${c.policy.maxCandidates} · 이전 후보 ${ct.trials.length}개의 측정 실패 반영`;
     case "experiment": return `학습 · 개발 · 비용 2배 · 1봉 지연 · 손절 민감도 · 누적 백테스트 ${ct.backtests}회`;
     case "risk_review": return "규칙 해시 동결 후 독립 모델 검토 · 제공자 장애는 승인으로 대체하지 않음";

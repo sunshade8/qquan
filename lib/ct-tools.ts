@@ -87,6 +87,30 @@ export const CT_TOOLS = {
       }),
     ),
   },
+  read_training_bars: {
+    phases: ["design", "reflect"],
+    input: z
+      .object({
+        dataHash: z.string(),
+        seed: z.string(),
+        windows: z
+          .array(z.object({ symbol: z.string(), from: time, to: time }).strict())
+          .min(1)
+          .max(4),
+      })
+      .strict(),
+    output: z.array(
+      z.object({
+        symbol: z.string(),
+        from: time,
+        to: time,
+        date: z.string(),
+        timezone: z.string(),
+        bars: z.number().int().positive().max(1440),
+        csv: z.string(),
+      }),
+    ),
+  },
   collect_market_data: {
     phases: ["data"],
     input: z
@@ -224,6 +248,21 @@ export function assertCTTool(name: string, input: unknown, ct: CTResearch) {
       data.dataHash !== ct.dataHash
     )
       throw new Error("CT 분석 학습 범위 거부");
+  }
+  if (name === "read_training_bars") {
+    const data = value as z.infer<typeof CT_TOOLS.read_training_bars.input>;
+    if (
+      data.dataHash !== ct.dataHash ||
+      data.windows.some(
+        (w) =>
+          !ct.contract.symbols.includes(w.symbol) ||
+          w.from < ct.contract.fromMs ||
+          w.to > ct.contract.trainingToMs ||
+          w.to <= w.from ||
+          w.to - w.from > 1440 * 60_000,
+      )
+    )
+      throw new Error("CT 1분봉 열람은 학습 구간만 허용");
   }
   if (name === "collect_market_data") {
     const data = value as z.infer<typeof CT_TOOLS.collect_market_data.input>;

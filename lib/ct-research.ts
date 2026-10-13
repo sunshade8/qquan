@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ctSpecSchema, type CTContract, type CTSpec } from "./ct-spec.ts";
-import type { CTResult } from "./ct-engine.ts";
+import { ctSummary, type CTResult } from "./ct-engine.ts";
 import type { GenerationReview } from "./strategy-generation-spec.ts";
 export const ctRequestSchema = z
   .object({
@@ -8,7 +8,8 @@ export const ctRequestSchema = z
     market: z.enum(["stock", "crypto"]).default("stock"),
     brief: z.string().max(1500).default(""),
     symbols: z.array(z.string().max(20)).min(1).max(4).optional(),
-    minutes: z.union([z.literal(5), z.literal(15), z.literal(60)]).optional(),
+    // Research is fixed to 1-minute bars; the field stays only to reject other values clearly.
+    minutes: z.literal(1).optional(),
     budgetUsd: z.union([z.literal(8), z.literal(16), z.literal(24)]).default(8),
     capital: z.number().positive().max(100000000).optional(),
     days: z.number().int().min(90).max(365).default(180),
@@ -152,16 +153,26 @@ export type CTResearch = {
   backtests: number;
   duplicateCount: number;
 };
+const daily = (r: CTResult) => {
+  const s = ctSummary(r);
+  return {
+    meanDailyReturnPct: s.meanDailyReturnPct,
+    positiveDayPct: s.positiveDayPct,
+    worstDayPct: s.worstDayPct,
+  };
+};
 export function ctDesignContext(
   ct: CTResearch,
   brief: string,
   statistics: unknown,
+  minuteBars: unknown = [],
 ) {
   // Allowlist only. Do not spread CT state: final data/results never enter author input.
   return {
     contract: ct.contract,
     brief,
     statistics,
+    minuteBars,
     sources: ct.sources.map((s) => ({
       id: s.id,
       url: s.url,
@@ -181,16 +192,24 @@ export function ctDesignContext(
         trades: t.training.trades.length,
         diagnostics: t.training.diagnostics,
         blocked: t.training.blocked,
+        ...daily(t.training),
       },
       development: {
         netReturnPct: t.development.netReturnPct,
         trades: t.development.trades.length,
         maxDrawdownPct: t.development.maxDrawdownPct,
         diagnostics: t.development.diagnostics,
+        ...daily(t.development),
       },
-      stress: { netReturnPct: t.stress.netReturnPct },
-      delayed: { netReturnPct: t.delayed.netReturnPct },
-      sensitivity: t.sensitivity,
+      stress: { netReturnPct: t.stress.netReturnPct, ...daily(t.stress) },
+      delayed: { netReturnPct: t.delayed.netReturnPct, ...daily(t.delayed) },
+      sensitivity: t.sensitivity.map((x) => ({
+        change: x.change,
+        result: {
+          netReturnPct: x.result.netReturnPct,
+          meanDailyReturnPct: x.result.meanDailyReturnPct,
+        },
+      })),
       reasons: t.reasons,
     })),
   };

@@ -172,6 +172,7 @@ export function describeTool(t: CTToolTrace) {
       return `실패 진단 · 후보 ${Number.isFinite(n) ? n + 1 : ""}`;
     }
     case "analyze_training": return "학습 구간 통계 분석";
+    case "read_training_bars": return `학습 구간 1분봉 열람 · ${(i.windows as unknown[] | undefined)?.length ?? 0}구간`;
     default: return t.name;
   }
 }
@@ -437,7 +438,10 @@ export const ActivityFeed = memo(FeedBase, (a, b) => {
 /* -------------------------------------------------------- LatestTrialCard */
 
 const sign = (n: number) => (n > 0 ? "positive" : n < 0 ? "negative" : "");
-const pctText = (n: number) => `${n > 0 ? "+" : ""}${n.toFixed(2)}%`;
+const pctText = (n: number, digits = 2) => `${n > 0 ? "+" : ""}${n.toFixed(digits)}%`;
+/** Mean daily net return; results saved before the field existed derive it from daily rows. */
+const dayMean = (r: CTTrial["development"]) =>
+  r.meanDailyReturnPct ?? (r.daily.length ? r.daily.reduce((s, d) => s + d.returnPct, 0) / r.daily.length : 0);
 export function trialPassed(t: CTTrial) {
   return t.reasons.length === 0;
 }
@@ -462,6 +466,7 @@ function LatestBase({ trial, index, total }: { trial: CTTrial | undefined; index
         <span className="ui-badge" data-tone={pass ? "accent" : undefined}>{pass ? "개발 기준 통과" : "검증 미달"}</span>
       </header>
       <div className="ui-metrics">
+        <div className="ui-metric"><span>개발 일평균 순수익</span><b className={sign(dayMean(dev))}>{pctText(dayMean(dev), 3)}</b><small>학습 {pctText(dayMean(trial.training), 3)} · 기준 0% 초과</small></div>
         <div className="ui-metric"><span>개발 순수익</span><b className={sign(dev.netReturnPct)}>{pctText(dev.netReturnPct)}</b><small>학습 {pctText(trial.training.netReturnPct)}</small></div>
         <div className="ui-metric"><span>거래 수</span><b>{dev.tradeCount ?? dev.trades.length}</b><small>무거래 {dev.emptyDays}일</small></div>
         <div className="ui-metric"><span>최대 낙폭</span><b>{dev.maxDrawdownPct.toFixed(2)}%</b><small>기준 15% 이내</small></div>

@@ -291,3 +291,96 @@ test("CT compact checkpoints preserve measured total and numerical gates", async
   assert.equal(ctSummary(compact).tradeCount, full.trades.length);
   assert.deepEqual(ctGate(compact, contract()), ctGate(full, contract()));
 });
+test("CT higher timeframe features aggregate consecutive base bars", () => {
+  const b = bars(15),
+    c = { ...condition, feature: "return_pct", timeframe: 3, lookback: 2 };
+  // Fixture bars start on a 15-minute boundary, so groups are [0..2], [3..5], [6..8] by bar 9.
+  const value = ctFeature(c, b, b[8].endMs);
+  assert.notEqual(value, null);
+  assert.ok(Math.abs(value - (b[8].close / b[2].close - 1) * 100) < 1e-9);
+});
+test("CT gate requires a positive mean daily net return, also for results saved without it", async () => {
+  const { ctNetPositive, ctMeanDaily } = await import("../lib/ct-engine.ts");
+  const result = {
+    status: "measured",
+    trades: Array.from({ length: 20 }, () => ({})),
+    netReturnPct: 1,
+    maxDrawdownPct: 1,
+    compliancePct: 100,
+    concentrationPct: 0,
+    maxMonthConcentrationPct: 0,
+    daily: [{ returnPct: 3 }, { returnPct: -2 }, { returnPct: -2 }],
+  };
+  assert.ok(Math.abs(ctMeanDaily(result) + 1 / 3) < 1e-9);
+  assert.ok(ctGate(result, contract()).includes("일평균 비용 후 수익 기준 미달"));
+  assert.equal(ctNetPositive(result), false);
+  result.daily = [{ returnPct: 0.5 }, { returnPct: 0 }, { returnPct: -0.1 }];
+  assert.deepEqual(ctGate(result, contract()), []);
+  assert.equal(ctNetPositive(result), true);
+  const r = run();
+  const days = r.daily.map((d) => d.returnPct);
+  assert.ok(Math.abs(r.meanDailyReturnPct - days.reduce((s, n) => s + n, 0) / days.length) < 1e-9);
+});
+test("CT detector cache returns the same signals as uncached detection", () => {
+  const s = spec();
+  s.stages = [
+    { label: "pullback", maxGapBars: 5, conditions: [{ ...condition, feature: "return_pct", lookback: 2, value: -5, op: "gte" }] },
+    { label: "breakout", maxGapBars: 3, conditions: [{ ...condition }] },
+  ];
+  const b = bars(60),
+    cache = new Map();
+  let signals = 0;
+  for (let i = 10; i < b.length; i++) {
+    const rows = b.slice(0, i + 1),
+      cached = detectCT(s, "KRW-BTC", rows, b[i].endMs, cache);
+    assert.deepEqual(cached, detectCT(s, "KRW-BTC", rows, b[i].endMs));
+    if (cached) signals++;
+  }
+  assert.ok(signals > 0);
+});
+test("CT research is fixed to 1-minute bars and accepts Binance USDT crypto symbols", async () => {
+  const { ctRequestSchema } = await import("../lib/ct-research.ts");
+  const base = { requestId: "00000000-0000-4000-8000-000000000000" };
+  assert.doesNotThrow(() => ctRequestSchema.parse({ ...base, minutes: 1 }));
+  assert.throws(() => ctRequestSchema.parse({ ...base, minutes: 15 }));
+  const c = { ...contract(), symbols: ["BTCUSDT"], minutes: 1, currency: "USDT" };
+  const s = { ...spec(), symbols: ["BTCUSDT"], minutes: 1 };
+  s.exit.maxHoldBars = 390;
+  assert.doesNotThrow(() => validateCTSpec(s, c, ["verified"]));
+  assert.throws(() => validateCTSpec({ ...s, symbols: ["NVDA"] }, { ...c, symbols: ["NVDA"] }, ["verified"]));
+});
+test("CT designer reads random 1-minute windows from the training split only", async () => {
+  const { sampleCTWindows, formatCTWindow } = await import("../lib/ct-samples.ts");
+  const start = Date.UTC(2025, 0, 1);
+  const minute = Array.from({ length: 4 * 1440 }, (_, i) => ({
+    startMs: start + i * 60000,
+    endMs: start + (i + 1) * 60000,
+    open: 100, high: 101, low: 99, close: 100.5, volume: 10,
+  }));
+  const c = {
+    ...contract(),
+    symbols: ["BTCUSDT"],
+    minutes: 1,
+    fromMs: start,
+    trainingToMs: start + 2 * 86400000,
+    developmentToMs: start + 3 * 86400000,
+    toMs: start + 4 * 86400000,
+    timezone: "UTC",
+  };
+  const data = { BTCUSDT: minute };
+  const a = sampleCTWindows(data, c, "0a1b2c3d"),
+    again = sampleCTWindows(data, c, "0a1b2c3d");
+  assert.equal(a.length, 3);
+  assert.deepEqual(a, again);
+  assert.ok(a.every((w) => w.from >= c.fromMs && w.to <= c.trainingToMs && w.to - w.from === 390 * 60000));
+  const shown = formatCTWindow(a[0], data, c);
+  assert.equal(shown.bars, 390);
+  assert.equal(shown.csv.split("\n").length, 391);
+  const ct = { ...ctState(), contract: c };
+  assert.doesNotThrow(() => assertCTTool("read_training_bars", { dataHash: ct.dataHash, seed: "x", windows: a }, ct));
+  assert.throws(() =>
+    assertCTTool("read_training_bars", { dataHash: ct.dataHash, seed: "x", windows: [{ symbol: "BTCUSDT", from: c.trainingToMs, to: c.trainingToMs + 3600000 }] }, ct),
+  );
+  ct.phase = "experiment";
+  assert.throws(() => assertCTTool("read_training_bars", { dataHash: ct.dataHash, seed: "x", windows: a }, ct));
+});

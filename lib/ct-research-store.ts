@@ -40,9 +40,11 @@ import {
   type CTTrial,
 } from "./ct-research.ts";
 import { ctDataPage, ctDb, ctResearchPageStart, loadCTData } from "./ct-data.ts";
+import { formatCTWindow, sampleCTWindows } from "./ct-samples.ts";
 import {
   ctCheckpointResult,
   ctGate,
+  ctNetPositive,
   ctSummary,
   qualityCT,
   replayCT,
@@ -104,7 +106,8 @@ export async function prepareCTContract(input: unknown): Promise<CTContract> {
     calendarVersion:
       request.market === "stock" ? CT_CALENDAR_VERSION : "continuous-1",
     symbols,
-    minutes: request.minutes ?? (request.market === "stock" ? 15 : 60),
+    // Research always replays 1-minute bars so trades are timed at minute resolution.
+    minutes: 1,
     fromMs,
     trainingToMs: fromMs + Math.floor(request.days * 0.6) * 86400000,
     developmentToMs: fromMs + Math.floor(request.days * 0.8) * 86400000,
@@ -595,8 +598,20 @@ export async function advanceCTResearch(
         { from: c.fromMs, to: c.trainingToMs, dataHash: ct.dataHash },
         async () => stats(data, c),
       );
-      const context = ctDesignContext(ct, job.brief, analysis);
-      const prompt = `Design ONE executable causal chart pattern hypothesis using the JSON DSL. You have tools: verified public sources, training-only analysis, compile/validate, train/development replay, cost/delay stress, sensitivity, failure diagnostics, allowed memory, revision and independent reviews. Each stage is AND conditions, ordered observations within maxGapBars. Supported features: return_pct, sma_distance_pct, range_pct, volume_ratio, contraction_ratio (recent/older half range), prior_high_distance_pct, prior_low_distance_pct, range_position, swing_high_distance_pct, swing_low_distance_pct (2 right bars required). Distances and returns are percent; ratios are raw ratios. lookback 2–120; offset 0–120 historical only; timeframe 1/3/12 closed base-bar multiples; no other indicators, shorting, news or code. Stock history resets at session gaps (max available consecutive base bars floor(390/minutes)); crypto is continuous (max feature history 1500 base bars). The server supplies immutable costs and splits. Explain falsification and regimes. Map EVERY condition to the identical feature and verified source plus implementation assumption. Do not output performance claims. Write concise Korean: phenomenon, mechanism, falsification, observedProblem and expectedEffect 2–3 sentences each; every implementationAssumption, assumption, failure regime and change one sentence. Reason briefly; the server replays and measures the rule. ${ct.trials.length ? "Revise a real parent in response to measured failures, record exact changes and expected effect. Do not tune on final data." : "Choose an approach based on sources and measured training structure; parentId null."} Context: ${JSON.stringify(context)}`;
+      // Fresh random training windows per design call; legacy 5/15/60 contracts have none.
+      const seed = await ctHash({ run: job.id, design: ct.trials.length + ct.duplicateCount });
+      const windows = c.minutes === 1 ? sampleCTWindows(data, c, seed) : [];
+      const minuteBars = windows.length
+        ? await tool(
+            job,
+            token,
+            "read_training_bars",
+            { dataHash: ct.dataHash, seed, windows },
+            async () => windows.map((w) => formatCTWindow(w, data, c)),
+          )
+        : [];
+      const context = ctDesignContext(ct, job.brief, analysis, minuteBars);
+      const prompt = `Design ONE executable causal chart pattern hypothesis using the JSON DSL. You have tools: verified public sources, training-only analysis, compile/validate, train/development replay, cost/delay stress, sensitivity, failure diagnostics, allowed memory, revision and independent reviews. Each stage is AND conditions, ordered observations within maxGapBars. Supported features: return_pct, sma_distance_pct, range_pct, volume_ratio, contraction_ratio (recent/older half range), prior_high_distance_pct, prior_low_distance_pct, range_position, swing_high_distance_pct, swing_low_distance_pct (2 right bars required). Distances and returns are percent; ratios are raw ratios. Base bars are 1-minute: lookback, offset, maxGapBars, maxHoldBars and cooldownBars count minutes; lookback 2–120; offset 0–120 historical only; timeframe 1/3/12 = closed 1/3/12-minute bars; no other indicators, shorting, news or code. Stock history resets at session gaps (max 390 consecutive 1-minute bars, positions close at the session end); crypto is continuous (max feature history 1500 bars). OBJECTIVE: the rule must make money per trading day after every cost — the server gate requires total net return > 0 AND mean daily net return > 0 over all evaluated days (no-trade days count as 0), with the same under doubled costs, a 1-bar entry delay and stop ±10%. Context.minuteBars holds randomly drawn training windows of raw 1-minute OHLCV (CSV time,open,high,low,close,volume in the contract timezone; new windows on every design call). Read them like a chart: find the recurring price/volume shapes that precede moves large enough to clear round-trip costs, and build the stages from what you actually see there and in the sources. The server supplies immutable costs and splits. Explain falsification and regimes. Map EVERY condition to the identical feature and verified source plus implementation assumption. Do not output performance claims. Write concise Korean: phenomenon, mechanism, falsification, observedProblem and expectedEffect 2–3 sentences each; every implementationAssumption, assumption, failure regime and change one sentence. Reason briefly; the server replays and measures the rule. ${ct.trials.length ? "Revise a real parent in response to measured failures, record exact changes and expected effect. Do not tune on final data." : "Choose an approach based on sources and measured training structure; parentId null."} Context: ${JSON.stringify(context)}`;
       const candidate = ctCandidateSchema.parse(
         await ask("designer", ctCandidateSchema, prompt),
       );
@@ -731,9 +746,9 @@ export async function advanceCTResearch(
       const reasons = [
         ...ctGate(training, c),
         ...ctGate(development, c),
-        ...(stress.netReturnPct <= 0 ? ["비용 2배 스트레스 실패"] : []),
-        ...(delayed.netReturnPct <= 0 ? ["진입 지연 스트레스 실패"] : []),
-        ...(sensitivity.some((s) => s.result.netReturnPct <= 0)
+        ...(!ctNetPositive(stress) ? ["비용 2배 스트레스 실패"] : []),
+        ...(!ctNetPositive(delayed) ? ["진입 지연 스트레스 실패"] : []),
+        ...(sensitivity.some((s) => !ctNetPositive(s.result))
           ? ["손절 민감도 실패"]
           : []),
       ];
@@ -876,10 +891,10 @@ export async function advanceCTResearch(
       );
       const reasons = [
         ...ctGate(ct.final, c),
-        ...(ct.finalStress.netReturnPct <= 0
+        ...(!ctNetPositive(ct.finalStress)
           ? ["최종 비용 스트레스 실패"]
           : []),
-        ...(ct.finalDelayed.netReturnPct <= 0
+        ...(!ctNetPositive(ct.finalDelayed)
           ? ["최종 지연 스트레스 실패"]
           : []),
       ];

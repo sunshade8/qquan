@@ -35,7 +35,8 @@ export const ctSpecSchema = z
       .array(z.string().regex(/^(?:[A-Z][A-Z0-9.-]{0,11}|KRW-[A-Z0-9]{2,12})$/))
       .min(1)
       .max(4),
-    minutes: z.union([z.literal(5), z.literal(15), z.literal(60)]),
+    // New research is fixed to 1-minute bars; 5/15/60 stay valid for registered packages.
+    minutes: z.union([z.literal(1), z.literal(5), z.literal(15), z.literal(60)]),
     // Stages are ordered observations. Each must occur after the previous one.
     stages: z
       .array(
@@ -61,7 +62,8 @@ export const ctSpecSchema = z
       .object({
         stopPct: z.number().min(0.2).max(15),
         targetPct: z.number().min(0.2).max(40),
-        maxHoldBars: z.number().int().min(1).max(120),
+        // Up to one 390-minute regular session on 1-minute bars.
+        maxHoldBars: z.number().int().min(1).max(390),
         invalidation: z.enum(["stop", "last_stage_low"]),
       })
       .strict(),
@@ -84,11 +86,14 @@ export const CT_POLICY = Object.freeze({
   minTrades: 20,
   maxDrawdownPct: 15,
   minNetReturnPct: 0,
+  /** Mean daily net return after costs must exceed this (percent per evaluated day). */
+  minMeanDailyReturnPct: 0,
   minCompliancePct: 100,
   maxSymbolConcentrationPct: 80,
   maxExperiments: 12,
   maxCandidates: 6,
-  maxComputeMs: 120_000,
+  // 1-minute replays: about 260k crypto bars per 180-day run.
+  maxComputeMs: 600_000,
   maxActiveMs: 1_800_000,
   stagnation: 3,
   reserveFraction: 0.35,
@@ -96,7 +101,7 @@ export const CT_POLICY = Object.freeze({
 export type CTContract = {
   market: CTMarket;
   symbols: string[];
-  minutes: 5 | 15 | 60;
+  minutes: 1 | 5 | 15 | 60;
   fromMs: number;
   trainingToMs: number;
   developmentToMs: number;
@@ -115,7 +120,10 @@ export type CTContract = {
     minimumOrder: number;
     quantityDecimals: number;
   };
-  policy: typeof CT_POLICY;
+  // Contracts frozen before a policy field existed simply lack it.
+  policy: Omit<typeof CT_POLICY, "minMeanDailyReturnPct"> & {
+    minMeanDailyReturnPct?: number;
+  };
   engine: typeof CT_ENGINE;
   createdAt: string;
   selection: string;
@@ -175,11 +183,9 @@ export function validateCTSpec(
     throw new Error("운용에서 확보 가능한 연속 완성봉 구간 초과");
   if (spec.sourceIds.some((id) => !sourceIds.includes(id)))
     throw new Error("확인되지 않은 출처");
-  if (
-    spec.symbols.some(
-      (s) => (contract.market === "crypto") !== s.startsWith("KRW-"),
-    )
-  )
+  // Crypto is Upbit KRW-* (legacy) or Binance *USDT research; stocks are neither.
+  const cryptoSymbol = (s: string) => s.startsWith("KRW-") || /^[A-Z0-9]+USDT$/.test(s);
+  if (spec.symbols.some((s) => (contract.market === "crypto") !== cryptoSymbol(s)))
     throw new Error("시장과 종목 형식 불일치");
   return spec;
 }

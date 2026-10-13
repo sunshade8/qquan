@@ -52,7 +52,10 @@ function download(value: unknown, name: string) {
   URL.revokeObjectURL(url);
 }
 const tone = (n: number) => (n > 0 ? "positive" : n < 0 ? "negative" : "");
-const pct = (n: number) => `${n > 0 ? "+" : ""}${n.toFixed(2)}%`;
+const pct = (n: number, digits = 2) => `${n > 0 ? "+" : ""}${n.toFixed(digits)}%`;
+/** Mean daily net return; results saved before the field existed derive it from daily rows. */
+const dayMean = (r: CTResult) =>
+  r.meanDailyReturnPct ?? (r.daily.length ? r.daily.reduce((s, d) => s + d.returnPct, 0) / r.daily.length : 0);
 const money = (n: number) => n.toLocaleString("ko-KR", { maximumFractionDigits: 4 });
 const BLOCKING_KIND = { "ct-stock": "CT 주식 연구", "ct-crypto": "CT 코인 연구", slot: "전략 탭 슬롯 연구" } as const;
 const clockTime = (iso: string) => new Date(iso).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
@@ -66,6 +69,7 @@ const quietFor = (ms: number) =>
 function FinalMetrics({ result }: { result: CTResult }) {
   return (
     <div className="ui-metrics">
+      <div className="ui-metric"><span>최종 일평균 순수익</span><b className={tone(dayMean(result))}>{pct(dayMean(result), 3)}</b><small>{result.daily.length}일 · 기준 0% 초과</small></div>
       <div className="ui-metric"><span>최종 순수익</span><b className={tone(result.netReturnPct)}>{pct(result.netReturnPct)}</b><small>비용 {money(result.costs)}</small></div>
       <div className="ui-metric"><span>거래 수</span><b>{result.tradeCount ?? result.trades.length}</b><small>무거래 {result.emptyDays}일</small></div>
       <div className="ui-metric"><span>최대 낙폭</span><b>{result.maxDrawdownPct.toFixed(2)}%</b></div>
@@ -84,7 +88,10 @@ function SliceTable({ trial }: { trial: CTTrial }) {
     ["1봉 진입 지연", trial.delayed],
   ];
   const rows: Array<[string, (r: CTResult) => React.ReactNode]> = [
+    ["일평균 순수익", (r) => <span className={tone(dayMean(r))}>{pct(dayMean(r), 3)}</span>],
     ["순수익", (r) => <span className={tone(r.netReturnPct)}>{pct(r.netReturnPct)}</span>],
+    ["수익 일 비율", (r) => r.daily.length ? `${((r.daily.filter((d) => d.returnPct > 0).length / r.daily.length) * 100).toFixed(0)}%` : "—"],
+    ["최악의 날", (r) => r.daily.length ? pct(Math.min(...r.daily.map((d) => d.returnPct))) : "—"],
     ["거래 수", (r) => r.tradeCount ?? r.trades.length],
     ["무거래 일수", (r) => r.emptyDays],
     ["최대 낙폭", (r) => `${r.maxDrawdownPct.toFixed(2)}%`],
@@ -297,7 +304,6 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
     [busy, setBusy] = useState(false),
     [brief, setBrief] = useState(""),
     [symbols, setSymbols] = useState(""),
-    [minutes, setMinutes] = useState(""),
     [budget, setBudget] = useState(8),
     [capital, setCapital] = useState(""),
     [ready, setReady] = useState(false),
@@ -320,7 +326,6 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
           setSelected(stored.selected ?? "");
           setBrief(stored.brief ?? "");
           setSymbols(stored.symbols ?? "");
-          setMinutes(stored.minutes ?? "");
           setBudget([8, 16, 24].includes(stored.budget) ? stored.budget : 8);
           setCapital(stored.capital ?? "");
         });
@@ -339,7 +344,6 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
           selected,
           brief,
           symbols,
-          minutes,
           budget,
           capital,
         }),
@@ -347,7 +351,7 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
     } catch {
       /* Storage is optional. */
     }
-  }, [ready, market, selected, brief, symbols, minutes, budget, capital]);
+  }, [ready, market, selected, brief, symbols, budget, capital]);
   const load = useCallback(async () => {
     if (loading.current) return;
     loading.current = true;
@@ -502,7 +506,6 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
               .map((s) => s.toUpperCase()),
           }
         : {}),
-      ...(minutes ? { minutes: Number(minutes) } : {}),
       ...(capital ? { capital: Number(capital) } : {}),
     });
   const reportError = useCallback((m: string) => setError(m), []);
@@ -516,7 +519,7 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
   const blockingStale = Boolean(blocking && !data?.runnerOnline && blockingQuiet > BLOCKING_STALE_MS);
   const summary = [
     symbols.trim() ? symbols.trim().toUpperCase().split(/[,\s]+/).join(", ") : market === "stock" ? "NVDA" : "BTCUSDT",
-    minutes ? `${minutes}분봉` : "시장 기본 봉",
+    "1분봉",
     `예산 $${budget}`,
     capital ? `자본 ${Number(capital).toLocaleString("ko-KR")}` : "기본 자본",
   ].join(" · ");
@@ -622,7 +625,7 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
           </div>
         ) : null}
         <details className="ui-disclosure ct-options">
-          <summary>선택 설정<small>연구 방향, 종목, 주기, 예산</small></summary>
+          <summary>선택 설정<small>연구 방향, 종목, 예산, 자본</small></summary>
           <div className="ui-disclosure-body">
             <div className="ct-form">
               <label className="ui-field ct-form-wide">
@@ -641,15 +644,6 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
                   onChange={(e) => setSymbols(e.target.value)}
                   placeholder={market === "stock" ? "기본 NVDA" : "기본 BTCUSDT"}
                 />
-              </label>
-              <label className="ui-field">
-                <span>봉 주기</span>
-                <select value={minutes} onChange={(e) => setMinutes(e.target.value)}>
-                  <option value="">시장 기본값</option>
-                  {[5, 15, 60].map((n) => (
-                    <option key={n} value={n}>{n}분</option>
-                  ))}
-                </select>
               </label>
               <label className="ui-field">
                 <span>연구 API 예산</span>
