@@ -388,7 +388,7 @@ The second board under 투자. It tests the owner's hypothesis — *stocks surgi
 move alike for the rest of TODAY* — and turns what holds up into a rule with a frozen reward:risk.
 There is no previous-day ranking and no next-day holding anywhere in it: the previous close is only
 the reference a move is measured from. The agent shape is the 전략 generator's: GPT-6 Astra plans and
-designs, Claude Opus 5 reviews, and no model ever computes a metric.
+designs, Claude Opus 5.5 reviews, and no model ever computes a metric.
 
 **Nothing is asked after the button.** The window is fixed in `SURGE_WINDOW` (6 months), the split
 is fixed in `SURGE_POLICY` (60/20/20), and the backtest is a stage rather than a separate screen, so
@@ -555,7 +555,7 @@ direction hit-rate, and post-bullish/bearish averages.
 
 ### 전략 탭에서 새 전략 생성
 
-전략 탭에서 슬롯을 고르고 **새 전략 생성**을 누르면 GPT‑6 Astra 총괄/설계, Claude Opus 5 독립 검증, 1분봉으로부터 전략이 선택한 1·3·5분봉을 집계한 리플레이를 거쳐 승인된 규칙이 슬롯에 저장됩니다. 데이터 정리는 GPT‑5.6 Luna, 결과 요약은 Claude Haiku 4.5가 맡습니다. 두 회사의 지정 모델 접근이 필요하며 같은 회사 검증으로 대체하지 않습니다. 생성 단계에서는 주문하지 않습니다.
+전략 탭에서 슬롯을 고르고 **새 전략 생성**을 누르면 GPT‑6 Astra 총괄/설계, Claude Opus 5.5 독립 검증, 1분봉으로부터 전략이 선택한 1·3·5분봉을 집계한 리플레이를 거쳐 승인된 규칙이 슬롯에 저장됩니다. 데이터 정리는 GPT‑5.6 Luna, 결과 요약은 Claude Haiku 4.5가 맡습니다. 두 회사의 지정 모델 접근이 필요하며 같은 회사 검증으로 대체하지 않습니다. 생성 단계에서는 주문하지 않습니다.
 
 진행·비용·검증 결과는 DB에 보존되고, 모의/실전/백테스트가 같은 승인 레지스트리를 사용합니다. 시작한 대시보드의 전략 목록은 실행 종료까지 고정됩니다. 탭을 닫고도 진행하려면 `npm run trader`를 켜 두세요. 생성 호출은 매매 감시와 별도 루프에서 실행됩니다.
 

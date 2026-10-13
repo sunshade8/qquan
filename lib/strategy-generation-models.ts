@@ -26,17 +26,17 @@ export const GENERATION_MODELS = {
   },
   riskReviewer: {
     provider: "Anthropic",
-    model: "claude-opus-5",
+    model: "claude-opus-5-5",
     label: "독립 위험 · 실행 검증",
-    input: 5,
-    output: 25,
+    input: 4,
+    output: 20,
   },
   evidenceReviewer: {
     provider: "Anthropic",
-    model: "claude-opus-5",
+    model: "claude-opus-5-5",
     label: "독립 통계 · 최종 검증",
-    input: 5,
-    output: 25,
+    input: 4,
+    output: 20,
   },
   reporter: {
     provider: "OpenAI",

@@ -11,7 +11,7 @@ const slot=slotById("trend");
 function context(price=100){const d=day(undefined,price),cut=sliceSession(d.bars,["NVDA"],slot);cut.window.NVDA=cut.window.NVDA.filter(b=>b.time<="10:00");return {date:d.date,slot,asOf:"10:00",...cut,history:{},equityUsd:1000};}
 
 test("exact frontier models and cross-company review cannot silently fall back",()=>{
- assert.equal(GENERATION_MODELS.orchestrator.model,"gpt-6.1-sol");assert.equal(GENERATION_MODELS.evidenceReviewer.model,"claude-opus-5");
+ assert.equal(GENERATION_MODELS.orchestrator.model,"gpt-6.1-sol");assert.equal(GENERATION_MODELS.evidenceReviewer.model,"claude-opus-5-5");
  assert.doesNotThrow(()=>assertDifferentProvider("designer","riskReviewer"));assert.throws(()=>assertDifferentProvider("orchestrator","designer"));
 });
 test("the bounded language rejects executable payloads, unsupported products and invalid stop risk",()=>{

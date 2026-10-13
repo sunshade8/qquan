@@ -38,7 +38,7 @@ test("Anthropic SDK streams token estimates before its final authoritative usage
   request=JSON.parse(options.body);
   const content='{"summary":"검증 완료"}';
   return sse([
-   {type:"message_start",message:{id:"msg_test",type:"message",role:"assistant",model:"claude-opus-5",content:[],stop_reason:null,stop_sequence:null,usage:{input_tokens:100,output_tokens:1,cache_creation_input_tokens:20,cache_read_input_tokens:50}}},
+   {type:"message_start",message:{id:"msg_test",type:"message",role:"assistant",model:"claude-opus-5-5",content:[],stop_reason:null,stop_sequence:null,usage:{input_tokens:100,output_tokens:1,cache_creation_input_tokens:20,cache_read_input_tokens:50}}},
    {type:"content_block_start",index:0,content_block:{type:"text",text:""}},
    {type:"content_block_delta",index:0,delta:{type:"text_delta",text:content}},
    {type:"content_block_stop",index:0},
@@ -48,12 +48,12 @@ test("Anthropic SDK streams token estimates before its final authoritative usage
  };
  try {
   const result=await generationCall("owner","riskReviewer",schema,"test",{onUsage:async(u,estimated)=>usage.push({u,estimated})});
-  assert.equal(request.stream,true); assert.equal(request.model,"claude-opus-5");
+  assert.equal(request.stream,true); assert.equal(request.model,"claude-opus-5-5");
   assert.equal(result.data.summary,"검증 완료");
   assert.ok(usage.some(item=>item.estimated));
   assert.equal(usage.at(-1).estimated,false);
   assert.deepEqual(result.usage,{input_tokens:100,output_tokens:42,cache_creation_input_tokens:20,cache_read_input_tokens:50});
-  assert.ok(Math.abs(result.costUsd-0.00170)<1e-8);
+  assert.ok(Math.abs(result.costUsd-0.00135)<1e-8);
  } finally { mockFetch=originalFetch; }
 });
 test("OpenAI SDK streams and replaces estimates with final usage including reasoning", async () => {
@@ -146,7 +146,7 @@ test("Claude max_tokens stop is reported as the same truncation", async () => {
  mockFetch=async(url,options)=>{
   request=JSON.parse(options.body);
   return sse([
-   {type:"message_start",message:{id:"msg_cut",type:"message",role:"assistant",model:"claude-opus-5",content:[],stop_reason:null,stop_sequence:null,usage:{input_tokens:100,output_tokens:1}}},
+   {type:"message_start",message:{id:"msg_cut",type:"message",role:"assistant",model:"claude-opus-5-5",content:[],stop_reason:null,stop_sequence:null,usage:{input_tokens:100,output_tokens:1}}},
    {type:"content_block_start",index:0,content_block:{type:"text",text:""}},
    {type:"content_block_delta",index:0,delta:{type:"text_delta",text:'{"summary":"잘'}},
    {type:"content_block_stop",index:0},

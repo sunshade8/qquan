@@ -37,8 +37,8 @@ OpenAI 모델/가격은 2026-10-01 공식 문서 확인. 독립 검증 모델은
 | 총괄 계획·가설·자료 범위 | OpenAI `gpt-6.1-sol` (high) | 2 / 10 |
 | 자료 통계 정리 | OpenAI `gpt-6-luna` (low) | 0.10 / 0.50 |
 | 실행 가능한 전략 후보 설계 | OpenAI `gpt-6.1-sol` (high) | 2 / 10 |
-| 독립 위험 검증 | Anthropic `claude-opus-5` | 5 / 25 |
-| 독립 통계·최종 검증 | Anthropic `claude-opus-5` | 5 / 25 |
+| 독립 위험 검증 | Anthropic `claude-opus-5-5` | 4 / 20 |
+| 독립 통계·최종 검증 | Anthropic `claude-opus-5-5` | 4 / 20 |
 | 승인 결과 요약 | OpenAI `gpt-6-luna` (low) | 0.10 / 0.50 |
 
 [OpenAI Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol), [OpenAI Luna](https://developers.openai.com/api/docs/models/gpt-6-luna), [Anthropic 모델](https://platform.claude.com/docs/en/models/overview), [Anthropic 가격](https://platform.claude.com/docs/en/about-claude/pricing).

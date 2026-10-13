@@ -21,6 +21,7 @@ const prices: Array<[RegExp, Price]> = [
   [/^gpt-5\.6-luna(?:-|$)/i, { input: 0.2, output: 1.2, cacheWrite: 0.25, cacheRead: 0.02 }],
   [/^gpt-6-astra(?:-|$)/i, { input: 10, output: 50, cacheWrite: 12.5, cacheRead: 1 }],
   [/claude-(?:fable|mythos)-5/i, { input: 10, output: 50, cacheWrite: 12.5, cacheRead: 1 }],
+  [/claude-opus-5-5/i, { input: 4, output: 20, cacheWrite: 5, cacheRead: .2 }],
   [/claude-opus-(?:4-(?:5|6|7|8)|5)/i, { input: 5, output: 25, cacheWrite: 6.25, cacheRead: .5 }],
   [/claude-sonnet-5/i, { input: 2, output: 10, cacheWrite: 2.5, cacheRead: .2 }],
   [/claude-sonnet-4-(?:5|6)/i, { input: 3, output: 15, cacheWrite: 3.75, cacheRead: .3 }],

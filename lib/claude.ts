@@ -35,8 +35,8 @@ export type ModelRole =
   | "summarizer"; // compress tool output / conversation memory
 
 const TIER_DEFAULTS: Record<ModelTier, string> = {
-  frontier: "claude-opus-5",
-  counter: "claude-opus-5",
+  frontier: "claude-opus-5-5",
+  counter: "claude-opus-5-5",
   balanced: "claude-sonnet-5",
   fast: "claude-haiku-4-5",
 };
