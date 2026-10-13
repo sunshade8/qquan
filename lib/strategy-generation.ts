@@ -10,9 +10,13 @@ import { discoverResearchUniverse } from "@/lib/strategy-discovery-data";
 import { shiftDate } from "./market-clock.ts";
 import { lastCompleteDate, loadRelaySessions } from "@/lib/relay-data";
 import {
+  designerTurn,
   generationAvailability,
   generationCall,
+  type DesignerTurn,
+  type DesignerTurnRequest,
 } from "@/lib/strategy-generation-llm";
+import type { AnthropicUsage } from "@/lib/llm-usage";
 import {
   GENERATION_MODELS, RESEARCH_WEB_SEARCH,
   researchModel,
@@ -237,15 +241,24 @@ function researchWindow(sessions: SessionBars[], slot: NonNullable<ReturnType<ty
 }
 type ResearchRuntime = { token: string; onUsage: (meter: ResearchMeter) => void };
 const runtimes = new WeakMap<GenerationJob, ResearchRuntime>();
-async function ask<T extends z.ZodType>(job: GenerationJob, role: GenerationRole, schema: T, prompt: string) {
-  // Reject oversized input before reserving a paid call or recording uncertain spend.
-  if (prompt.length > 140_000) throw new Error("에이전트 입력이 예산을 초과했습니다.");
+type PaidResult<T> = { data: T; costUsd: number; sources?: Array<{ url: string; title: string }>; searchCalls?: number; reasoningTokens?: number | null };
+type CallLimits = ReturnType<typeof researchCallLimits>;
+/**
+ * The one paid-call ledger for research. Every model call — a structured ask or one turn of
+ * the CT designer's session — goes through here, so each gets: reuse of a completed
+ * response by key, interrupted calls budgeted at their reserve, changed limits after a
+ * truncation, a durable reservation BEFORE spending, live metering, and the final cost.
+ */
+async function paidCall<T>(
+  job: GenerationJob,
+  role: GenerationRole,
+  key: string,
+  reserveFor: (limits: CallLimits) => number,
+  run: (limits: CallLimits, onUsage: (usage: AnthropicUsage, estimated: boolean) => Promise<void>) => Promise<PaidResult<T>>,
+  extra: { label?: string } = {},
+): Promise<T> {
   const runtime = runtimes.get(job)!;
   const model = researchModel(role, job.recovery?.failures);
-  const keyBytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify({
-    ct: job.ct?.phase, role, prompt, schema: z.toJSONSchema(schema), option: job.research?.current, attempt: job.attempt, stage: job.stageIndex,
-  })));
-  const key = Array.from(new Uint8Array(keyBytes), value => value.toString(16).padStart(2, "0")).join("");
   job.calls ??= [];
   for (const prior of job.calls) {
     if (prior.status === "failed" && prior.error === "에이전트 입력이 예산을 초과했습니다.") {
@@ -257,7 +270,7 @@ async function ask<T extends z.ZodType>(job: GenerationJob, role: GenerationRole
     }
   }
   const cached = job.calls.find(call => call.key === key && call.status === "completed");
-  if (cached) return schema.parse(cached.result);
+  if (cached) return cached.result as T;
   // A killed worker may have incurred charges even if its final response was lost.
   for (const old of job.calls.filter(call => call.status === "started")) {
     old.status = "interrupted";
@@ -266,15 +279,13 @@ async function ask<T extends z.ZodType>(job: GenerationJob, role: GenerationRole
   }
   // A CT call already cut off at its output allowance is retried with changed limits, never identical ones.
   const limits = researchCallLimits(role, { ct: Boolean(job.ct), truncated: job.calls.some(call => call.key === key && call.incompleteReason === "max_output_tokens") });
-  // Includes system/schema overhead and a conservative UTF token bound, including retries.
-  const webSearch = Boolean(job.ct && job.ct.phase === "sources");
-  const reserve = (webSearch ? RESEARCH_WEB_SEARCH.maxCalls*RESEARCH_WEB_SEARCH.usdPerCall : 0) + ((prompt.length + JSON.stringify(z.toJSONSchema(schema)).length + 4000) * 2 * model.input + limits.maxOutputTokens * model.output) / 1_000_000;
+  const reserve = reserveFor(limits);
   const ceiling = job.search && job.search.phase !== "final" ? job.budgetUsd * (1 - job.search.config.reserveFraction) : job.ct && !["risk_review","final","evidence_review"].includes(job.ct.phase) ? job.budgetUsd * (1-job.ct.contract.policy.reserveFraction) : job.budgetUsd;
   if (job.costUsd + uncertainResearchCost(job.calls) + reserve > ceiling)
     throw new ResearchBudgetError(`연구 예산 $${job.budgetUsd} 내 추가 호출 여유가 없습니다. 미확인 호출 비용도 한도에 포함합니다.`);
   const now = new Date().toISOString();
   const call: ResearchCall = { id: crypto.randomUUID(), key, role, model: model.model, provider: model.provider,
-    status: "started", startedAt: now, updatedAt: now, usage: {}, estimated: true, costUsd: 0, reserveUsd: reserve, ...limits };
+    status: "started", startedAt: now, updatedAt: now, usage: {}, estimated: true, costUsd: 0, reserveUsd: reserve, ...limits, ...(extra.label ? { label: extra.label } : {}) };
   job.calls.push(call);
   await generationProgress(job, runtime.token); // Intent is durable BEFORE spending money.
   let persistedAt = Date.now(), meteredAt = 0;
@@ -294,24 +305,21 @@ async function ask<T extends z.ZodType>(job: GenerationJob, role: GenerationRole
     generationProgress(job, runtime.token).catch(() => undefined);
   }, 30_000);
   try {
-    const result = await generationCall(job.ownerId, role, schema, prompt, {
-      failures: job.recovery?.failures, ct: Boolean(job.ct), webSearch, ...limits,
-      onUsage: async (usage, estimated) => {
-        call.usage = usage;
-        call.estimated = estimated;
-        call.costUsd = usageCostUsd(call.model, usage) ?? 0;
-        call.updatedAt = new Date().toISOString();
-        const snapshot = meter();
-        if (Date.now() - meteredAt >= 2000 || !estimated) {
-          await saveResearchMeter(snapshot, runtime.token);
-          meteredAt = Date.now();
-        }
-        // Stream to the browser immediately; checkpoint at most once per 10s to avoid D1 overload.
-        if (Date.now() - persistedAt >= 10_000) {
-          await generationProgress(job, runtime.token);
-          persistedAt = Date.now();
-        }
-      },
+    const result = await run(limits, async (usage, estimated) => {
+      call.usage = usage;
+      call.estimated = estimated;
+      call.costUsd = usageCostUsd(call.model, usage) ?? 0;
+      call.updatedAt = new Date().toISOString();
+      const snapshot = meter();
+      if (Date.now() - meteredAt >= 2000 || !estimated) {
+        await saveResearchMeter(snapshot, runtime.token);
+        meteredAt = Date.now();
+      }
+      // Stream to the browser immediately; checkpoint at most once per 10s to avoid D1 overload.
+      if (Date.now() - persistedAt >= 10_000) {
+        await generationProgress(job, runtime.token);
+        persistedAt = Date.now();
+      }
     });
     call.sources = result.sources;
     call.searchCalls = result.searchCalls;
@@ -348,6 +356,43 @@ async function ask<T extends z.ZodType>(job: GenerationJob, role: GenerationRole
   } finally {
     clearInterval(keepAlive);
   }
+}
+async function sha256(value: unknown) {
+  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(value)));
+  return Array.from(new Uint8Array(bytes), b => b.toString(16).padStart(2, "0")).join("");
+}
+async function ask<T extends z.ZodType>(job: GenerationJob, role: GenerationRole, schema: T, prompt: string) {
+  // Reject oversized input before reserving a paid call or recording uncertain spend.
+  if (prompt.length > 140_000) throw new Error("에이전트 입력이 예산을 초과했습니다.");
+  const key = await sha256({
+    ct: job.ct?.phase, role, prompt, schema: z.toJSONSchema(schema), option: job.research?.current, attempt: job.attempt, stage: job.stageIndex,
+  });
+  const model = researchModel(role, job.recovery?.failures);
+  const webSearch = Boolean(job.ct && job.ct.phase === "sources");
+  const schemaChars = JSON.stringify(z.toJSONSchema(schema)).length;
+  const data = await paidCall(job, role, key,
+    // Includes system/schema overhead and a conservative UTF token bound, including retries.
+    limits => (webSearch ? RESEARCH_WEB_SEARCH.maxCalls*RESEARCH_WEB_SEARCH.usdPerCall : 0) + ((prompt.length + schemaChars + 4000) * 2 * model.input + limits.maxOutputTokens * model.output) / 1_000_000,
+    (limits, onUsage) => generationCall(job.ownerId, role, schema, prompt, {
+      failures: job.recovery?.failures, ct: Boolean(job.ct), webSearch, ...limits, onUsage,
+      // OpenAI routes requests with one key to the same cache; CT reuses its fixed prefixes per run.
+      ...(job.ct ? { cacheKey: `ct-${job.id}` } : {}),
+    }));
+  return schema.parse(data);
+}
+/**
+ * One paid turn of the CT designer's research session. The key binds the run, session, turn
+ * and the exact preceding messages, so a resumed runner reuses a turn it already paid for.
+ * Reserved per turn: input priced as a cache write, output at the turn's allowance.
+ */
+async function askTurn(job: GenerationJob, role: GenerationRole, request: DesignerTurnRequest, at: { session: number; turn: number }, label: string) {
+  const key = await sha256({ ct: "design-session-turn", run: job.id, role, session: at.session, turn: at.turn, prev: await sha256(request) });
+  const model = researchModel(role, job.recovery?.failures);
+  const chars = JSON.stringify(request).length;
+  return paidCall<DesignerTurn>(job, role, key,
+    limits => ((chars / 2) * model.input * 1.25 + limits.maxOutputTokens * model.output) / 1_000_000,
+    (limits, onUsage) => designerTurn(job.ownerId, role, request, { failures: job.recovery?.failures, ct: true, ...limits, onUsage }),
+    { label });
 }
 class ResearchBudgetError extends Error {}
 /**
@@ -465,7 +510,8 @@ export async function advanceGeneration(
     if (job.ct) {
       onProgress(`CT 연구: ${job.ct.phase}`);
       const { advanceCTResearch } = await import("@/lib/ct-research-store");
-      await advanceCTResearch(job, token, (role, schema, prompt) => ask(job!, role, schema, prompt));
+      await advanceCTResearch(job, token, (role, schema, prompt) => ask(job!, role, schema, prompt),
+        (role, request, at, label) => askTurn(job!, role, request, at, label));
       delete job.recovery;
       await commit();
       return (await getGenerationJob(id)) ?? job;
@@ -883,7 +929,7 @@ export async function advanceGeneration(
       if (failure.transient && failures < 3) {
         const seconds = failures === 1 ? 10 : 30;
         job.recovery = { failures, retryAt: new Date(Date.now() + seconds * 1000).toISOString(), message: failure.message };
-        job.nextAction = `${seconds}초 후 같은 단계 자동 재시도${failures === 2 && stage?.role && GENERATION_MODELS[stage.role].provider === "Anthropic" ? " · Claude Sonnet 5 대체 검증" : ""}. 기존 후보와 검증 기록은 유지됩니다.`;
+        job.nextAction = `${seconds}초 후 같은 단계 자동 재시도${failures === 2 && stage?.role && GENERATION_MODELS[stage.role].provider === "Anthropic" ? " · Claude Sonnet 5.5 대체 검증" : ""}. 기존 후보와 검증 기록은 유지됩니다.`;
         onProgress(job.nextAction);
       } else {
         job.recovery = { failures, message: failure.message };

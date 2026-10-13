@@ -94,10 +94,28 @@ export const CT_POLICY = Object.freeze({
   maxCandidates: 6,
   // 1-minute replays: about 260k crypto bars per 180-day run.
   maxComputeMs: 600_000,
-  maxActiveMs: 1_800_000,
+  // Research sessions add many short Opus turns; 30 minutes held about 15 one-shot design calls.
+  maxActiveMs: 3_600_000,
   stagnation: 3,
   reserveFraction: 0.35,
+  // Designer research session (2026-10-13): one Opus tool loop per design/reflect step.
+  sessionMaxTurns: 12,
+  sessionMaxToolCalls: 24,
+  sessionMaxScreens: 6,
+  maxSessions: 3,
 });
+/** Fields added after contracts were first frozen; older contracts lack them. */
+type CTPolicyLater = "minMeanDailyReturnPct" | "sessionMaxTurns" | "sessionMaxToolCalls" | "sessionMaxScreens" | "maxSessions";
+/** The session limits a contract runs under; contracts frozen before they existed get today's. */
+export function ctSessionPolicy(contract: Pick<CTContract, "policy">) {
+  const p = contract.policy;
+  return {
+    maxTurns: p.sessionMaxTurns ?? CT_POLICY.sessionMaxTurns,
+    maxToolCalls: p.sessionMaxToolCalls ?? CT_POLICY.sessionMaxToolCalls,
+    maxScreens: p.sessionMaxScreens ?? CT_POLICY.sessionMaxScreens,
+    maxSessions: p.maxSessions ?? CT_POLICY.maxSessions,
+  };
+}
 export type CTContract = {
   market: CTMarket;
   symbols: string[];
@@ -121,9 +139,7 @@ export type CTContract = {
     quantityDecimals: number;
   };
   // Contracts frozen before a policy field existed simply lack it.
-  policy: Omit<typeof CT_POLICY, "minMeanDailyReturnPct"> & {
-    minMeanDailyReturnPct?: number;
-  };
+  policy: Omit<typeof CT_POLICY, CTPolicyLater> & Partial<Pick<typeof CT_POLICY, CTPolicyLater>>;
   engine: typeof CT_ENGINE;
   createdAt: string;
   selection: string;

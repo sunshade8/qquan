@@ -1,5 +1,7 @@
 import { z } from "zod";
-import { ctCandidateSchema, type CTResearch } from "./ct-research.ts";
+import { ctCandidateSchema, ctSubmissionSchema, type CTResearch } from "./ct-research.ts";
+import { ctQuerySchema, ctReadBarsSchema } from "./ct-design-tools.ts";
+import { ctSpecSchema } from "./ct-spec.ts";
 const time = z.number().int().nonnegative();
 export const ctBarSchema = z.object({
   startMs: time,
@@ -87,29 +89,57 @@ export const CT_TOOLS = {
       }),
     ),
   },
-  read_training_bars: {
+  // Designer research session tools: training split only, server computed, free.
+  cost_hurdle: {
     phases: ["design", "reflect"],
-    input: z
+    input: z.object({ from: time, to: time, dataHash: z.string() }).strict(),
+    output: z
       .object({
-        dataHash: z.string(),
-        seed: z.string(),
-        windows: z
-          .array(z.object({ symbol: z.string(), from: time, to: time }).strict())
-          .min(1)
-          .max(4),
+        roundTripCostPct: z.number().finite(),
+        meanBarRangePct: z.number().finite(),
+        horizons: z.array(z.object({ bars: z.number().int() }).passthrough()),
+        conclusion: z.string(),
       })
-      .strict(),
+      .passthrough(),
+  },
+  query_conditional_returns: {
+    phases: ["design", "reflect"],
+    input: z.object({ query: ctQuerySchema, from: time, to: time, dataHash: z.string() }).strict(),
+    output: z
+      .object({
+        queryId: z.string(),
+        events: z.number().int().nonnegative(),
+        uniqueDays: z.number().int().nonnegative(),
+        anchors: z.array(z.object({ at: time }).passthrough()),
+      })
+      .passthrough(),
+  },
+  read_bars: {
+    phases: ["design", "reflect"],
+    input: z.object({ request: ctReadBarsSchema, dataHash: z.string() }).strict(),
     output: z.array(
-      z.object({
-        symbol: z.string(),
-        from: time,
-        to: time,
-        date: z.string(),
-        timezone: z.string(),
-        bars: z.number().int().positive().max(1440),
-        csv: z.string(),
-      }),
+      z.object({ symbol: z.string(), anchor: z.string(), bars: z.number().int().positive().max(481), text: z.string() }).passthrough(),
     ),
+  },
+  screen_rule: {
+    phases: ["design", "reflect"],
+    input: z.object({ spec: ctSpecSchema, from: time, to: time, dataHash: z.string() }).strict(),
+    output: z
+      .object({
+        gateReasons: z.array(z.string()),
+        passesTrainingGate: z.boolean(),
+        training: z.object({ netReturnPct: z.number().finite() }).passthrough(),
+      })
+      .passthrough(),
+  },
+  submit_candidates: {
+    phases: ["design", "reflect"],
+    input: z.object({ session: z.number().int().nonnegative(), submission: ctSubmissionSchema }).strict(),
+    output: z.object({
+      accepted: z.array(z.string()),
+      duplicates: z.number().int().nonnegative(),
+      noEdgeReason: z.string().nullable(),
+    }),
   },
   collect_market_data: {
     phases: ["data"],
@@ -176,7 +206,8 @@ export const CT_TOOLS = {
     output: ctCandidateSchema,
   },
   backtest: {
-    phases: ["experiment", "final"],
+    // design/reflect: training replays from screen_rule only (checked below).
+    phases: ["design", "reflect", "experiment", "final"],
     input: z
       .object({
         hash: z.string(),
@@ -249,20 +280,30 @@ export function assertCTTool(name: string, input: unknown, ct: CTResearch) {
     )
       throw new Error("CT 분석 학습 범위 거부");
   }
-  if (name === "read_training_bars") {
-    const data = value as z.infer<typeof CT_TOOLS.read_training_bars.input>;
+  const training = (from: number, to: number) =>
+    from >= ct.contract.fromMs && to <= ct.contract.trainingToMs && to > from;
+  if (name === "backtest" && (ct.phase === "design" || ct.phase === "reflect")) {
+    const data = value as z.infer<typeof CT_TOOLS.backtest.input>;
+    if (data.kind !== "training" || data.from !== ct.contract.fromMs || data.to !== ct.contract.trainingToMs)
+      throw new Error("설계 단계 백테스트는 학습 구간만 허용");
+  }
+  if (name === "cost_hurdle" || name === "query_conditional_returns" || name === "screen_rule") {
+    const data = value as { from: number; to: number; dataHash: string };
+    if (data.dataHash !== ct.dataHash || !training(data.from, data.to))
+      throw new Error("CT 설계 도구는 학습 구간만 허용");
+  }
+  if (name === "read_bars") {
+    const data = value as z.infer<typeof CT_TOOLS.read_bars.input>;
+    const bar = ct.contract.minutes * 60_000;
     if (
       data.dataHash !== ct.dataHash ||
-      data.windows.some(
-        (w) =>
-          !ct.contract.symbols.includes(w.symbol) ||
-          w.from < ct.contract.fromMs ||
-          w.to > ct.contract.trainingToMs ||
-          w.to <= w.from ||
-          w.to - w.from > 1440 * 60_000,
+      data.request.anchors.some(
+        (at) =>
+          !(ct.anchors ?? []).includes(at) ||
+          !training(at - (data.request.before + 1) * bar, at + (data.request.after + 1) * bar),
       )
     )
-      throw new Error("CT 1분봉 열람은 학습 구간만 허용");
+      throw new Error("CT 1분봉 열람은 서버가 제공한 학습 구간 시각만 허용");
   }
   if (name === "collect_market_data") {
     const data = value as z.infer<typeof CT_TOOLS.collect_market_data.input>;

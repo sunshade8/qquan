@@ -211,6 +211,66 @@ const Sources = memo(
   (a, b) => a.sources.length === b.sources.length && a.approaches?.length === b.approaches?.length,
 );
 
+/** The designer's research: sessions, every training query, rejected hypotheses and training-gate rejections. */
+const ResearchSessions = memo(
+  function ResearchSessions({ ct }: { ct: CTResearch }) {
+    const sessions = ct.sessions ?? [];
+    if (!sessions.length && !ct.sourceNote) return null;
+    return (
+      <section className="ct-section" aria-labelledby="ct-sessions-h">
+        <h2 className="ui-title" id="ct-sessions-h">설계 세션 <span className="ct-count ui-num">{sessions.length}</span></h2>
+        {ct.sourceNote ? <p className="ui-sub">{ct.sourceNote}</p> : null}
+        {sessions.map((s) => {
+          const queries = (ct.queries ?? []).filter((q) => q.session === s.index);
+          const screened = (ct.screened ?? []).filter((t) => t.session === s.index);
+          return (
+            <details className="ui-disclosure" key={s.index} open={s.status === "open"}>
+              <summary>
+                세션 {s.index + 1} · {s.status === "open" ? "진행 중" : s.status === "submitted" ? "제출" : "실패"}
+                <small className="ui-num">턴 {s.turns} · 도구 {s.toolCalls} · 조회 {queries.length} · 사전 검사 {s.screens}{s.endReason ? ` · ${s.endReason}` : ""}</small>
+              </summary>
+              <div className="ui-disclosure-body ui-korean">
+                {s.submission?.noEdgeReason ? <p><b>우위 없음 판단</b> {s.submission.noEdgeReason}</p> : null}
+                {s.submission?.rejectedHypotheses.length ? (
+                  <>
+                    <p><b>기각한 가설</b></p>
+                    <ul>
+                      {s.submission.rejectedHypotheses.map((h, i) => (
+                        <li key={i}>{h.hypothesis} — {h.result} <small className="ui-num">{h.evidence.join(", ")}</small></li>
+                      ))}
+                    </ul>
+                  </>
+                ) : null}
+                {queries.length ? (
+                  <>
+                    <p><b>학습 구간 조회</b></p>
+                    <ul>
+                      {queries.map((q) => (
+                        <li key={q.queryId}><code>{q.queryId}</code> {q.features.map((f) => (f.timeframe > 1 ? `${f.feature}(${f.timeframe}분)` : f.feature)).join(" · ")} — {q.summary}</li>
+                      ))}
+                    </ul>
+                  </>
+                ) : null}
+                {screened.length ? (
+                  <>
+                    <p><b>학습 게이트 탈락 · 개발 미실행</b></p>
+                    <ul>
+                      {screened.map((t) => (
+                        <li key={t.id}>{t.candidate.spec.name} — {t.reasons.join(" · ")} <small className="ui-num">학습 {t.training.netReturnPct.toFixed(2)}%</small></li>
+                      ))}
+                    </ul>
+                  </>
+                ) : null}
+              </div>
+            </details>
+          );
+        })}
+      </section>
+    );
+  },
+  (a, b) => JSON.stringify(a.ct.sessions) === JSON.stringify(b.ct.sessions) && a.ct.queries?.length === b.ct.queries?.length && a.ct.screened?.length === b.ct.screened?.length,
+);
+
 function TradeEvidence({
   jobId,
   results,
@@ -781,6 +841,8 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
           ) : null}
         </section>
       ) : null}
+
+      {cj ? <ResearchSessions ct={cj.ct} /> : null}
 
       {cj ? <TrialHistory trials={cj.ct.trials} /> : null}
 

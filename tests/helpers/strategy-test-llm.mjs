@@ -6,3 +6,9 @@ export const generationCall=async(owner,role,schema,prompt,options={})=>{
  await globalThis.__strategyTestHooks.usage?.(role, options);
  return {data:schema.parse(await globalThis.__strategyTestHooks.call(role,prompt,options)),costUsd:0.01};
 };
+export const designerTurn=async(owner,role,request,options={})=>{
+ if (globalThis.__strategyTestHooks.realLlm) return (await import("../../lib/strategy-generation-llm.ts")).designerTurn(owner,role,request,options);
+ await globalThis.__strategyTestHooks.usage?.(role, options);
+ const data=await globalThis.__strategyTestHooks.turn(role,request,options);
+ return {data,costUsd:globalThis.__strategyTestHooks.turnCost??0.02,usage:data.usage??{}};
+};

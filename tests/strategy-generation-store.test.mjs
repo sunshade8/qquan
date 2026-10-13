@@ -304,7 +304,7 @@ test("524 retries only the failed review, uses Anthropic fallback and preserves 
  }
  job = await workflow.advanceGeneration(job.id);
  assert.equal(job.stageIndex, 8); assert.equal(job.recovery, undefined);
- assert.equal(job.calls.at(-1).model, "claude-sonnet-5");
+ assert.equal(job.calls.at(-1).model, "claude-sonnet-5-5");
  assert.equal(job.calls.at(-1).provider, "Anthropic");
  assert.ok(job.calls.filter(c => c.status === "failed").every(c => c.uncertainUsd > 0));
  assert.equal(calls.filter(c => c.role === "designer").length, 1);

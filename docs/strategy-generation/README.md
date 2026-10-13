@@ -41,6 +41,22 @@ OpenAI 모델/가격은 2026-10-01 공식 문서 확인. 독립 검증 모델은
 | 독립 통계·최종 검증 | Anthropic `claude-opus-5-5` | 4 / 20 |
 | 승인 결과 요약 | OpenAI `gpt-6-luna` (low) | 0.10 / 0.50 |
 
+위 표는 **전략 탭(슬롯 연구)과 급등주**의 배정이며 그대로다. Anthropic 장애 시 대체 모델은 같은 회사의 `claude-sonnet-5-5`(2 / 10)다.
+
+### CT 전용 역할 (2026-10-13)
+
+CT는 `lib/strategy-generation-models.ts`의 `CT_MODELS`를 쓴다. 전략 탭 배정과 별개다.
+
+| CT 역할 | 회사 / 고정 모델 | 입력 / 출력 |
+| --- | --- | --- |
+| `ctOrchestrator` 웹 검색(선택) | OpenAI `gpt-6.1-sol` (medium) | 2 / 10 |
+| `ctAnalyst` 원문 원리 추출 | OpenAI `gpt-6-luna` (low) | 0.10 / 0.50 |
+| `ctDesigner` 연구·설계·수정(도구 루프) | Anthropic `claude-opus-5-5` (adaptive · effort high) | 4 / 20, 캐시 쓰기 5 · 읽기 0.20 |
+| `ctRiskReviewer` 독립 위험 검토 | OpenAI `gpt-6.1-sol` (high) | 2 / 10 |
+| `ctEvidenceReviewer` 독립 최종 검토 | OpenAI `gpt-6.1-sol` (high) | 2 / 10 |
+
+설계자가 Anthropic이 되어 CT 검토자는 OpenAI로 옮겼다. 2026-10-13 이전 CT 실행은 기록된 옛 역할(`designer` OpenAI, 검토자 Anthropic)로 검토·등록 검증을 그대로 받는다. 자세한 흐름은 [CT 문서](../ct.md)에 있다.
+
 [OpenAI Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol), [OpenAI Luna](https://developers.openai.com/api/docs/models/gpt-6-luna), [Anthropic 모델](https://platform.claude.com/docs/en/models/overview), [Anthropic 가격](https://platform.claude.com/docs/en/about-claude/pricing).
 
 검증 모델은 작성자와 **다른 회사**여야 한다. 환경변수의 Lab 모델 설정은 이 정책을 변경하지 못한다. 키 누락·모델 권한 부족 시 다른 회사 검증을 생략하지 않는다. 전략 연구는 현재 단계에 필요한 모델만 호출하며, 일시적 장애의 제한된 재시도와 Anthropic 내 대체 모델을 지원한다(아래 장애 복구 참조). 연구 전체 API 비용 기본 상한 $8 (선택 8/16/24), 미확인 비용 예약을 포함한 호출별 잔여 예산 점검을 적용한다. 비용은 생성 중 추정과 제공자 최종 사용량 환산을 구분한다.

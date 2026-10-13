@@ -457,6 +457,30 @@ export function ctSessionClosing(ms: number) {
     time = stockClock.format(new Date(ms)).split(":").map(Number);
   return time[0] * 60 + time[1] >= hour * 60 + minute - 1;
 }
+/** Price impact per side (half spread + slippage), percent. replayCT fills with it. */
+export function ctImpactPct(contract: Pick<CTContract, "costs">, multiplier = 1) {
+  return (contract.costs.spreadPct / 2 + contract.costs.slippagePct) * multiplier;
+}
+/**
+ * Net return of one long round trip after every contract cost, by the replay's own fill
+ * and fee formulas (before quantity/tick rounding): buy at open × (1 + impact) plus fee,
+ * sell at exit × (1 − impact) minus fee and sell tax.
+ */
+export function ctNetTradePct(
+  contract: Pick<CTContract, "costs">,
+  entryOpen: number,
+  exitPrice: number,
+  multiplier = 1,
+) {
+  const impact = ctImpactPct(contract, multiplier) / 100,
+    buyFee = (contract.costs.feePct * multiplier) / 100,
+    sellFee = ((contract.costs.feePct + contract.costs.sellTaxPct) * multiplier) / 100;
+  return ((exitPrice * (1 - impact) * (1 - sellFee)) / (entryOpen * (1 + impact) * (1 + buyFee)) - 1) * 100;
+}
+/** Round-trip cost with no price move, percent of the capital put in. */
+export function ctRoundTripCostPct(contract: Pick<CTContract, "costs">, multiplier = 1) {
+  return -ctNetTradePct(contract, 100, 100, multiplier);
+}
 export function replayCT(
   specInput: CTSpec,
   data: Record<string, CTBar[]>,
@@ -582,9 +606,7 @@ export function replayCT(
           pending = null;
           addBlock("data_gap");
         } else {
-          const impact =
-            (contract.costs.spreadPct / 2 + contract.costs.slippagePct) *
-            multiplier;
+          const impact = ctImpactPct(contract, multiplier);
           const price = ctFillPrice(
               bar.open * (1 + impact / 100),
               contract.market,

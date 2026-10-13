@@ -10,7 +10,7 @@ import TriangleAlert from "lucide-react/dist/esm/icons/triangle-alert";
 import Wallet from "lucide-react/dist/esm/icons/wallet";
 import WifiOff from "lucide-react/dist/esm/icons/wifi-off";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { GENERATION_MODELS } from "@/lib/strategy-generation-models";
+import { GENERATION_MODELS, RESEARCH_MODELS } from "@/lib/strategy-generation-models";
 import { SURGE_STAGES, type SurgeJob, type SurgeActivity } from "@/lib/surge-types";
 import type { SurgePool } from "@/lib/surge-spec";
 import type { summarizeSurgeResearch } from "@/lib/surge-research";
@@ -584,7 +584,7 @@ export function SurgeWorkspace() {
           <ul className="generator-events">
             {latest.events.map((event, index) => <li key={index}>
               {event.state === "done" ? "✓" : event.state === "error" ? "!" : "→"} {event.detail}
-              {event.role && <small> · {GENERATION_MODELS[event.role].model}</small>}
+              {event.role && <small> · {RESEARCH_MODELS[event.role].model}</small>}
             </li>)}
           </ul>
           <a

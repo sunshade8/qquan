@@ -16,7 +16,7 @@ import {
 } from "../lib/ct-spec.ts";
 import {
   ctCandidateSchema,
-  ctDesignContext,
+  ctSessionContext,
   validateCTCandidate,
 } from "../lib/ct-research.ts";
 import { assertCTTool } from "../lib/ct-tools.ts";
@@ -50,16 +50,16 @@ test("CT rejects invented performance, executable code and unsupported condition
   s.stages[0].conditions[0].feature = "unimplemented_pullback";
   assert.throws(() => ctSpecSchema.parse(s));
 });
-test("CT author input cannot see final data/results or private tool output", () => {
+test("CT author input cannot see final data/results, private tool output or raw source text", () => {
   const ct = ctState();
   ct.final = { secret: "FINAL_NEVER_AUTHOR" };
   ct.finalStress = { secret: "FINAL_NEVER_AUTHOR" };
   ct.tools = [{ output: "FINAL_NEVER_AUTHOR" }];
-  assert.ok(
-    !JSON.stringify(ctDesignContext(ct, "test", { train: 1 })).includes(
-      "FINAL_NEVER_AUTHOR",
-    ),
-  );
+  const context = JSON.stringify(ctSessionContext(ct, "test", { conclusion: "hurdle" }, { index: 0, kind: "design" }));
+  assert.ok(!context.includes("FINAL_NEVER_AUTHOR"));
+  // Principles and ids only: the full source text stays out of the designer's input.
+  assert.ok(!context.includes(ct.sources[0].text));
+  assert.ok(context.includes(ct.sources[0].id));
 });
 test("CT binds scope and verified sources on server", () => {
   const s = spec();
@@ -348,39 +348,4 @@ test("CT research is fixed to 1-minute bars and accepts Binance USDT crypto symb
   s.exit.maxHoldBars = 390;
   assert.doesNotThrow(() => validateCTSpec(s, c, ["verified"]));
   assert.throws(() => validateCTSpec({ ...s, symbols: ["NVDA"] }, { ...c, symbols: ["NVDA"] }, ["verified"]));
-});
-test("CT designer reads random 1-minute windows from the training split only", async () => {
-  const { sampleCTWindows, formatCTWindow } = await import("../lib/ct-samples.ts");
-  const start = Date.UTC(2025, 0, 1);
-  const minute = Array.from({ length: 4 * 1440 }, (_, i) => ({
-    startMs: start + i * 60000,
-    endMs: start + (i + 1) * 60000,
-    open: 100, high: 101, low: 99, close: 100.5, volume: 10,
-  }));
-  const c = {
-    ...contract(),
-    symbols: ["BTCUSDT"],
-    minutes: 1,
-    fromMs: start,
-    trainingToMs: start + 2 * 86400000,
-    developmentToMs: start + 3 * 86400000,
-    toMs: start + 4 * 86400000,
-    timezone: "UTC",
-  };
-  const data = { BTCUSDT: minute };
-  const a = sampleCTWindows(data, c, "0a1b2c3d"),
-    again = sampleCTWindows(data, c, "0a1b2c3d");
-  assert.equal(a.length, 3);
-  assert.deepEqual(a, again);
-  assert.ok(a.every((w) => w.from >= c.fromMs && w.to <= c.trainingToMs && w.to - w.from === 390 * 60000));
-  const shown = formatCTWindow(a[0], data, c);
-  assert.equal(shown.bars, 390);
-  assert.equal(shown.csv.split("\n").length, 391);
-  const ct = { ...ctState(), contract: c };
-  assert.doesNotThrow(() => assertCTTool("read_training_bars", { dataHash: ct.dataHash, seed: "x", windows: a }, ct));
-  assert.throws(() =>
-    assertCTTool("read_training_bars", { dataHash: ct.dataHash, seed: "x", windows: [{ symbol: "BTCUSDT", from: c.trainingToMs, to: c.trainingToMs + 3600000 }] }, ct),
-  );
-  ct.phase = "experiment";
-  assert.throws(() => assertCTTool("read_training_bars", { dataHash: ct.dataHash, seed: "x", windows: a }, ct));
 });

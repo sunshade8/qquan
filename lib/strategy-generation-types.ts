@@ -37,6 +37,8 @@ export type ResearchCall = {
   incompleteReason?: string;
   /** Hidden reasoning tokens inside output_tokens (OpenAI only). */
   reasoningTokens?: number | null;
+  /** What the call was for, when a role makes several kinds (e.g. "설계 세션 1 · 턴 3"). */
+  label?: string;
 };
 export type ResearchMeter = {
   jobId: string;

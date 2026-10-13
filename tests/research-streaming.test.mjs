@@ -95,7 +95,7 @@ test("524 is a retryable timeout, never a credit error; SDK does not hide extra 
  }finally{mockFetch=originalFetch;}
 });
 test("fallback request uses the documented secondary Anthropic model",async()=>{
- mockFetch=async(url,options)=>{assert.equal(JSON.parse(options.body).model,"claude-sonnet-5");return new Response("unavailable",{status:529});};
+ mockFetch=async(url,options)=>{assert.equal(JSON.parse(options.body).model,"claude-sonnet-5-5");return new Response("unavailable",{status:529});};
  try {await assert.rejects(()=>generationCall("owner","evidenceReviewer",schema,"test",{failures:2}));}
  finally{mockFetch=originalFetch;}
 });

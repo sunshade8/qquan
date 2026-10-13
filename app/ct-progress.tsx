@@ -29,6 +29,7 @@ import X from "lucide-react/dist/esm/icons/x";
 import type { GenerationJob } from "@/lib/strategy-generation-types";
 import type { CTResearch, CTToolTrace, CTTrial } from "@/lib/ct-research";
 import {
+  agentIdOf,
   agentOf,
   backtestKind,
   callDoing,
@@ -37,6 +38,7 @@ import {
   ctTimeline,
   hostOf,
   phaseContext,
+  queryFeatures,
   stalledFor,
   toolDoing,
   type CTAgentId,
@@ -66,9 +68,9 @@ const PHASE_HINT: Record<CTPhaseId, string> = {
   sources: "공개 자료를 검색해 접근법 후보를 찾습니다",
   read: "검색된 원문을 읽고 본문과 해시를 저장합니다",
   approaches: "원문에서 원리와 가격·거래량 구조를 정리합니다",
-  design: "학습 구간 통계로 가설과 규칙을 설계합니다",
+  design: "학습 구간 측정 도구로 가설을 검증하고 규칙을 설계합니다",
   experiment: "서버 엔진으로 학습·개발·스트레스 실험을 실행합니다",
-  reflect: "측정된 실패를 진단하고 부모 후보를 수정합니다",
+  reflect: "측정 결과를 반영한 새 설계 세션을 엽니다",
   risk_review: "규칙을 동결하고 독립 모델이 검토합니다",
   final: "최종 구간을 한 번만 열어 동결 규칙을 평가합니다",
   evidence_review: "독립 최종 검토와 서버 수치 게이트를 확인합니다",
@@ -128,7 +130,7 @@ function reached(phase: CTPhaseId, ct: CTResearch) {
     case "sources": return Boolean(ct.search) || ct.sources.length > 0;
     case "read": return ct.sources.length > 0;
     case "approaches": return Boolean(ct.approaches?.length);
-    case "design": case "experiment": case "reflect": return ct.trials.length > 0 || Boolean(ct.pending);
+    case "design": case "experiment": case "reflect": return ct.trials.length > 0 || Boolean(ct.pending) || Boolean(ct.sessions?.length);
     case "risk_review": return Boolean(ct.riskReview) || Boolean(ct.frozenHash);
     case "final": return Boolean(ct.final) || Boolean(ct.finalConsumed);
     case "evidence_review": return Boolean(ct.finalReview);
@@ -162,6 +164,7 @@ export function describeTool(t: CTToolTrace) {
     }
     case "read_public_source": return `원문 읽기 · ${hostOf(i.url)}`;
     case "read_source_failure": return `원문 읽기 실패 · ${hostOf(i.url)}`;
+    case "approach_quote_rejected": return `원문에 없는 인용 제외 · ${(i.sourceIds as unknown[] | undefined)?.length ?? 0}건`;
     case "compile_strategy": {
       const name = ((i.candidate as { spec?: { name?: string } } | undefined)?.spec?.name) ?? "후보";
       return `후보 컴파일 · ${name}`;
@@ -173,6 +176,14 @@ export function describeTool(t: CTToolTrace) {
     }
     case "analyze_training": return "학습 구간 통계 분석";
     case "read_training_bars": return `학습 구간 1분봉 열람 · ${(i.windows as unknown[] | undefined)?.length ?? 0}구간`;
+    case "cost_hurdle": return "비용 장벽 표 계산 · 학습 구간";
+    case "query_conditional_returns": return `조건부 수익 조회 · ${queryFeatures(i)}`;
+    case "read_bars": return `학습 1분봉 열람 · ${((i.request as { anchors?: unknown[] } | undefined)?.anchors?.length ?? 0)}개 시각`;
+    case "screen_rule": return `학습 구간 사전 검사 · ${((i.spec as { name?: string } | undefined)?.name) ?? "후보"}`;
+    case "submit_candidates": {
+      const n = ((i.submission as { candidates?: unknown[] } | undefined)?.candidates?.length) ?? 0;
+      return n ? `후보 제출 · ${n}개` : "후보 0개 제출 · 우위 없음 보고";
+    }
     default: return t.name;
   }
 }
@@ -211,7 +222,7 @@ export function LiveStatusBar({ job, runnerOnline, busy, onAct }: StatusProps) {
         </div>
         <dl className="ct-live-stats">
           <div><dt>경과</dt><dd className="ui-mono">{formatClock(elapsed)}</dd></div>
-          <div><dt>후보</dt><dd className="ui-num">{ct.trials.length}/{ct.contract.policy.maxCandidates}</dd></div>
+          <div><dt>후보</dt><dd className="ui-num">{ct.submitted ?? ct.trials.length}/{ct.contract.policy.maxCandidates}</dd></div>
           <div><dt>백테스트</dt><dd className="ui-num">{ct.backtests}회</dd></div>
           <div className="ct-live-cost" data-tone={costWarn ? "warn" : undefined}>
             <dt>비용{costWarn ? " · 예산 임박" : ""}</dt>
@@ -262,7 +273,7 @@ export function PhaseStepper({ job }: { job: CTJob }) {
   const activeLeft = Math.max(0, policy.maxActiveMs - ct.activeMs);
   const limits = [
     { label: "비용", value: `${usd(job.costUsd)} / ${usd(job.budgetUsd)}`, ratio: job.costUsd / (job.budgetUsd || 1) },
-    { label: "후보", value: `${ct.trials.length} / ${policy.maxCandidates}`, ratio: ct.trials.length / policy.maxCandidates },
+    { label: "후보", value: `${ct.submitted ?? ct.trials.length} / ${policy.maxCandidates}`, ratio: (ct.submitted ?? ct.trials.length) / policy.maxCandidates },
     { label: "활성 시간", value: `${formatClock(ct.activeMs)} / ${formatClock(policy.maxActiveMs)}`, ratio: ct.activeMs / policy.maxActiveMs },
   ];
   return (
@@ -350,11 +361,12 @@ function ToolItem({ trace, jobId, now, fresh, onDownload, onError }: { trace: CT
 const CALL_STATUS: Record<CTCall["status"], string> = { started: "응답 중", completed: "완료", failed: "실패", interrupted: "중단" };
 const tokens = (n: number) => n.toLocaleString("ko-KR");
 function CallItem({ call, now, fresh }: { call: CTCall; now: number; fresh: boolean }) {
-  const agent = agentOf(call.role as CTAgentId);
+  const agent = agentOf(agentIdOf(call.role));
   const live = call.status === "started";
   const tone = live ? "accent" : call.status === "completed" ? undefined : "warn";
   const out = call.usage.output_tokens ?? 0;
-  const input = (call.usage.input_tokens ?? 0) + (call.usage.cache_read_input_tokens ?? 0);
+  const input = (call.usage.input_tokens ?? 0) + (call.usage.cache_read_input_tokens ?? 0) + (call.usage.cache_creation_input_tokens ?? 0);
+  const cached = call.usage.cache_read_input_tokens ?? 0;
   const seconds = Math.max(0, Math.round((Date.parse(call.updatedAt) - Date.parse(call.startedAt)) / 1000));
   return (
     <li className={`ct-feed-item${fresh ? " is-new" : ""}`} data-kind="call">
@@ -363,7 +375,7 @@ function CallItem({ call, now, fresh }: { call: CTCall; now: number; fresh: bool
           <summary>
             <span className="ct-feed-text">
               <span className="ct-feed-kind" aria-hidden="true">모델</span>
-              {agent?.name ?? call.role} · {call.model}
+              {agent?.name ?? call.role}{call.label ? ` · ${call.label}` : ""} · {call.model}
               {out ? <span className="ct-feed-aside ui-num"> · 출력 {tokens(out)}</span> : null}
             </span>
             <time className="ct-feed-time ui-num" dateTime={call.startedAt}>{relativeTime(call.startedAt, now)}</time>
@@ -376,6 +388,7 @@ function CallItem({ call, now, fresh }: { call: CTCall; now: number; fresh: bool
             </p>
             <dl className="ct-feed-usage ui-num">
               <div><dt>입력</dt><dd>{tokens(input)}</dd></div>
+              {cached ? <div><dt>캐시 읽기</dt><dd>{tokens(cached)}</dd></div> : null}
               <div><dt>출력</dt><dd>{tokens(out)}</dd></div>
               <div><dt>비용{call.estimated ? " (추정)" : ""}</dt><dd>${call.costUsd.toFixed(4)}</dd></div>
               {call.searchCalls ? <div><dt>웹 검색</dt><dd>{call.searchCalls}회</dd></div> : null}
@@ -489,11 +502,11 @@ export const LatestTrialCard = memo(LatestBase, (a, b) => a.trial?.id === b.tria
 type Icon = ComponentType<{ size?: number; strokeWidth?: number; "aria-hidden"?: boolean | "true" }>;
 const AGENT_ICON: Record<CTAgentId, Icon> = {
   engine: Cpu,
-  orchestrator: ScanSearch,
-  dataAnalyst: BookOpenText,
-  designer: PencilRuler,
-  riskReviewer: ShieldCheck,
-  evidenceReviewer: FileCheck,
+  ctOrchestrator: ScanSearch,
+  ctAnalyst: BookOpenText,
+  ctDesigner: PencilRuler,
+  ctRiskReviewer: ShieldCheck,
+  ctEvidenceReviewer: FileCheck,
 };
 const AGENT_STATE: Record<CTAgentRow["state"], string> = {
   working: "작업 중",
@@ -510,7 +523,7 @@ const minutes = (ms: number) => (ms < 60_000 ? `${Math.round(ms / 1000)}초` : `
 function headline(now: CTNow, job: CTJob) {
   const { ct } = job;
   switch (now.kind) {
-    case "model": return callDoing(now.call.role, ct);
+    case "model": return callDoing(now.call.role, ct, now.call);
     case "tool": return toolDoing(now.trace);
     case "retry": return "일시적 오류 · 같은 단계를 자동으로 다시 시도합니다";
     case "between": return `${CT_PHASES[ct.phase]} 단계를 준비하고 있습니다`;
@@ -623,11 +636,12 @@ export function NowPanel({ job, calls, driver }: { job: CTJob; calls: CTCall[]; 
 
       {now.kind === "model" ? (() => {
         const out = now.call.usage.output_tokens ?? 0;
-        const input = (now.call.usage.input_tokens ?? 0) + (now.call.usage.cache_read_input_tokens ?? 0);
+        const cached = now.call.usage.cache_read_input_tokens ?? 0;
+        const input = (now.call.usage.input_tokens ?? 0) + cached + (now.call.usage.cache_creation_input_tokens ?? 0);
         const ratio = out / now.maxTokens;
         return (
           <dl className="ct-now-usage ui-num">
-            <div><dt>입력 토큰</dt><dd>{tokens(input)}</dd></div>
+            <div><dt>입력 토큰{cached ? " · 캐시" : ""}</dt><dd>{tokens(input)}{cached ? <small> / 캐시 {tokens(cached)}</small> : null}</dd></div>
             <div className="ct-now-out" data-tone={ratio >= 0.8 ? "warn" : undefined}>
               <dt>출력 토큰{ratio >= 0.8 ? " · 한도 임박" : ""}</dt>
               <dd>

@@ -164,16 +164,19 @@ export async function POST(request: Request) {
   if (!body) return Response.json({ error: "JSON 필요" }, { status: 400 });
   try {
     if (body.action === "preflight") {
-      const { action, ...input } = body;
+      const { action, id, ...input } = body;
       void action;
+      void id;
       const contract = await prepareCTContract(input);
       const sample = await ctDataPage(contract, contract.symbols[0], contract.toMs);
       const aggregated = aggregateCT(sample, contract.minutes, contract.market, contract.toMs);
       return Response.json({contract, sampleBars: sample.length, aggregatedBars: aggregated.length}, {headers:headers(owner, request)});
     }
     if (body.action === "research") {
-      const { action, ...input } = body;
+      // The client sends the run it is showing as `id`; a new research request has none.
+      const { action, id, ...input } = body;
       void action;
+      void id;
       const job = await createCTResearch(owner, input);
       return Response.json(
         { job: publicJob(job) },

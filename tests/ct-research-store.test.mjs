@@ -83,10 +83,13 @@ test("CT runs actual replay tools, records failure and resumes identical durable
   const j = await job(),
     snapshot = structuredClone(j);
   await research.advanceCTResearch(j, "fixture", noModel);
-  assert.equal(j.ct.trials.length, 1);
-  assert.equal(j.ct.backtests, 6);
-  assert.ok(j.ct.trials[0].reasons.length);
-  assert.ok(j.ct.trials[0].development.trades.length);
+  // The fixture fails the training gate: screened out with no development replay or model cost.
+  assert.equal(j.ct.trials.length, 0);
+  assert.equal(j.ct.screened.length, 1);
+  assert.equal(j.ct.backtests, 1);
+  assert.ok(j.ct.screened[0].reasons.length);
+  assert.ok(j.ct.screened[0].training.trades.length);
+  assert.equal(j.ct.submitted, 1);
   assert.equal(j.ct.phase, "reflect");
   const count = sqlite
     .prepare("SELECT count(*) n FROM ct_tools WHERE run_id=?")
@@ -97,10 +100,7 @@ test("CT runs actual replay tools, records failure and resumes identical durable
       .n,
     count,
   );
-  assert.deepEqual(
-    snapshot.ct.trials[0].development,
-    j.ct.trials[0].development,
-  );
+  assert.deepEqual(snapshot.ct.screened[0].training, j.ct.screened[0].training);
   assert.equal(snapshot.ct.backtests, 0, "completed computations reused");
 });
 test("CT canceled late work cannot write artifacts or register a strategy", async () => {
@@ -127,58 +127,8 @@ test("CT time/compute and duplicate limits finish normally with no strategy, nev
     assert.equal(j.ct.finalConsumed, undefined);
   }
 });
-test("CT independent rejection cannot open final data", async () => {
-  const j = await job();
-  await research.advanceCTResearch(j, "fixture", noModel);
-  j.ct.selectedId = j.ct.trials[0].id;
-  j.ct.frozenHash = j.ct.trials[0].hash;
-  j.ct.phase = "risk_review";
-  await research.advanceCTResearch(j, "fixture", async () => ({
-    approved: false,
-    blockers: ["source mismatch"],
-    findings: [],
-    suggestions: [],
-  }));
-  assert.equal(j.status, "completed");
-  assert.equal(j.ct.passed, false);
-  assert.equal(j.ct.finalConsumed, undefined);
-});
-test("CT final overlap is durably consumed across runs and cannot be tuned/reopened", async () => {
-  const j = await job();
-  await research.advanceCTResearch(j, "fixture", noModel);
-  j.ct.selectedId = j.ct.trials[0].id;
-  j.ct.frozenHash = j.ct.trials[0].hash;
-  j.ct.phase = "final";
-  sqlite
-    .prepare("INSERT INTO ct_exposure VALUES (?,?,?,?,?,?)")
-    .run(
-      "prior",
-      "crypto",
-      JSON.stringify(["KRW-BTC"]),
-      j.ct.contract.developmentToMs,
-      j.ct.contract.toMs,
-      "prior-hash",
-    );
-  await research.advanceCTResearch(j, "fixture", noModel);
-  assert.equal(j.status, "completed");
-  assert.equal(j.ct.passed, false);
-  assert.match(j.ct.endReason, /소진/);
-  assert.equal(j.ct.final, undefined);
-});
-test("CT reader rejects fabricated and private URLs before any network access", async () => {
-  await assert.rejects(
-    () => research.readCTSource("https://invented.example/a", []),
-    /확인하지/,
-  );
-  for (const url of [
-    "http://example.com",
-    "https://127.0.0.1/a",
-    "https://foo.local/a",
-    "https://user:pass@example.com/a",
-  ])
-    await assert.rejects(() => research.readCTSource(url, [url]), /차단/);
-});
-test("CT measured passing fixture freezes, independently reviews, consumes final, registers same executable hash", async () => {
+/** A legacy pending candidate that passes training and development on synthetic data. */
+async function passingJob() {
   sqlite.exec("DELETE FROM ct_exposure");
   const j = await job();
   j.ct.pending.spec.stages[0].conditions.push({
@@ -216,6 +166,62 @@ test("CT measured passing fixture freezes, independently reviews, consumes final
   sqlite
     .prepare("INSERT INTO ct_data_pages VALUES (?,?,?,?)")
     .run(j.id, "KRW-BTC", c.toMs, JSON.stringify(data));
+  return j;
+}
+test("CT independent rejection cannot open final data", async () => {
+  const j = await passingJob();
+  await research.advanceCTResearch(j, "fixture", noModel);
+  j.ct.selectedId = j.ct.trials[0].id;
+  j.ct.frozenHash = j.ct.trials[0].hash;
+  j.ct.phase = "risk_review";
+  await research.advanceCTResearch(j, "fixture", async () => ({
+    approved: false,
+    blockers: ["source mismatch"],
+    findings: [],
+    suggestions: [],
+  }));
+  assert.equal(j.status, "completed");
+  assert.equal(j.ct.passed, false);
+  assert.equal(j.ct.finalConsumed, undefined);
+});
+test("CT final overlap is durably consumed across runs and cannot be tuned/reopened", async () => {
+  const j = await passingJob();
+  await research.advanceCTResearch(j, "fixture", noModel);
+  sqlite.exec("DELETE FROM ct_exposure");
+  j.ct.selectedId = j.ct.trials[0].id;
+  j.ct.frozenHash = j.ct.trials[0].hash;
+  j.ct.phase = "final";
+  sqlite
+    .prepare("INSERT INTO ct_exposure VALUES (?,?,?,?,?,?)")
+    .run(
+      "prior",
+      "crypto",
+      JSON.stringify(["KRW-BTC"]),
+      j.ct.contract.developmentToMs,
+      j.ct.contract.toMs,
+      "prior-hash",
+    );
+  await research.advanceCTResearch(j, "fixture", noModel);
+  assert.equal(j.status, "completed");
+  assert.equal(j.ct.passed, false);
+  assert.match(j.ct.endReason, /소진/);
+  assert.equal(j.ct.final, undefined);
+});
+test("CT reader rejects fabricated and private URLs before any network access", async () => {
+  await assert.rejects(
+    () => research.readCTSource("https://invented.example/a", []),
+    /확인하지/,
+  );
+  for (const url of [
+    "http://example.com",
+    "https://127.0.0.1/a",
+    "https://foo.local/a",
+    "https://user:pass@example.com/a",
+  ])
+    await assert.rejects(() => research.readCTSource(url, [url]), /차단/);
+});
+test("CT measured passing fixture freezes, independently reviews, consumes final, registers same executable hash", async () => {
+  const j = await passingJob();
   await research.advanceCTResearch(j, "fixture", noModel);
   assert.deepEqual(j.ct.trials[0].reasons, []);
   assert.equal(j.ct.phase, "risk_review");

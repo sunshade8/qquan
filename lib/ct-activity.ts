@@ -8,7 +8,7 @@
  */
 import type { GenerationJob, ResearchCall, ResearchMeter } from "./strategy-generation-types.ts";
 import type { CTResearch, CTToolTrace } from "./ct-research.ts";
-import { GENERATION_MODELS, researchMaxTokens, type GenerationRole } from "./strategy-generation-models.ts";
+import { RESEARCH_MODELS, researchMaxTokens, type CTRole, type GenerationRole } from "./strategy-generation-models.ts";
 
 export type CTCall = Omit<ResearchCall, "result" | "key">;
 export type CTActivityJob = Pick<
@@ -48,21 +48,33 @@ export function mergeCalls(calls: ResearchCall[] | undefined, meter: ResearchMet
 
 /* ----------------------------------------------------------------- agents */
 
-export type CTAgentId = "engine" | "orchestrator" | "dataAnalyst" | "designer" | "riskReviewer" | "evidenceReviewer";
+export type CTAgentId = "engine" | CTRole;
 type Phase = CTResearch["phase"];
 export const CT_AGENTS: ReadonlyArray<{ id: CTAgentId; name: string; duty: string; phases: Phase[] }> = [
-  { id: "engine", name: "서버 엔진", duty: "데이터 동결 · 원문 읽기 · 백테스트", phases: ["data", "read", "experiment", "final"] },
-  { id: "orchestrator", name: "총괄", duty: "웹 검색으로 공개 접근법 탐색", phases: ["sources"] },
-  { id: "dataAnalyst", name: "자료 분석", duty: "원문에서 원리 · 구현 가정 추출", phases: ["approaches"] },
-  { id: "designer", name: "전략 설계", duty: "가설 · 규칙 설계와 실패 후 수정", phases: ["design", "reflect"] },
-  { id: "riskReviewer", name: "독립 위험 검토", duty: "동결 규칙의 누출 · 과최적화 검토", phases: ["risk_review"] },
-  { id: "evidenceReviewer", name: "독립 최종 검토", duty: "최종 평가 증거 · 수치 게이트 확인", phases: ["evidence_review"] },
+  { id: "engine", name: "서버 엔진", duty: "데이터 동결 · 원문 읽기 · 측정 도구 · 백테스트", phases: ["data", "read", "experiment", "final"] },
+  { id: "ctOrchestrator", name: "총괄", duty: "웹 검색으로 공개 접근법 탐색(선택)", phases: ["sources"] },
+  { id: "ctAnalyst", name: "자료 분석", duty: "원문에서 원리 · 구현 가정 추출", phases: ["approaches"] },
+  { id: "ctDesigner", name: "연구 · 설계", duty: "학습 구간 측정으로 가설 검증 · 규칙 설계와 수정", phases: ["design", "reflect"] },
+  { id: "ctRiskReviewer", name: "독립 위험 검토", duty: "누출 · 과최적화 · 데이터 스누핑 검토", phases: ["risk_review"] },
+  { id: "ctEvidenceReviewer", name: "독립 최종 검토", duty: "최종 평가 증거 · 수치 게이트 확인", phases: ["evidence_review"] },
 ];
+/** Runs before 2026-10-13 recorded the shared strategy roles; show them as the CT agent that did that job. */
+const LEGACY_ROLE: Record<string, CTAgentId> = {
+  orchestrator: "ctOrchestrator",
+  dataAnalyst: "ctAnalyst",
+  designer: "ctDesigner",
+  riskReviewer: "ctRiskReviewer",
+  evidenceReviewer: "ctEvidenceReviewer",
+};
+export function agentIdOf(role: string): CTAgentId {
+  return LEGACY_ROLE[role] ?? (CT_AGENTS.some((a) => a.id === role) ? (role as CTAgentId) : "engine");
+}
 export const agentOf = (id: CTAgentId) => CT_AGENTS.find((a) => a.id === id)!;
-const isRole = (id: CTAgentId): id is Exclude<CTAgentId, "engine"> => id !== "engine";
+const isRole = (id: CTAgentId): id is CTRole => id !== "engine";
+/** The model an agent ran (from its last call — legacy runs keep their real models) or will run. */
 export function agentModel(id: CTAgentId, call?: CTCall) {
   if (!isRole(id)) return { model: "모델 없음", provider: "로컬 계산" };
-  const m = GENERATION_MODELS[id];
+  const m = RESEARCH_MODELS[id];
   return { model: call?.model ?? m.model, provider: call?.provider ?? m.provider };
 }
 
@@ -92,6 +104,12 @@ const trialNo = (id: unknown) => {
   return Number.isFinite(n) ? `후보 ${n + 1}` : "후보";
 };
 
+/** "return_pct(3분)·volume_ratio" — the features a query measured. */
+export function queryFeatures(input: Record<string, unknown>) {
+  const stages = ((input.query as { stages?: Array<{ conditions?: Array<{ feature: string; timeframe: number }> }> } | undefined)?.stages) ?? [];
+  const names = stages.flatMap((s) => s.conditions ?? []).map((c) => (c.timeframe > 1 ? `${c.feature}(${c.timeframe}분)` : c.feature));
+  return [...new Set(names)].join(" · ") || "조건";
+}
 /** What a running tool is doing, as a sentence. */
 export function toolDoing(t: Pick<CTToolTrace, "name" | "input">) {
   const i = (t.input ?? {}) as Record<string, unknown>;
@@ -103,6 +121,11 @@ export function toolDoing(t: Pick<CTToolTrace, "name" | "input">) {
     case "read_public_source": return `${hostOf(i.url)} 원문을 읽고 있습니다`;
     case "analyze_training": return "학습 구간 통계를 계산하고 있습니다";
     case "read_training_bars": return "무작위 학습 구간의 1분봉을 읽고 있습니다";
+    case "cost_hurdle": return "학습 구간에서 비용 장벽 표(보유 시간 · 시간대 · 변동성별 MFE/MAE)를 계산하고 있습니다";
+    case "query_conditional_returns": return `조건부 수익을 조회하고 있습니다 · ${queryFeatures(i)}`;
+    case "read_bars": return `조회 이벤트 주변 학습 1분봉을 읽고 있습니다 · ${((i.request as { anchors?: unknown[] } | undefined)?.anchors?.length ?? 0)}개 시각`;
+    case "screen_rule": return `후보 규칙을 학습 구간에서 사전 검사하고 있습니다 · ${((i.spec as { name?: string } | undefined)?.name) ?? "후보"}`;
+    case "submit_candidates": return "제출된 후보를 검증하고 있습니다";
     case "compile_strategy": return "후보 규칙을 컴파일하고 실행 가능성을 검사하고 있습니다";
     case "backtest": return `${backtestKind(i.kind)} 백테스트를 실행하고 있습니다`;
     case "failure_diagnosis": return `${trialNo(i.trialId)}의 실패 원인을 진단하고 있습니다`;
@@ -110,33 +133,49 @@ export function toolDoing(t: Pick<CTToolTrace, "name" | "input">) {
   }
 }
 
-/** What a model call is doing, as a sentence. The designer both designs and revises. */
-export function callDoing(role: GenerationRole, ct: CTResearch) {
-  switch (role) {
-    case "orchestrator": return "웹을 검색해 공개 차트 매매 접근법을 찾고 있습니다";
-    case "dataAnalyst": return "읽은 원문에서 원리와 구현 가정을 추출하고 있습니다";
-    case "designer":
+/** What a model call is doing, as a sentence. Legacy role names read as their CT agent. */
+export function callDoing(role: GenerationRole | string, ct: CTResearch, call?: Pick<CTCall, "label">) {
+  const session = ct.sessions?.at(-1);
+  switch (agentIdOf(role)) {
+    case "ctOrchestrator": return "웹을 검색해 공개 차트 매매 접근법을 찾고 있습니다";
+    case "ctAnalyst": return "읽은 원문에서 원리와 구현 가정을 추출하고 있습니다";
+    case "ctDesigner":
+      if (role === "ctDesigner" && session)
+        return `${call?.label ?? `설계 세션 ${session.index + 1}`} · ${session.kind === "reflect" ? "측정 결과를 반영해 " : ""}가설을 세우고 학습 구간 측정으로 검증하고 있습니다`;
       return ct.trials.length || ct.phase === "reflect"
         ? "측정된 실패를 보고 후보 규칙을 수정하고 있습니다"
         : "첫 가설과 매매 규칙을 설계하고 있습니다";
-    case "riskReviewer": return "동결한 규칙의 누출 · 체결 · 과최적화 위험을 독립 검토하고 있습니다";
-    case "evidenceReviewer": return "최종 평가 증거와 수치 게이트를 독립 검토하고 있습니다";
-    default: return `${GENERATION_MODELS[role]?.label ?? role} 모델이 응답하고 있습니다`;
+    case "ctRiskReviewer": return "동결한 규칙의 누출 · 체결 · 과최적화 · 데이터 스누핑 위험을 독립 검토하고 있습니다";
+    case "ctEvidenceReviewer": return "최종 평가 증거와 수치 게이트를 독립 검토하고 있습니다";
+    default: return `${(RESEARCH_MODELS as Record<string, { label: string }>)[role]?.label ?? role} 모델이 응답하고 있습니다`;
   }
+}
+/** Session progress line for the designer, e.g. "세션 1/3 · 턴 4/12 · 도구 7/24 · 조회 5". */
+export function sessionProgress(ct: CTResearch) {
+  const s = ct.sessions?.at(-1);
+  if (!s) return null;
+  const p = ct.contract.policy;
+  const max = { turns: p.sessionMaxTurns ?? 12, tools: p.sessionMaxToolCalls ?? 24, sessions: p.maxSessions ?? 3 };
+  const queries = (ct.queries ?? []).filter((q) => q.session === s.index).length;
+  return `세션 ${s.index + 1}/${max.sessions} · 턴 ${s.turns}/${max.turns} · 도구 ${s.toolCalls}/${max.tools} · 조회 ${queries} · 사전 검사 ${s.screens}`;
 }
 
 /** Concrete context for the current phase, built from counts the job already has. */
 export function phaseContext(ct: CTResearch) {
   const c = ct.contract;
-  const next = Math.min(ct.trials.length + 1, c.policy.maxCandidates);
+  const next = Math.min((ct.submitted ?? ct.trials.length) + 1, c.policy.maxCandidates);
   switch (ct.phase) {
     case "data": return `${c.symbols.join(", ")} · ${c.minutes}분봉 · 학습/개발/최종 구간 고정`;
     case "sources": return `${c.symbols.join(", ")} · ${c.minutes}분봉 관점으로 원문 2–6건 선정`;
     case "read": return `선정 URL ${ct.search?.urls.length ?? 0}건 중 ${ct.sources.length}건 읽음`;
     case "approaches": return `확인된 원문 ${ct.sources.length}건 · 원문에 실제 있는 인용만 허용`;
-    case "design": return `후보 ${next}/${c.policy.maxCandidates} · 출처 ${ct.sources.length}건 · 학습 구간 1분봉·통계만 사용`;
-    case "reflect": return `후보 ${next}/${c.policy.maxCandidates} · 이전 후보 ${ct.trials.length}개의 측정 실패 반영`;
-    case "experiment": return `학습 · 개발 · 비용 2배 · 1봉 지연 · 손절 민감도 · 누적 백테스트 ${ct.backtests}회`;
+    case "design":
+    case "reflect":
+      return sessionProgress(ct) ??
+        (ct.phase === "design"
+          ? `후보 ${next}/${c.policy.maxCandidates} · 출처 ${ct.sources.length}건${ct.sourceNote ? " · 출처 없이 데이터로 설계" : ""} · 학습 구간 측정 도구만 사용`
+          : `후보 ${next}/${c.policy.maxCandidates} · 이전 후보 ${ct.trials.length}개의 측정 실패 반영`);
+    case "experiment": return `대기 후보 ${ct.queue?.length ?? 0}개 · 학습 게이트 → 개발 · 비용 2배 · 1봉 지연 · 손절 민감도 · 누적 백테스트 ${ct.backtests}회`;
     case "risk_review": return "규칙 해시 동결 후 독립 모델 검토 · 제공자 장애는 승인으로 대체하지 않음";
     case "final": return "최종 구간을 한 번만 열어 동결 규칙을 평가";
     case "evidence_review": return "독립 최종 검토와 서버 수치 게이트를 모두 통과해야 등록 가능";
@@ -165,7 +204,7 @@ export function ctNow(job: CTActivityJob, calls: CTCall[]): CTNow {
   if (job.status !== "running") return { kind: "ended", agent: null, signalAt };
   const call = [...calls].reverse().find((c) => c.status === "started");
   if (call)
-    return { kind: "model", agent: call.role as CTAgentId, call, since: call.startedAt, signalAt, maxTokens: call.maxOutputTokens ?? researchMaxTokens(call.role) };
+    return { kind: "model", agent: agentIdOf(call.role), call, since: call.startedAt, signalAt, maxTokens: call.maxOutputTokens ?? researchMaxTokens(call.role) };
   const trace = [...ct.tools].reverse().find((t) => t.status === "started");
   if (trace) return { kind: "tool", agent: "engine", trace, since: trace.at, signalAt };
   if (job.recovery?.retryAt) {
@@ -175,7 +214,7 @@ export function ctNow(job: CTActivityJob, calls: CTCall[]): CTNow {
     const truncated = failed && (failed.incompleteReason ? failed.incompleteReason === "max_output_tokens" : (failed.usage.output_tokens ?? 0) >= cap);
     return {
       kind: "retry",
-      agent: (failed?.role as CTAgentId | undefined) ?? phaseAgent(ct.phase),
+      agent: failed ? agentIdOf(failed.role) : phaseAgent(ct.phase),
       ...(truncated ? { truncatedAt: cap, reasoningTokens: failed.reasoningTokens ?? null } : {}),
       error: job.recovery.message || job.error || "일시적 오류",
       retryAt: job.recovery.retryAt,
@@ -215,13 +254,14 @@ export type CTAgentRow = {
   tools: number;
   costUsd: number;
   inputTokens: number;
+  cacheReadTokens: number;
   outputTokens: number;
   lastAt: string | null;
 };
 export function ctAgents(job: CTActivityJob, calls: CTCall[], now: CTNow): CTAgentRow[] {
   const { ct } = job;
   return CT_AGENTS.map((a) => {
-    const mine = calls.filter((c) => c.role === a.id);
+    const mine = calls.filter((c) => agentIdOf(c.role) === a.id);
     const tools = a.id === "engine" ? ct.tools : [];
     const last = mine.at(-1);
     const lastAt = [last?.updatedAt, tools.at(-1)?.at].filter(Boolean).sort().at(-1) ?? null;
@@ -240,7 +280,8 @@ export function ctAgents(job: CTActivityJob, calls: CTCall[], now: CTNow): CTAge
       calls: mine.length,
       tools: tools.length,
       costUsd: mine.reduce((s, c) => s + (c.costUsd ?? 0), 0),
-      inputTokens: mine.reduce((s, c) => s + (c.usage.input_tokens ?? 0) + (c.usage.cache_read_input_tokens ?? 0), 0),
+      inputTokens: mine.reduce((s, c) => s + (c.usage.input_tokens ?? 0) + (c.usage.cache_read_input_tokens ?? 0) + (c.usage.cache_creation_input_tokens ?? 0), 0),
+      cacheReadTokens: mine.reduce((s, c) => s + (c.usage.cache_read_input_tokens ?? 0), 0),
       outputTokens: mine.reduce((s, c) => s + (c.usage.output_tokens ?? 0), 0),
       lastAt,
     };

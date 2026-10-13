@@ -25,7 +25,7 @@ import { z } from "zod";
 import { shiftDate, isWeekday } from "./market-clock.ts";
 import { lastCompleteDate } from "@/lib/relay-data";
 import { generationAvailability, checkGenerationModels, generationCall } from "@/lib/strategy-generation-llm";
-import { GENERATION_MODELS, assertDifferentProvider, type GenerationRole } from "./strategy-generation-models.ts";
+import { RESEARCH_MODELS, assertDifferentProvider, type GenerationRole } from "./strategy-generation-models.ts";
 import { noteSchema, reviewSchema } from "./strategy-generation-spec.ts";
 import { paceMassive } from "./massive-pacer.ts";
 import { MassiveError } from "./massive.ts";
@@ -173,7 +173,7 @@ export const isTransientModelError = (error: unknown) =>
   error instanceof ClaudeApiError && TRANSIENT_STATUS.has(error.status);
 
 async function askModel<T extends z.ZodType>(job: SurgeJob, report: (message: string) => Promise<void>, role: GenerationRole, schema: T, prompt: string) {
-  const model = GENERATION_MODELS[role];
+  const model = RESEARCH_MODELS[role];
   await report(`${model.provider} · ${model.model} 요청 전송 · 응답 대기`);
   const result = await generationCall(job.ownerId, role, schema, prompt);
   await report(`${model.model} 응답 수신 · 구조 검증 완료 · 비용 $${result.costUsd.toFixed(4)}`);

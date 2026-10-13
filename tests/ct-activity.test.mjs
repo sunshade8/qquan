@@ -40,12 +40,13 @@ test("a stale 'started' meter never resurrects a call the payload marks failed",
   });
   const now = ctNow(j, merged);
   assert.equal(now.kind, "retry");
-  assert.equal(now.agent, "designer");
+  // A legacy "designer" call is shown as the CT research/design agent.
+  assert.equal(now.agent, "ctDesigner");
   assert.equal(now.truncatedAt, 16000);
   // Retry was due at 22:45:03; 45s of grace, then nobody advanced it.
   assert.equal(stalledFor(now, Date.parse("2026-10-12T22:45:30.000Z")), 0);
   assert.ok(stalledFor(now, Date.parse("2026-10-12T22:52:11.000Z")) > 7 * 60_000);
-  const designer = ctAgents(j, merged, now).find((a) => a.id === "designer");
+  const designer = ctAgents(j, merged, now).find((a) => a.id === "ctDesigner");
   assert.equal(designer.state, "retry");
   assert.equal(designer.outputTokens, 16000);
 });
@@ -60,7 +61,7 @@ test("the current actor is the model call, else the running tool, else the phase
   assert.equal(now.agent, "engine");
   assert.equal(ctAgents(withTool, [], now).find((a) => a.id === "engine").state, "working");
   const between = ctNow(job({ ct: ct({ phase: "sources" }) }), []);
-  assert.deepEqual([between.kind, between.agent], ["between", "orchestrator"]);
+  assert.deepEqual([between.kind, between.agent], ["between", "ctOrchestrator"]);
   assert.equal(ctNow(job({ status: "paused" }), []).kind, "paused");
   assert.equal(ctNow(job({ status: "completed" }), []).kind, "ended");
 });
