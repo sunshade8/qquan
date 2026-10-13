@@ -275,6 +275,47 @@ const ResearchSessions = memo(
   (a, b) => JSON.stringify(a.ct.sessions) === JSON.stringify(b.ct.sessions) && a.ct.queries?.length === b.ct.queries?.length && a.ct.screened?.length === b.ct.screened?.length,
 );
 
+/** Chart evidence for any candidate (the latest by default); the frozen final result only belongs to the latest. */
+function TradeEvidencePanel({
+  jobId,
+  trials,
+  latestId,
+  final,
+  currency,
+}: {
+  jobId: string;
+  trials: Array<{ id: string; spec: CTSpec; training: CTResult; development: CTResult }>;
+  latestId: string;
+  final?: CTResult;
+  currency: string;
+}) {
+  const [picked, setPicked] = useState(latestId);
+  const trial = trials.find((t) => t.id === picked) ?? trials.at(-1)!;
+  return (
+    <>
+      {trials.length > 1 ? (
+        <label className="ui-field ct-evidence-pick">
+          <span>차트를 볼 후보</span>
+          <select aria-label="차트를 볼 후보" value={trial.id} onChange={(e) => setPicked(e.target.value)}>
+            {trials.map((t, i) => (
+              <option key={t.id} value={t.id}>
+                후보 {i + 1} · {t.spec.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+      <TradeEvidence
+        key={trial.id}
+        jobId={jobId}
+        spec={trial.spec}
+        currency={currency}
+        results={final && trial.id === latestId ? [trial.training, trial.development, final] : [trial.training, trial.development]}
+      />
+    </>
+  );
+}
+
 function TradeEvidence({
   jobId,
   results,
@@ -895,16 +936,12 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
       {cj ? <TrialHistory trials={cj.ct.trials} /> : null}
 
       {cj && latestTrial ? (
-        <TradeEvidence
-          key={latestTrial.id}
+        <TradeEvidencePanel
           jobId={cj.id}
-          spec={latestTrial.spec}
+          trials={cj.ct.trials}
+          latestId={latestTrial.id}
+          final={cj.ct.final}
           currency={cj.ct.contract.currency}
-          results={
-            cj.ct.final
-              ? [latestTrial.training, latestTrial.development, cj.ct.final]
-              : [latestTrial.training, latestTrial.development]
-          }
         />
       ) : null}
 
