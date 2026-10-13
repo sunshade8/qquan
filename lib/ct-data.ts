@@ -6,7 +6,11 @@ import { parseTossCandle } from "./live-bars.ts";
 import { easternParts } from "./market-clock.ts";
 import { upbitCandles } from "./upbit.ts";
 import { validCTBar, type CTBar } from "./ct-engine.ts";
+import { ctDatasetFor } from "./ct-symbols.ts";
 import type { CTContract } from "./ct-spec.ts";
+/** The immutable snapshot that holds this symbol's bars (one per dataset when several coins are studied). */
+export const ctSnapshotFor = (contract: CTContract, symbol: string) =>
+  contract.dataSnapshots?.[symbol] ?? contract.dataSnapshot;
 export const ctDb = () => (env as unknown as { DB: D1Database }).DB;
 export async function ctDataPage(
   contract: CTContract,
@@ -21,7 +25,7 @@ export async function ctDataPage(
     throw new Error("데이터 호출 범위 위반");
   const from = ctResearchPageStart(contract, before);
   const result = await queryLocalMarket({
-    dataset: contract.market === "stock" ? "stock" : "btc",
+    dataset: ctDatasetFor(contract.market, symbol),
     instrument: symbol,
     venue: contract.market === "stock" ? "US" : "BinanceSpot",
     quoteCurrency: contract.currency,
@@ -29,7 +33,7 @@ export async function ctDataPage(
     to: before,
     minutes: 1,
     session: contract.market === "stock" ? "regular" : "all",
-    snapshot: contract.dataSnapshot,
+    snapshot: ctSnapshotFor(contract, symbol),
   });
   return result.bars;
 }
@@ -104,14 +108,14 @@ export async function loadCTData(runId: string, contract: CTContract) {
         from += 31 * 86400000
       ) {
         const page = await queryLocalMarket({
-          dataset: contract.market === "stock" ? "stock" : "btc",
+          dataset: ctDatasetFor(contract.market, symbol),
           instrument: symbol,
           quoteCurrency: contract.currency,
           from,
           to: Math.min(contract.toMs, from + 31 * 86400000),
           minutes: contract.minutes,
           session: contract.market === "stock" ? "regular" : "all",
-          snapshot: contract.dataSnapshot,
+          snapshot: ctSnapshotFor(contract, symbol),
         });
         bars.push(...page.bars);
       }
@@ -145,6 +149,8 @@ export async function ctRecentBars(
   contract: CTContract,
   symbol: string,
   nowMs: number,
+  /** Calendar days of local one-minute history behind today's candles (60/240/1440-minute conditions need weeks). */
+  warmupDays = 7,
 ) {
   let before = nowMs;
   const rows: CTBar[] = [];
@@ -154,11 +160,11 @@ export async function ctRecentBars(
       const warmup = await queryLocalMarket({
         dataset: "stock",
         instrument: symbol,
-        from: Math.max(contract.fromMs, to - 7 * 86400000),
+        from: Math.max(contract.fromMs, to - warmupDays * 86400000),
         to,
         minutes: 1,
         session: "regular",
-        snapshot: contract.dataSnapshot,
+        snapshot: ctSnapshotFor(contract, symbol),
       });
       rows.push(...warmup.bars);
     }

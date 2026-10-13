@@ -17,7 +17,8 @@ import {
 import { ctRecentBars } from "./ct-data.ts";
 import { type CTPackage } from "./ct-research-store.ts";
 import { ctDb } from "./ct-data.ts";
-import { ctHash, executableCT, ctRuleText, type CTMarket } from "./ct-spec.ts";
+import { ctHash, executableCT, ctRuleText, type CTMarket, type CTSpec } from "./ct-spec.ts";
+import { higherWarmupMinutes } from "./ct-timeframes.ts";
 import { tickCTDashboard } from "./ct-trading-engine.ts";
 import { accountHasUncertainOrders } from "./trading-account-lock.ts";
 import {
@@ -179,6 +180,15 @@ export async function ctBroker(
     },
   };
 }
+/** Calendar days of history the rules' 60/240/1440-minute conditions need (7 when none do). */
+export function ctWarmupDays(specs: CTSpec[]) {
+  let sessions = 0;
+  for (const spec of specs)
+    for (const stage of spec.stages)
+      for (const c of stage.conditions)
+        if (c.timeframe > 12) sessions = Math.max(sessions, higherWarmupMinutes(spec.market, c.timeframe, c.lookback, c.offset) / (spec.market === "stock" ? 390 : 1440));
+  return Math.max(7, Math.ceil((sessions * 7) / 5) + 3);
+}
 export async function ctTick(
   book: CTBook,
   state: DashboardState,
@@ -211,7 +221,7 @@ export async function ctTick(
     },
     bars: (symbol) => {
       if (!dataCache.has(symbol))
-        dataCache.set(symbol, ctRecentBars(contract, symbol, Date.now()));
+        dataCache.set(symbol, ctRecentBars(contract, symbol, Date.now(), ctWarmupDays(state.ctRules?.map((r) => r.spec) ?? [])));
       return dataCache.get(symbol)!;
     },
     async entryAllowed(symbol) {

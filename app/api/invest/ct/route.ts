@@ -14,6 +14,7 @@ import {
 import {
   createCTResearch,
   prepareCTContract,
+  assertFinalWindowFree,
   ctPackages,
   ensureCTSchema,
   registerCT,
@@ -21,6 +22,7 @@ import {
 import { ctDb, loadCTData, ctDataPage, aggregateCT } from "@/lib/ct-data";
 import { ctRunnerOnline } from "@/lib/ct-trading";
 import { generationAvailability } from "@/lib/strategy-generation-llm";
+import { ctCostPreview } from "@/lib/ct-costs";
 export const dynamic = "force-dynamic";
 const headers = (owner: string, request: Request) => ({
   "set-cookie": researchOwnerCookie(owner, request),
@@ -142,6 +144,7 @@ export async function GET(request: Request) {
         registered: await ctPackages(market),
         availability: generationAvailability(),
         runnerOnline: await ctRunnerOnline(),
+        costPreview: ctCostPreview(market),
       },
       { headers: headers(owner, request) },
     );
@@ -168,6 +171,8 @@ export async function POST(request: Request) {
       void action;
       void id;
       const contract = await prepareCTContract(input);
+      // Same refusal a real start gives, shown before anything is paid for.
+      await assertFinalWindowFree(contract);
       const sample = await ctDataPage(contract, contract.symbols[0], contract.toMs);
       const aggregated = aggregateCT(sample, contract.minutes, contract.market, contract.toMs);
       return Response.json({contract, sampleBars: sample.length, aggregatedBars: aggregated.length}, {headers:headers(owner, request)});

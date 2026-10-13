@@ -40,7 +40,10 @@ type CTResponse = {
   registered: CTPackage[];
   availability: { ready: boolean; missing: string[] };
   runnerOnline: boolean;
+  /** Cost profile a start would use (exchange, version, round trip per symbol). */
+  costPreview?: { label: string; version: number; provisional: boolean; feeVerified: boolean; perSymbol: Array<{ symbol: string; roundTripPct: number }> };
 };
+const CRYPTO_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
 function download(value: unknown, name: string) {
   const url = URL.createObjectURL(
     new Blob([JSON.stringify(value, null, 2)], { type: "application/json" }),
@@ -366,6 +369,7 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
     [symbols, setSymbols] = useState(""),
     [budget, setBudget] = useState(8),
     [capital, setCapital] = useState(""),
+    [days, setDays] = useState(""),
     [ready, setReady] = useState(false),
     [streamed, setStreamed] = useState<ResearchMeter | null>(null),
     [clock, setClock] = useState(() => Date.now());
@@ -388,6 +392,7 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
           setSymbols(stored.symbols ?? "");
           setBudget([8, 16, 24].includes(stored.budget) ? stored.budget : 8);
           setCapital(stored.capital ?? "");
+          setDays(stored.days ?? "");
         });
     } catch {
       /* Storage is optional. */
@@ -406,12 +411,13 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
           symbols,
           budget,
           capital,
+          days,
         }),
       );
     } catch {
       /* Storage is optional. */
     }
-  }, [ready, market, selected, brief, symbols, budget, capital]);
+  }, [ready, market, selected, brief, symbols, budget, capital, days]);
   const load = useCallback(async () => {
     if (loading.current) return;
     loading.current = true;
@@ -567,6 +573,7 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
           }
         : {}),
       ...(capital ? { capital: Number(capital) } : {}),
+      ...(days ? { days: Number(days) } : {}),
     });
   const reportError = useCallback((m: string) => setError(m), []);
   const latestTrial = ct?.trials.at(-1);
@@ -577,12 +584,23 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
   const calls = cj ? mergeCalls(cj.calls, cj.status === "running" ? pickMeter(cj.id, cj.liveMeter, streamed) : null) : [];
   const blockingQuiet = blocking ? clock - Date.parse(blocking.updatedAt) : 0;
   const blockingStale = Boolean(blocking && !data?.runnerOnline && blockingQuiet > BLOCKING_STALE_MS);
+  const chosenSymbols = symbols.trim() ? symbols.trim().toUpperCase().split(/[,\s]+/).filter(Boolean) : [market === "stock" ? "NVDA" : "BTCUSDT"];
   const summary = [
-    symbols.trim() ? symbols.trim().toUpperCase().split(/[,\s]+/).join(", ") : market === "stock" ? "NVDA" : "BTCUSDT",
+    chosenSymbols.join(", "),
     "1분봉",
+    `${days || 365}일`,
     `예산 $${budget}`,
     capital ? `자본 ${Number(capital).toLocaleString("ko-KR")}` : "기본 자본",
   ].join(" · ");
+  const preview = data?.costPreview;
+  // The worst chosen symbol prices the contract (ctProfileCosts), so show that one.
+  const previewRoundTrip = preview
+    ? Math.max(...preview.perSymbol.filter((p) => !p.symbol || chosenSymbols.includes(p.symbol)).map((p) => p.roundTripPct), 0)
+    : 0;
+  const toggleSymbol = (s: string) => {
+    const next = chosenSymbols.includes(s) ? chosenSymbols.filter((x) => x !== s) : [...chosenSymbols, s];
+    setSymbols(next.length ? CRYPTO_SYMBOLS.filter((x) => next.includes(x)).join(", ") : "");
+  };
   const runnerOnline = data?.runnerOnline ?? false;
 
   return (
@@ -627,6 +645,11 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
           <div>
             <h2 className="ui-title" id="ct-start-h">전략 연구 시작</h2>
             <p className="ui-sub ui-num">{summary}</p>
+            {preview ? (
+              <p className="ui-sub" data-testid="ct-cost-profile">
+                비용 프로필: {preview.label} v{preview.version}{preview.provisional ? " (잠정 · 호가 측정 72시간 미만)" : ""} · 왕복 {previewRoundTrip.toFixed(3)}%{preview.feeVerified ? "" : " · 수수료 공식 문서 미확인"}
+              </p>
+            ) : null}
             <p className="ui-sub">기본 설정으로 시작할 수 있습니다. 생성 완료와 매매 시작은 별도입니다.</p>
           </div>
           <button className="ui-btn primary lg" disabled={startBlocked} onClick={() => void generate()}>
@@ -697,12 +720,36 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
                   maxLength={1500}
                 />
               </label>
+              {market === "crypto" ? (
+                <div className="ui-field" role="group" aria-label="코인 종목">
+                  <span>종목 (1–3개)</span>
+                  <div className="ui-segmented">
+                    {CRYPTO_SYMBOLS.map((s) => (
+                      <button key={s} type="button" aria-pressed={chosenSymbols.includes(s)} onClick={() => toggleSymbol(s)}>
+                        {s.replace("USDT", "")}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <label className="ui-field">
+                  <span>종목 범위</span>
+                  <input
+                    value={symbols}
+                    onChange={(e) => setSymbols(e.target.value)}
+                    placeholder="기본 NVDA"
+                  />
+                </label>
+              )}
               <label className="ui-field">
-                <span>종목 범위</span>
+                <span>연구 기간 (일)</span>
                 <input
-                  value={symbols}
-                  onChange={(e) => setSymbols(e.target.value)}
-                  placeholder={market === "stock" ? "기본 NVDA" : "기본 BTCUSDT"}
+                  type="number"
+                  min="90"
+                  max="1095"
+                  value={days}
+                  onChange={(e) => setDays(e.target.value)}
+                  placeholder="기본 365"
                 />
               </label>
               <label className="ui-field">

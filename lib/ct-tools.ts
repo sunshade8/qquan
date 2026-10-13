@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { ctCandidateSchema, ctSubmissionSchema, type CTResearch } from "./ct-research.ts";
 import { ctQuerySchema, ctReadBarsSchema } from "./ct-design-tools.ts";
-import { ctSpecSchema } from "./ct-spec.ts";
+import { ctEngineSchema, ctSpecSchema } from "./ct-spec.ts";
 const time = z.number().int().nonnegative();
 export const ctBarSchema = z.object({
   startMs: time,
@@ -14,7 +14,7 @@ export const ctBarSchema = z.object({
 });
 const resultSchema = z
   .object({
-    engine: z.literal("ct-pattern-1"),
+    engine: ctEngineSchema,
     status: z.enum(["measured", "no_trades", "data_error"]),
     bars: z.number().int().nonnegative(),
     tradeCount: z.number().int().nonnegative().optional(),

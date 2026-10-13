@@ -16,10 +16,11 @@ import {
   ctExit,
   ctQuantity,
   ctDate,
-  ctSessionClosing,
+  ctDayClosing,
+  ctEntryBlocked,
   type CTBar,
 } from "./ct-engine.ts";
-import { ctHash, executableCT } from "./ct-spec.ts";
+import { CT_ENGINE_V1, ctHash, executableCT } from "./ct-spec.ts";
 export type CTTradingDeps = {
   now: () => number;
   id: () => string;
@@ -361,7 +362,8 @@ export async function tickCTDashboard(
       exit = "target";
     if (
       now >= Date.parse(trade.slotEndsAt) ||
-      (rule.contract.market === "stock" && ctSessionClosing(now))
+      // The same day-end rule the backtest uses: stock session close, ct-pattern-2 crypto UTC 00:00.
+      ctDayClosing(rule.spec, rule.contract.market, now)
     )
       exit = "slot_end";
     if (exit) {
@@ -435,6 +437,11 @@ export async function tickCTDashboard(
         previous &&
         now - Date.parse(previous.exitAt ?? previous.decidedAt) <
           rule.spec.sizing.cooldownBars * rule.spec.minutes * 60000
+      )
+        continue;
+      if (
+        (rule.spec.engine !== CT_ENGINE_V1 || rule.spec.entry.noEntryBeforeDayEndMinutes) &&
+        ctEntryBlocked(rule.spec, rule.contract.market, now)
       )
         continue;
       const signal = detectCT(rule.spec, symbol, bars, now);

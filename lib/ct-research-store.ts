@@ -69,13 +69,15 @@ import {
   ctGate,
   ctMeanDaily,
   ctNetPositive,
+  ctStability,
   ctSummary,
   qualityCT,
   replayCT,
   type CTBar,
   type CTResult,
 } from "./ct-engine.ts";
-import { feePerSidePct } from "./broker-costs.ts";
+import { ctProfileCosts } from "./ct-costs.ts";
+import { CT_CRYPTO_SYMBOLS, ctDatasetFor } from "./ct-symbols.ts";
 export async function ensureCTSchema() {
   await ensureSchema();
   await ctDb().batch([
@@ -113,8 +115,13 @@ export async function prepareCTContract(input: unknown): Promise<CTContract> {
     request.symbols ??
     (request.market === "stock" ? ["NVDA"] : ["BTCUSDT"]);
   if (request.market === "crypto") {
-    if (symbols.some(s => s !== 'BTCUSDT'))
-      throw new Error('새 코인 연구는 Binance Spot BTCUSDT만 지원합니다. 기존 Upbit 기록은 유지됩니다.');
+    if (
+      new Set(symbols).size !== symbols.length ||
+      symbols.some((s) => !(CT_CRYPTO_SYMBOLS as string[]).includes(s))
+    )
+      throw new Error(
+        `새 코인 연구는 Binance Spot ${CT_CRYPTO_SYMBOLS.join("/")} 중 1–${CT_CRYPTO_SYMBOLS.length}개(중복 없이)만 지원합니다. 기존 Upbit 기록은 유지됩니다.`,
+      );
   } else if (
     symbols.some(
       (s) =>
@@ -129,6 +136,9 @@ export async function prepareCTContract(input: unknown): Promise<CTContract> {
     ctStockSession(new Date(fromMs).toISOString().slice(0, 10));
     ctStockSession(new Date(toMs).toISOString().slice(0, 10));
   }
+  const capital = request.capital ?? 1000;
+  // Costs come from the exchange's profile (docs/ct.md「비용 프로필」); the numbers are frozen into the contract.
+  const priced = ctProfileCosts(request.market, symbols, capital);
   const contract: CTContract = {
     market: request.market,
     calendarVersion:
@@ -142,15 +152,9 @@ export async function prepareCTContract(input: unknown): Promise<CTContract> {
     toMs,
     currency: request.market === "stock" ? "USD" : "USDT",
     timezone: request.market === "stock" ? "America/New_York" : "UTC",
-    capital: request.capital ?? (request.market === "stock" ? 1000 : 1000),
-    costs: {
-      feePct: request.market === "stock" ? feePerSidePct() : 0.1,
-      sellTaxPct: request.market === "stock" ? 0.0008 : 0,
-      spreadPct: 0.05,
-      slippagePct: 0.03,
-      minimumOrder: request.market === "stock" ? 1 : 5,
-      quantityDecimals: request.market === "stock" ? 0 : 8,
-    },
+    capital,
+    costs: priced.costs,
+    costProfile: priced.costProfile,
     policy: CT_POLICY,
     engine: CT_ENGINE,
     createdAt: new Date().toISOString(),
@@ -158,14 +162,41 @@ export async function prepareCTContract(input: unknown): Promise<CTContract> {
       ? "사용자 지정 현재 종목 · 생존편향 가능"
       : "NVDA 단일 종목 / Binance BTCUSDT 연구 · 다른 종목에 일반화 검증되지 않음",
   };
-  // Pin immutable file hashes before any paid call or queue creation.
+  // Pin immutable file hashes before any paid call or queue creation. One snapshot per symbol's
+  // dataset; the contract keeps them all (dataSnapshot = first, provenance per symbol).
+  const snapshots: Record<string, string> = {};
   for (const symbol of symbols) {
-    const data = await queryLocalMarket({ dataset: request.market === 'stock' ? 'stock' : 'btc', instrument: symbol, from: fromMs, to: toMs, minutes: 60, session: request.market === 'stock' ? 'regular' : 'all', metadataOnly:true });
-    contract.dataSnapshot = data.snapshot;
+    const data = await queryLocalMarket({ dataset: ctDatasetFor(request.market, symbol), instrument: symbol, from: fromMs, to: toMs, minutes: 60, session: request.market === 'stock' ? 'regular' : 'all', metadataOnly:true });
+    snapshots[symbol] = data.snapshot;
+    contract.dataSnapshot ??= data.snapshot;
     contract.dataVersion = data.datasetVersion;
-    contract.dataProvenance = data.provenance;
+    contract.dataProvenance = { ...contract.dataProvenance, ...(symbols.length > 1 ? Object.fromEntries(Object.entries(data.provenance).map(([k, v]) => [`${symbol}.${k}`, v])) : data.provenance) };
   }
+  if (symbols.length > 1) contract.dataSnapshots = snapshots;
   return contract;
+}
+/**
+ * Refuses a run whose final window was already opened by an earlier run on the same market and
+ * symbol (ct_exposure): the same period cannot be a fresh final twice. Checked when the run is
+ * created so the owner is told why before any paid work, not after it.
+ */
+export async function assertFinalWindowFree(contract: CTContract, runId?: string) {
+  await ensureCTSchema();
+  const rows = await ctDb()
+    .prepare(
+      "SELECT run_id,symbols,from_ms,to_ms FROM ct_exposure WHERE market=? AND from_ms<? AND to_ms>? AND run_id<>?",
+    )
+    .bind(contract.market, contract.toMs, contract.developmentToMs, runId ?? "")
+    .all<{ run_id: string; symbols: string; from_ms: number; to_ms: number }>();
+  const hit = rows.results.find((e) =>
+    (JSON.parse(e.symbols) as string[]).some((s) => contract.symbols.includes(s)),
+  );
+  if (hit) {
+    const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+    throw new Error(
+      `이 기간의 최종 구간(${day(contract.developmentToMs)}–${day(contract.toMs)})이 이전 연구 ${hit.run_id.slice(0, 8)}의 이미 열린 최종 구간(${day(hit.from_ms)}–${day(hit.to_ms)})과 겹칩니다. 최종 구간은 다시 열 수 없으므로 겹치지 않도록 종목이나 기간을 바꾸거나, 새 데이터가 쌓인 뒤 시작하세요.`,
+    );
+  }
 }
 export async function createCTResearch(ownerId: string, input: unknown) {
   const request = ctRequestSchema.parse(input);
@@ -179,6 +210,7 @@ export async function createCTResearch(ownerId: string, input: unknown) {
   if (!availability.ready)
     throw new Error(`연구 모델 키 미설정: ${availability.missing.join(", ")}`);
   const contract = await prepareCTContract(input);
+  await assertFinalWindowFree(contract);
   // Only the models CT actually calls, before any paid call or queue slot.
   await checkGenerationModels(CT_ROLES);
   const { symbols, fromMs, toMs } = contract;
@@ -242,7 +274,7 @@ async function tool<T>(
   if (job.status !== "running" || ct.activeMs >= ct.contract.policy.maxActiveMs)
     throw new Error("CT 연구 권한·시간 한도");
   const definition = assertCTTool(name, input, ct);
-  const id = await ctHash({ run: job.id, engine: CT_ENGINE, name, input,
+  const id = await ctHash({ run: job.id, engine: ct.contract.engine, name, input,
     ...(name === "collect_market_data" && ct.dataProvider ? { provider: ct.dataProvider } : {}),
   });
   const cached = await ctDb()
@@ -729,7 +761,7 @@ export async function advanceCTResearch(
       };
       const artifactId = await ctHash({
         run: job.id,
-        engine: CT_ENGINE,
+        engine: c.engine,
         name: "backtest",
         input: replayInput,
       });
@@ -1251,7 +1283,7 @@ export async function advanceCTResearch(
       ct.riskReview = await ask(
         roles.risk,
         reviewSchema,
-        `Independent critical CT review; reject source/rule mismatch, discretion falsely claimed implemented, leakage, unconfirmed pivots, incomplete higher bars, selection/survivorship bias, unrealistic costs/fills. OHLCV cannot prove orderbook liquidity; current sources may postdate history; require forward paper evidence before live. Check EVERY mapping against its actual evidence (web source text or the training-only query it cites: same feature and timeframe) and the rules. Judge data snooping and multiple testing explicitly: how many queries, hypotheses and candidates preceded this rule, whether the effect rests on few events or months, and whether the development pass could be luck given that search. Numeric gates binding. No tuning on final. ${JSON.stringify({ contract: c, sources: ct.sources.filter((s) => cited.has(s.id)), approaches: ct.approaches, candidate: { ...selected, training: ctSummary(selected.training), development: ctSummary(selected.development), stress: ctSummary(selected.stress), delayed: ctSummary(selected.delayed) }, ruleText: ctRuleText(selected.spec), trials: ct.trials.length, research })}`,
+        `Independent critical CT review; reject source/rule mismatch, discretion falsely claimed implemented, leakage, unconfirmed pivots, incomplete higher bars, selection/survivorship bias, unrealistic costs/fills. OHLCV cannot prove orderbook liquidity; current sources may postdate history; require forward paper evidence before live. Check EVERY mapping against its actual evidence (web source text or the training-only query it cites: same feature and timeframe) and the rules. Judge data snooping and multiple testing explicitly: how many queries, hypotheses and candidates preceded this rule, whether the effect rests on few events or months, and whether the development pass could be luck given that search. Numeric gates binding. No tuning on final. ${JSON.stringify({ contract: c, sources: ct.sources.filter((s) => cited.has(s.id)), approaches: ct.approaches, candidate: { ...selected, training: ctSummary(selected.training), development: ctSummary(selected.development), developmentStability: ctStability(selected.development), stress: ctSummary(selected.stress), delayed: ctSummary(selected.delayed) }, ruleText: ctRuleText(selected.spec), trials: ct.trials.length, research })}`,
       );
       if (!ct.riskReview.approved || ct.riskReview.blockers.length) {
         done("독립 위험 검토 반려 · 통과 전략 없음");
@@ -1349,7 +1381,7 @@ export async function advanceCTResearch(
       ct.finalReview = await ask(
         roles.evidence,
         reviewSchema,
-        `Independent frozen CT evidence review. No revisions permitted after final exposure. Server gates binding. Audit repeated selection, sample size, dependence, costs and execution limits. Judge data snooping and multiple testing: weigh the final result against the number of training queries, hypotheses and candidates searched before freezing. Do not claim unused historical data across training/LLM pretraining or original-source dates. Forward paper verification required for live. ${JSON.stringify({ contract: c, hash: ct.frozenHash, trials: ct.trials.length, candidate: { spec: selected.spec, hypothesis: selected.hypothesis, mapping: selected.mapping, training: ctSummary(selected.training), development: ctSummary(selected.development), sensitivity: selected.sensitivity }, final: ctSummary(ct.final!), stress: ctSummary(ct.finalStress!), delay: ctSummary(ct.finalDelayed!), research })}`,
+        `Independent frozen CT evidence review. No revisions permitted after final exposure. Server gates binding. Audit repeated selection, sample size, dependence, costs and execution limits. Judge data snooping and multiple testing: weigh the final result against the number of training queries, hypotheses and candidates searched before freezing. Do not claim unused historical data across training/LLM pretraining or original-source dates. Forward paper verification required for live. ${JSON.stringify({ contract: c, hash: ct.frozenHash, trials: ct.trials.length, candidate: { spec: selected.spec, hypothesis: selected.hypothesis, mapping: selected.mapping, training: ctSummary(selected.training), development: ctSummary(selected.development), sensitivity: selected.sensitivity, developmentStability: ctStability(selected.development) }, final: ctSummary(ct.final!), finalStability: ctStability(ct.final!), stress: ctSummary(ct.finalStress!), delay: ctSummary(ct.finalDelayed!), research })}`,
       );
       done(
         ct.finalReview.approved && !ct.finalReview.blockers.length

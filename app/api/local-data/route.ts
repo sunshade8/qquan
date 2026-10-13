@@ -31,7 +31,7 @@ export async function POST(request: Request) {
     let body: object;
     if (
       input.action === "enqueue" &&
-      (input.dataset === "stock" || input.dataset === "btc") &&
+      ["stock", "btc", "eth", "sol"].includes(input.dataset as string) &&
       Object.keys(input).every((k) => ["action", "dataset"].includes(k))
     )
       body = { action: "enqueue", dataset: input.dataset };

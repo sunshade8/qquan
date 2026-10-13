@@ -227,7 +227,8 @@ test("Opus session turns: adaptive thinking at explicit high effort, auto tools,
 /* ------------------------------------------------------- 3 boundaries */
 
 test("training-only tools reject times and look-ahead past the training end", () => {
-  const c = minuteContract();
+  // ct-pattern-1 look-ahead is not day-bounded, so events near the training end are dropped.
+  const c = { ...minuteContract(), engine: "ct-pattern-1" };
   const ct = { ...ctState(), contract: c, anchors: [c.fromMs + 600 * MINUTE] };
   const ok = { from: c.fromMs, to: c.trainingToMs, dataHash: ct.dataHash };
   assert.doesNotThrow(() => assertCTTool("query_conditional_returns", { query: query(), ...ok }, ct));

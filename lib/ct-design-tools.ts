@@ -9,8 +9,13 @@
 import { z } from "zod";
 import {
   ctDate,
+  ctDayEndMs,
+  ctEntryBlocked,
   ctExit,
+  ctForcedExit,
+  ctHigherSets,
   ctHistoryBars,
+  ctNeedsHigher,
   ctImpactPct,
   ctNetTradePct,
   ctRoundTripCostPct,
@@ -21,16 +26,25 @@ import {
   type CTSignal,
 } from "./ct-engine.ts";
 import { ctStockSession } from "./ct-sessions.ts";
+import { dayInfo, dayLastIndex } from "./ct-moves.ts";
 import {
-  CT_ENGINE,
+  CT_ENGINE_V1,
   ctConditionSchema,
   validateCTSpec,
   type CTContract,
   type CTSpec,
 } from "./ct-spec.ts";
 
-/** Look-ahead horizons (bars) the cost hurdle reports. */
+/** Look-ahead horizons (bars) the cost hurdle reports for ct-pattern-1 contracts. */
 export const CT_HURDLE_HORIZONS = [5, 15, 60, 240, 390] as const;
+/**
+ * ct-pattern-2 contracts trade one day at a time, so every horizon is cut at the day's last
+ * tradable bar, crypto adds 12 h and 24 h, and 0 stands for "until the day ends" (variable length).
+ */
+export function ctHurdleHorizons(contract: Pick<CTContract, "engine" | "market">): readonly number[] {
+  if (contract.engine === CT_ENGINE_V1) return CT_HURDLE_HORIZONS;
+  return contract.market === "crypto" ? [...CT_HURDLE_HORIZONS, 720, 1440, 0] : [...CT_HURDLE_HORIZONS, 0];
+}
 /** The hurdle samples every Nth training bar as a hypothetical entry; cheap and representative. */
 const HURDLE_STRIDE = 5;
 
@@ -62,19 +76,25 @@ function trainingRows(data: Record<string, CTBar[]>, symbol: string, contract: C
 }
 
 /** Forward window from entry bar e over h bars: gross return to close, MFE and MAE (percent of the open). */
-function forward(rows: CTBar[], runEnd: number[], e: number, h: number) {
-  if (e + h - 1 >= rows.length || runEnd[e] < e + h - 1) return null;
+function forward(rows: CTBar[], runEnd: number[], e: number, h: number, dayLast?: number) {
+  // ct-pattern-2: the window ends at the day's last tradable bar at the latest (h = 0: exactly there).
+  let last = e + h - 1;
+  if (dayLast !== undefined) {
+    if (dayLast < e) return null;
+    last = h === 0 ? dayLast : Math.min(last, dayLast);
+  }
+  if (last >= rows.length || runEnd[e] < last) return null;
   const open = rows[e].open;
   let high = -Infinity,
     low = Infinity;
-  for (let k = e; k < e + h; k++) {
+  for (let k = e; k <= last; k++) {
     if (rows[k].high > high) high = rows[k].high;
     if (rows[k].low < low) low = rows[k].low;
   }
   return {
     open,
-    close: rows[e + h - 1].close,
-    ret: (rows[e + h - 1].close / open - 1) * 100,
+    close: rows[last].close,
+    ret: (rows[last].close / open - 1) * 100,
     mfe: (high / open - 1) * 100,
     mae: (low / open - 1) * 100,
   };
@@ -131,17 +151,20 @@ export function ctCostHurdle(data: Record<string, CTBar[]>, contract: CTContract
   const cost = ctRoundTripCostPct(contract),
     cost2 = ctRoundTripCostPct(contract, 2);
   const ranges: number[] = [];
-  const overall = CT_HURDLE_HORIZONS.map(() => emptyRow());
+  const H = ctHurdleHorizons(contract);
+  const dayBounded = contract.engine !== CT_ENGINE_V1;
+  const overall = H.map(() => emptyRow());
   const byTime = new Map<string, HurdleRow[]>();
   const vol: Array<{ range: number; per: Array<ReturnType<typeof forward>> }> = [];
   for (const symbol of contract.symbols) {
     const { rows, runEnd } = trainingRows(data, symbol, contract);
+    const dayLast = dayBounded ? dayLastIndex(rows, dayInfo(rows, contract.market)) : null;
     for (const b of rows) ranges.push((b.high / b.low - 1) * 100);
     for (let e = 61; e < rows.length; e += HURDLE_STRIDE) {
-      const per = CT_HURDLE_HORIZONS.map((h) => forward(rows, runEnd, e, h));
+      const per = H.map((h) => forward(rows, runEnd, e, h, dayLast ? dayLast[e] : undefined));
       if (!per[0]) continue;
       const bucket = ctTimeBucket(rows[e].startMs, contract);
-      if (!byTime.has(bucket)) byTime.set(bucket, CT_HURDLE_HORIZONS.map(() => emptyRow()));
+      if (!byTime.has(bucket)) byTime.set(bucket, H.map(() => emptyRow()));
       per.forEach((f, i) => {
         if (!f) return;
         for (const row of [overall[i], byTime.get(bucket)![i]]) {
@@ -157,7 +180,7 @@ export function ctCostHurdle(data: Record<string, CTBar[]>, contract: CTContract
   }
   const sortedRanges = sortNum(vol.map((v) => v.range));
   const cut = [quantile(sortedRanges, 1 / 3), quantile(sortedRanges, 2 / 3)];
-  const regimes = ["저변동", "중변동", "고변동"].map(() => CT_HURDLE_HORIZONS.map(() => emptyRow()));
+  const regimes = ["저변동", "중변동", "고변동"].map(() => H.map(() => emptyRow()));
   for (const v of vol) {
     const r = v.range <= cut[0] ? 0 : v.range <= cut[1] ? 1 : 2;
     v.per.forEach((f, i) => {
@@ -177,8 +200,9 @@ export function ctCostHurdle(data: Record<string, CTBar[]>, contract: CTContract
     hit1xPct: hits(row, 1),
     hit2xPct: hits(row, 2),
   });
-  const horizons = CT_HURDLE_HORIZONS.map((bars, i) => ({
+  const horizons = H.map((bars, i) => ({
     bars,
+    ...(bars === 0 ? { label: "당일 경계까지(가변)" } : {}),
     n: overall[i].n,
     mfePct: quantiles(overall[i].mfe, [0.1, 0.25, 0.5, 0.75, 0.9]),
     maePct: quantiles(overall[i].mae, [0.1, 0.25, 0.5, 0.75, 0.9]),
@@ -196,13 +220,13 @@ export function ctCostHurdle(data: Record<string, CTBar[]>, contract: CTContract
     medianBarRangePct: round(quantile(sortNum(ranges), 0.5)),
     costToMeanBarRange: round(cost / Math.max(meanRange, 1e-9), 2),
     sampledEntries: overall[0].n,
-    entryRule: `학습 구간 ${HURDLE_STRIDE}봉마다 다음 봉 시가 진입 가정 · MFE/MAE는 시가 대비 총 이동(비용 전)`,
+    entryRule: `학습 구간 ${HURDLE_STRIDE}봉마다 다음 봉 시가 진입 가정 · MFE/MAE는 시가 대비 총 이동(비용 전)` + (dayBounded ? " · 보유는 당일 경계(코인 UTC 00:00, 주식 정규장 종료)에서 잘라 계산(bars 0 = 당일 경계까지)" : ""),
     horizons,
     byTime: (TIME_BUCKETS[contract.market] as readonly string[]).flatMap((bucket) =>
-      CT_HURDLE_HORIZONS.map((bars, i) => ({ bucket, bars, ...brief(byTime.get(bucket)?.[i] ?? emptyRow()) })),
+      H.map((bars, i) => ({ bucket, bars, ...brief(byTime.get(bucket)?.[i] ?? emptyRow()) })),
     ),
     byVolatility: ["저변동", "중변동", "고변동"].flatMap((regime, r) =>
-      CT_HURDLE_HORIZONS.map((bars, i) => ({ regime, bars, ...brief(regimes[r][i]) })),
+      H.map((bars, i) => ({ regime, bars, ...brief(regimes[r][i]) })),
     ),
     volatilityCutoffsPct: { prior60BarRangeP33: round(cut[0]), prior60BarRangeP67: round(cut[1]) },
     conclusion:
@@ -214,7 +238,8 @@ export type CTCostHurdle = ReturnType<typeof ctCostHurdle>;
 
 /* --------------------------------------------------- conditional returns */
 
-const horizon = z.number().int().min(1).max(390);
+// Up to a full UTC day for crypto; stock horizons above 390 are refused when the probe spec is validated.
+const horizon = z.number().int().min(1).max(1440);
 /** What the designer sends. Stages use the rule DSL's own condition schema. */
 export const ctQuerySchema = z
   .object({
@@ -247,7 +272,7 @@ export function ctQuerySpec(query: CTQuery, contract: CTContract, exit = { stopP
   return validateCTSpec(
     {
       version: 1,
-      engine: CT_ENGINE,
+      engine: contract.engine,
       name: "conditional return probe",
       market: contract.market,
       symbols: contract.symbols,
@@ -279,6 +304,7 @@ export function ctQueryEvents(
     history = ctHistoryBars(spec),
     maxH = Math.max(...query.horizons);
   const events: CTEvent[] = [];
+  const dayBounded = spec.engine !== CT_ENGINE_V1;
   let truncated = 0,
     gaps = 0;
   for (const symbol of contract.symbols) {
@@ -286,16 +312,24 @@ export function ctQueryEvents(
     const first = rows.findIndex((b) => b.startMs >= contract.fromMs);
     if (first < 0) continue;
     const cache: CTFeatureCache = new Map();
+    // Completed 60/240/1440-minute bars of the training range only (same as the replay builds).
+    const higher = ctNeedsHigher(spec)
+      ? ctHigherSets(spec, rows.filter((b) => b.startMs >= contract.fromMs && b.endMs <= contract.trainingToMs), symbol)
+      : undefined;
     let last = -Infinity;
     for (let i = first; i < rows.length && rows[i].endMs <= contract.trainingToMs; i++) {
       if (options.deadline && (i & 1023) === 0 && Date.now() > options.deadline) throw new Error("CT 계산 시간 상한");
       if (i - last < query.cooldownBars) continue;
-      const signal = detectCT(spec, symbol, rows.slice(Math.max(0, i - history, first), i + 1), rows[i].endMs, cache);
+      // ct-pattern-2: the replay never enters on the day's last bar or inside noEntryBeforeDayEndMinutes.
+      if (dayBounded && ctEntryBlocked(spec, contract.market, rows[i].endMs)) continue;
+      const signal = detectCT(spec, symbol, rows.slice(Math.max(0, i - history, first), i + 1), rows[i].endMs, cache, higher);
       if (!signal) continue;
       last = i;
       const e = i + 1;
       // Look-ahead must also end inside training: drop the event rather than shorten it.
-      const end = rows[i].endMs + maxH * contract.minutes * 60_000;
+      // A day-bounded trade ends no later than its day, so only that part has to fit.
+      const dayEnd = dayBounded ? ctDayEndMs(contract.market, rows[i].endMs) : null;
+      const end = Math.min(rows[i].endMs + maxH * contract.minutes * 60_000, dayEnd ?? Infinity);
       if (end > contract.trainingToMs) {
         truncated++;
         continue;
@@ -321,6 +355,11 @@ export function ctQueryReturns(
   options: { deadline?: number } = {},
 ) {
   const { events, truncated, gaps } = ctQueryEvents(query, data, contract, options);
+  const dayBounded = contract.engine !== CT_ENGINE_V1;
+  // ct-pattern-2: every look-ahead stops at the day's last tradable bar, like the replay's forced exit.
+  const dayLasts = dayBounded
+    ? Object.fromEntries(contract.symbols.map((s) => [s, dayLastIndex(data[s] ?? [], dayInfo(data[s] ?? [], contract.market))]))
+    : null;
   const runs = Object.fromEntries(contract.symbols.map((s) => {
     const rows = data[s] ?? [];
     const runEnd = new Array<number>(rows.length);
@@ -329,7 +368,7 @@ export function ctQueryReturns(
     return [s, runEnd];
   }));
   const usable = events
-    .map((ev) => ({ ev, per: query.horizons.map((h) => forward(data[ev.symbol], runs[ev.symbol], ev.e, h)) }))
+    .map((ev) => ({ ev, per: query.horizons.map((h) => forward(data[ev.symbol], runs[ev.symbol], ev.e, h, dayLasts?.[ev.symbol][ev.e])) }))
     .filter((x) => x.per.every(Boolean)) as Array<{ ev: CTEvent; per: Array<NonNullable<ReturnType<typeof forward>>> }>;
   const n = usable.length;
   const net = (f: { open: number; close: number }, multiplier = 1) => ctNetTradePct(contract, f.open, f.close, multiplier);
@@ -339,14 +378,17 @@ export function ctQueryReturns(
   const base = new Map<string, Array<{ n: number; sum: number }>>();
   for (const symbol of contract.symbols) {
     const { rows, runEnd } = trainingRows(data, symbol, contract);
+    const dl = dayBounded ? dayLastIndex(rows, dayInfo(rows, contract.market)) : null;
     for (let e = 1; e < rows.length; e++) {
       const bucket = ctTimeBucket(rows[e].startMs, contract);
       if (!base.has(bucket)) base.set(bucket, query.horizons.map(() => ({ n: 0, sum: 0 })));
       query.horizons.forEach((h, i) => {
-        if (e + h - 1 >= rows.length || runEnd[e] < e + h - 1) return;
+        if (dl && dl[e] < e) return;
+        const last = dl ? Math.min(e + h - 1, dl[e]) : e + h - 1;
+        if (last >= rows.length || runEnd[e] < last) return;
         const cell = base.get(bucket)![i];
         cell.n++;
-        cell.sum += ctNetTradePct(contract, rows[e].open, rows[e + h - 1].close);
+        cell.sum += ctNetTradePct(contract, rows[e].open, rows[last].close);
       });
     }
   }
@@ -386,7 +428,9 @@ export function ctQueryReturns(
             const rows = data[ev.symbol];
             const fill = rows[ev.e].open * (1 + ctImpactPct(contract) / 100);
             for (let k = ev.e; k < rows.length; k++) {
-              const exit = ctExit(spec, ev.signal, fill, rows[ev.e].startMs, rows[k]);
+              const exit =
+                ctExit(spec, ev.signal, fill, rows[ev.e].startMs, rows[k]) ??
+                (dayBounded ? ctForcedExit(spec, contract.market, rows[k]) : null);
               if (exit)
                 return {
                   reason: exit.reason,

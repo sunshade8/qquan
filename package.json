@@ -22,7 +22,9 @@
     "build:local": "QQUAN_RUNTIME=node NITRO_PRESET=node-server vite build",
     "start:local": "HOST=127.0.0.1 PORT=3000 node .output/server/index.mjs",
     "test:local": "node --experimental-strip-types --test tests/*.test.mjs && .venv/bin/python tests/local-data.test.py",
-    "data:bridge": "node --experimental-strip-types scripts/data/bridge.mjs"
+    "data:bridge": "node --experimental-strip-types scripts/data/bridge.mjs",
+    "data:orderbook": "node --experimental-strip-types --no-warnings scripts/data/measure-orderbook.mjs",
+    "research:ceiling": "node --env-file-if-exists=.dev.vars --experimental-strip-types --no-warnings scripts/research/ct-ceiling.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.123.0",

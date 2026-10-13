@@ -3,7 +3,7 @@ import { dataRPC } from "./market-data-rpc.ts";
 export { dataRPC } from "./market-data-rpc.ts";
 import type { CTBar } from "./ct-engine.ts";
 export type LocalQuery = {
-  dataset: "stock" | "btc";
+  dataset: "stock" | "btc" | "eth" | "sol";
   from: number;
   to: number;
   minutes?: number;

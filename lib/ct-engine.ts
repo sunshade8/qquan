@@ -2,12 +2,15 @@ import { ctFillPrice } from "./market-precision.ts";
 import { ctStockSession } from "./ct-sessions.ts";
 import Decimal from "decimal.js";
 import {
-  CT_ENGINE,
+  CT_ENGINE_V1,
   ctSpecSchema,
   type CTCondition,
   type CTContract,
+  type CTMarket,
   type CTSpec,
 } from "./ct-spec.ts";
+import { buildHigherSeries, higherWindow, type CTHigherSeries } from "./ct-timeframes.ts";
+import { easternWallTimeToEpoch } from "./market-clock.ts";
 
 export type CTBar = {
   startMs: number;
@@ -113,13 +116,14 @@ export function qualityCT(bars: CTBar[], minutes: number) {
     toMs: bars.at(-1)?.endMs ?? null,
   };
 }
-export function ctSwings(bars: CTBar[], nowMs: number, width = 2) {
+export function ctSwings(bars: CTBar[], nowMs: number, width = 2, checkGaps = true) {
   const result: CTSignal["swings"] = [];
   for (let i = width; i + width < bars.length; i++) {
     const confirmedAt = bars[i + width].endMs;
     if (confirmedAt > nowMs) break;
     const neighbors = bars.slice(i - width, i + width + 1);
-    if (neighbors.some((b, j) => j && b.startMs !== neighbors[j - 1].endMs))
+    // Higher-timeframe windows are chain-checked as a whole (stock bars skip the overnight gap).
+    if (checkGaps && neighbors.some((b, j) => j && b.startMs !== neighbors[j - 1].endMs))
       continue;
     if (neighbors.every((b, j) => j === width || b.high < bars[i].high))
       result.push({
@@ -179,11 +183,36 @@ function conditionTail(condition: CTCondition, input: CTBar[], nowMs: number) {
     (condition.lookback + condition.offset + 3) * condition.timeframe;
   return input.slice(Math.max(0, end - count), end);
 }
+/** Completed 60/240/1440-minute series per timeframe for one symbol (ct-pattern-2). */
+export type CTHigherSets = Map<number, CTHigherSeries>;
+export type CTFeatureContext = { higher?: CTHigherSets; market?: CTMarket; symbol?: string };
+/** Series a spec's higher-timeframe conditions need, built once from the symbol's one-minute bars. */
+export function ctHigherSets(spec: CTSpec, bars: CTBar[], symbol: string): CTHigherSets {
+  const sets: CTHigherSets = new Map();
+  for (const stage of spec.stages)
+    for (const c of stage.conditions)
+      if (c.timeframe > 12 && !sets.has(c.timeframe)) sets.set(c.timeframe, buildHigherSeries(bars, c.timeframe, spec.market, symbol));
+  return sets;
+}
+export const ctNeedsHigher = (spec: CTSpec) => spec.stages.some((s) => s.conditions.some((c) => c.timeframe > 12));
+function higherRows(condition: CTCondition, input: CTBar[], nowMs: number, ctx?: CTFeatureContext) {
+  let series = ctx?.higher?.get(condition.timeframe);
+  if (!series) {
+    if (!ctx?.market) throw new Error("상위 시간대 조건에는 시장 정보가 필요합니다.");
+    series = buildHigherSeries(input, condition.timeframe, ctx.market, ctx.symbol ?? "");
+  }
+  return higherWindow(series, nowMs, condition.lookback, condition.offset);
+}
 export function ctFeature(
   condition: CTCondition,
   input: CTBar[],
   nowMs: number,
+  ctx?: CTFeatureContext,
 ): number | null {
+  if (condition.timeframe > 12) {
+    const rows = higherRows(condition, input, nowMs, ctx);
+    return rows && rows.every(validCTBar) ? featureFromRows(condition, rows, false) : null;
+  }
   const full = higherBars(
     conditionTail(condition, input, nowMs),
     condition.timeframe,
@@ -198,6 +227,10 @@ export function ctFeature(
     )
   )
     return null;
+  return featureFromRows(condition, rows, true);
+}
+/** The feature formulas over lookback + 1 chained bars. */
+function featureFromRows(condition: CTCondition, rows: CTBar[], checkGaps: boolean): number | null {
   const current = rows.at(-1)!,
     prior = rows.slice(0, -1);
   const high = Math.max(...prior.map((b) => b.high)),
@@ -232,22 +265,29 @@ export function ctFeature(
     case "swing_low_distance_pct": {
       const kind =
         condition.feature === "swing_high_distance_pct" ? "high" : "low";
-      const swing = ctSwings(rows, current.endMs)
+      const swing = ctSwings(rows, current.endMs, 2, checkGaps)
         .filter((s) => s.kind === kind)
         .at(-1);
       return swing ? (current.close / swing.price - 1) * 100 : null;
     }
   }
 }
-function ctReference(condition: CTCondition, input: CTBar[], now: number) {
-  const full = higherBars(
-      conditionTail(condition, input, now),
-      condition.timeframe,
-      now,
-    ),
-    end = full.length - condition.offset,
-    rows = full.slice(Math.max(0, end - condition.lookback - 1), end),
-    prior = rows.slice(0, -1);
+function ctReference(condition: CTCondition, input: CTBar[], now: number, ctx?: CTFeatureContext) {
+  let rows: CTBar[];
+  if (condition.timeframe > 12) {
+    const window = higherRows(condition, input, now, ctx);
+    if (!window) return null;
+    rows = window;
+  } else {
+    const full = higherBars(
+        conditionTail(condition, input, now),
+        condition.timeframe,
+        now,
+      ),
+      end = full.length - condition.offset;
+    rows = full.slice(Math.max(0, end - condition.lookback - 1), end);
+  }
+  const prior = rows.slice(0, -1);
   if (rows.length !== condition.lookback + 1) return null;
   if (condition.feature === "prior_high_distance_pct")
     return Math.max(...prior.map((b) => b.high));
@@ -259,7 +299,7 @@ function ctReference(condition: CTCondition, input: CTBar[], now: number) {
     const kind =
       condition.feature === "swing_high_distance_pct" ? "high" : "low";
     return (
-      ctSwings(rows, now)
+      ctSwings(rows, now, 2, condition.timeframe <= 12)
         .filter((s) => s.kind === kind)
         .at(-1)?.price ?? null
     );
@@ -272,9 +312,13 @@ function ctReference(condition: CTCondition, input: CTBar[], now: number) {
  * Capped at the historical 1,800 so results match the previous fixed window exactly.
  */
 export function ctHistoryBars(spec: CTSpec) {
+  // 60/240/1440-minute conditions read their own completed-bar series, not this window.
   const need = Math.max(
+    0,
     ...spec.stages.flatMap((s) =>
-      s.conditions.map((c) => (c.lookback + c.offset + 3) * c.timeframe),
+      s.conditions
+        .filter((c) => c.timeframe <= 12)
+        .map((c) => (c.lookback + c.offset + 3) * c.timeframe),
     ),
   );
   const gaps = spec.stages.reduce((sum, s) => sum + s.maxGapBars, 0);
@@ -293,13 +337,22 @@ export function detectCT(
   input: CTBar[],
   nowMs: number,
   cache?: CTFeatureCache,
+  higher?: CTHigherSets,
 ): CTSignal | null {
+  // ct-pattern-2 higher-timeframe series: supplied by a replay, otherwise built from the full input.
+  let sets = higher;
+  const ctx = (): CTFeatureContext => ({
+    higher: (sets ??= ctNeedsHigher(spec) ? ctHigherSets(spec, input, symbol) : new Map()),
+    market: spec.market,
+    symbol,
+  });
   const feature = (c: CTCondition, bars: CTBar[], at: number) => {
-    if (!cache) return ctFeature(c, bars, at);
+    const compute = () => ctFeature(c, bars, at, c.timeframe > 12 ? ctx() : undefined);
+    if (!cache) return compute();
     let byTime = cache.get(c);
     if (!byTime) cache.set(c, (byTime = new Map()));
     let value = byTime.get(at);
-    if (value === undefined) byTime.set(at, (value = ctFeature(c, bars, at)));
+    if (value === undefined) byTime.set(at, (value = compute()));
     return value;
   };
   let end = input.length;
@@ -361,7 +414,7 @@ export function detectCT(
     stages: matches,
     references: matches.flatMap((m, i) =>
       spec.stages[i].conditions.flatMap((c) => {
-        const price = ctReference(c, bars.slice(0, m.index + 1), m.at);
+        const price = ctReference(c, bars.slice(0, m.index + 1), m.at, c.timeframe > 12 ? ctx() : undefined);
         return price === null
           ? []
           : [{ feature: c.feature, price, observedAt: m.at }];
@@ -457,6 +510,45 @@ export function ctSessionClosing(ms: number) {
     time = stockClock.format(new Date(ms)).split(":").map(Number);
   return time[0] * 60 + time[1] >= hour * 60 + minute - 1;
 }
+const DAY_MS = 86_400_000;
+/** True when a bar closing at `ms` is the last tradable bar of its UTC day (one minute before 00:00 UTC = 09:00 KST). */
+export function ctCryptoDayClosing(ms: number) {
+  return (((ms % DAY_MS) + DAY_MS) % DAY_MS) >= DAY_MS - 60_000;
+}
+/**
+ * Whether the trading day ends with the bar closing at `ms`: the one rule backtest, paper and
+ * live share. Stocks always close at the NYSE session end. Crypto closes at 00:00 UTC only for
+ * ct-pattern-2 — ct-pattern-1 crypto is continuous and results saved under it must not move.
+ */
+export function ctDayClosing(spec: Pick<CTSpec, "engine">, market: CTMarket, ms: number) {
+  if (market === "stock") return ctSessionClosing(ms);
+  return spec.engine !== CT_ENGINE_V1 && ctCryptoDayClosing(ms);
+}
+/** End of the trading day containing the bar that closes at `ms`; null outside a session. */
+export function ctDayEndMs(market: CTMarket, ms: number): number | null {
+  if (market === "crypto") return (Math.floor((ms - 1) / DAY_MS) + 1) * DAY_MS;
+  const date = ctDate(ms - 1, "stock");
+  const session = ctStockSession(date);
+  return session ? easternWallTimeToEpoch(date, session.close) : null;
+}
+/** Forced exit on the day's last bar: at that bar's close. Stocks keep the historical reason "session". */
+export function ctForcedExit(spec: Pick<CTSpec, "engine">, market: CTMarket, bar: CTBar) {
+  return ctDayClosing(spec, market, bar.endMs)
+    ? { price: bar.close, reason: market === "stock" ? "session" : "day_end" }
+    : null;
+}
+/**
+ * New entries are refused on the day's last bar and, with noEntryBeforeDayEndMinutes, for that
+ * many minutes before the day ends. `ms` is the decision time (the signal bar's close). ct-pattern-1
+ * crypto has no day end, so nothing changes there.
+ */
+export function ctEntryBlocked(spec: Pick<CTSpec, "engine" | "entry">, market: CTMarket, ms: number) {
+  if (ctDayClosing(spec, market, ms)) return true;
+  const minutes = spec.entry.noEntryBeforeDayEndMinutes ?? 0;
+  if (!minutes) return false;
+  const end = ctDayEndMs(market, ms);
+  return end !== null && ms >= end - minutes * 60_000;
+}
 /** Price impact per side (half spread + slippage), percent. replayCT fills with it. */
 export function ctImpactPct(contract: Pick<CTContract, "costs">, multiplier = 1) {
   return (contract.costs.spreadPct / 2 + contract.costs.slippagePct) * multiplier;
@@ -497,7 +589,7 @@ export function replayCT(
   const spec = ctSpecSchema.parse(specInput),
     multiplier = options.costMultiplier ?? 1;
   const result: CTResult = {
-    engine: CT_ENGINE,
+    engine: spec.engine,
     status: "no_trades",
     bars: 0,
     trades: [],
@@ -563,6 +655,16 @@ export function replayCT(
   );
   const featureCaches = Object.fromEntries(
     spec.symbols.map((s) => [s, new Map() as CTFeatureCache]),
+  );
+  // Completed higher-timeframe bars are built once, from this replay's own range only: nothing
+  // before fromMs (purged split) and nothing after toMs.
+  const higherSets = Object.fromEntries(
+    spec.symbols.map((s) => [
+      s,
+      ctNeedsHigher(spec)
+        ? ctHigherSets(spec, (data[s] ?? []).filter((b) => b.startMs >= fromMs && b.endMs <= toMs), s)
+        : undefined,
+    ]),
   );
   const firstInRange = Object.fromEntries(
     spec.symbols.map((s) => {
@@ -673,9 +775,7 @@ export function replayCT(
         );
         const exit =
           ctExit(spec, held.signal, held.entry, held.at, bar) ??
-          (contract.market === "stock" && ctSessionClosing(bar.endMs)
-            ? { price: bar.close, reason: "session" }
-            : null);
+          ctForcedExit(spec, contract.market, bar);
         if (exit) {
           const price = ctFillPrice(
             exit.price *
@@ -737,7 +837,7 @@ export function replayCT(
       time - lastExit >= spec.sizing.cooldownBars * spec.minutes * 60000 &&
       marked >= dayStart * 0.97 &&
       result.maxDrawdownPct < 15 &&
-      !(contract.market === "stock" && ctSessionClosing(time))
+      !ctEntryBlocked(spec, contract.market, time)
     ) {
       for (const symbol of spec.symbols) {
         const i = indexes[symbol].get(time);
@@ -747,7 +847,7 @@ export function replayCT(
           Math.max(0, i - history, firstInRange[symbol]),
           i + 1,
         );
-        const signal = detectCT(spec, symbol, rows, time, featureCaches[symbol]);
+        const signal = detectCT(spec, symbol, rows, time, featureCaches[symbol], higherSets[symbol]);
         if (signal) {
           result.signals++;
           pending = { symbol, signal, index: i };
@@ -870,6 +970,29 @@ export function ctDailyStats(result: Pick<CTResult, "daily">) {
       ? (days.filter((n) => n > 0).length / days.length) * 100
       : 0,
     worstDayPct: days.length ? Math.min(...days) : 0,
+  };
+}
+/**
+ * Stability across calendar quarters: mean daily net return after costs per quarter of the
+ * evaluated days, and the share of quarters that are positive. Information for the designer and
+ * the reviewers only — no gate reads it. Derived from the daily rows, so it exists for old results.
+ */
+export function ctStability(result: Pick<CTResult, "daily">) {
+  const quarters = new Map<string, number[]>();
+  for (const d of result.daily) {
+    const quarter = `${d.date.slice(0, 4)}Q${Math.floor((Number(d.date.slice(5, 7)) - 1) / 3) + 1}`;
+    quarters.set(quarter, [...(quarters.get(quarter) ?? []), d.returnPct]);
+  }
+  const rows = [...quarters]
+    .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+    .map(([quarter, xs]) => ({
+      quarter,
+      days: xs.length,
+      meanDailyReturnPct: Number((xs.reduce((s, n) => s + n, 0) / xs.length).toFixed(4)),
+    }));
+  return {
+    quarters: rows,
+    positiveQuarterPct: rows.length ? Number(((rows.filter((r) => r.meanDailyReturnPct > 0).length / rows.length) * 100).toFixed(1)) : 0,
   };
 }
 /** Daily mean net return, read from the result or derived for results saved before it. */

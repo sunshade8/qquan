@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ctRuleText, ctSessionPolicy, ctSpecSchema, type CTContract, type CTSpec } from "./ct-spec.ts";
-import { ctSummary, type CTResult } from "./ct-engine.ts";
+import { ctRoundTripCostPct, ctStability, ctSummary, type CTResult } from "./ct-engine.ts";
+import { ctCostProfileText } from "./ct-costs.ts";
 import type { GenerationReview } from "./strategy-generation-spec.ts";
 import type { CTCostHurdle } from "./ct-design-tools.ts";
 export const ctRequestSchema = z
@@ -13,7 +14,8 @@ export const ctRequestSchema = z
     minutes: z.literal(1).optional(),
     budgetUsd: z.union([z.literal(8), z.literal(16), z.literal(24)]).default(8),
     capital: z.number().positive().max(100000000).optional(),
-    days: z.number().int().min(90).max(365).default(180),
+    // Crypto up to 3 years; stocks up to the local coverage (checked against the catalog). Default 1 year: docs/ct.md「데이터 범위」.
+    days: z.number().int().min(90).max(1095).default(365),
   })
   .strict();
 export const ctSearchSchema = z
@@ -262,6 +264,8 @@ export function ctBrief(r: CTResult) {
     trades: s.tradeCount,
     maxDrawdownPct: r4(s.maxDrawdownPct),
     winRatePct: r4(s.winRatePct),
+    // Quarter-by-quarter mean daily net return and the positive share: stability, not a gate.
+    ...ctStability(r),
   };
 }
 
@@ -284,7 +288,7 @@ How to research: for each hypothesis, state the phenomenon, the mechanism (why p
 
 Guard against fooling yourself: every query you run raises the chance that something looks good by luck, and the full query log goes to independent reviewers. Distrust effects that rest on few events, on one or two months, or that vanish against the baseline or under doubled costs. Prefer a few simple conditions with a clear mechanism over many tuned ones. Web principles in the context are inspiration only — never evidence of performance.
 
-The rule language (all you can express): a rule is 1–4 ordered stages; each stage is 1–6 AND conditions; a stage must occur within its maxGapBars after the previous one. Features: return_pct, sma_distance_pct, range_pct, volume_ratio, contraction_ratio (recent half vs older half of the window's bar ranges), prior_high_distance_pct, prior_low_distance_pct, range_position (0..1), swing_high_distance_pct, swing_low_distance_pct (swings confirmed two bars later). Percent features are percent; ratios are raw. lookback 2–120 bars, offset 0–120 bars back, timeframe 1/3/12 = closed 1/3/12-minute bars built from the 1-minute bars. Entry is always the next bar's open; exits are a fixed stop, a fixed target, a time limit (maxHoldBars ≤ 390) and optional invalidation below the pattern low. Stocks reset history at each session and close at the session end; crypto is continuous with at most 1500 bars of feature history. Long only. Trend lines, news, order book, shorting, leverage and discretion cannot be expressed: leave them out of the rule and name them as limitations.
+The rule language (all you can express): a rule is 1–4 ordered stages; each stage is 1–6 AND conditions; a stage must occur within its maxGapBars after the previous one. Features: return_pct, sma_distance_pct, range_pct, volume_ratio, contraction_ratio (recent half vs older half of the window's bar ranges), prior_high_distance_pct, prior_low_distance_pct, range_position (0..1), swing_high_distance_pct, swing_low_distance_pct (swings confirmed two bars later). Percent features are percent; ratios are raw. lookback 2–120 bars, offset 0–120 bars back, timeframe 1/3/12 = closed 1/3/12-minute bars built from the 1-minute bars (stocks: current session only); timeframe 60/240/1440 = closed hourly / 4-hour / daily bars (crypto: UTC grid, daily = the UTC day; stocks: grid from the session open, daily = the regular session) that may use completed bars of earlier sessions and look back at most 30 days (daily lookback+offset+1 ≤ 30) — use them for yesterday's high/low, the multi-day trend and the day's range, and 1-minute conditions only to time the entry. Entry is always the next bar's open; exits are a fixed stop, a fixed target, a time limit (maxHoldBars ≤ 390 for stocks, ≤ 1440 for crypto) and optional invalidation below the pattern low. This is day trading: every position is force-closed on the day's last bar (stocks at the session close, crypto at 00:00 UTC = 09:00 KST) and entry.noEntryBeforeDayEndMinutes (0–240) refuses new entries that close to the day end. Set spec.engine to the contract's engine. Stocks reset 1/3/12-minute history at each session; crypto 1/3/12-minute conditions see at most 1500 contiguous bars. Long only. Trend lines, news, order book, shorting, leverage and discretion cannot be expressed: leave them out of the rule and name them as limitations.
 
 Tools and their limits: every tool sees the training split only; the server rejects anything past it. query_conditional_returns takes the same conditions as the rule language. read_bars only opens times the server offered (query anchors, or a parent candidate's training trades). screen_rule replays a complete rule on training data and returns the server's gate verdict; do not submit a rule that already fails on training. submit_candidates ends the session: 1–3 candidates, or zero candidates with noEdgeReason when nothing survived — record every hypothesis you rejected and why. Each condition in a candidate's mapping cites evidence: a queryId whose query used the same feature at the same timeframe (lookbacks and thresholds may differ — say how in implementationAssumption), or a web source id. spec.sourceIds lists the evidence ids the rule uses. A revision of an earlier measured candidate names it as parentId and states the measured problem, the exact changes and the expected effect; a new idea has parentId null.
 
@@ -298,9 +302,12 @@ function contractView(contract: CTContract) {
     market: contract.market,
     symbols: contract.symbols,
     barMinutes: contract.minutes,
+    engine: contract.engine,
     timezone: contract.timezone,
     currency: contract.currency,
     capital: contract.capital,
+    dayEnd: contract.market === "stock" ? "정규장 종료(마지막 1분 전 봉 종가 청산)" : "UTC 00:00 = KST 09:00 (직전 봉 종가 청산, ct-pattern-2)",
+    costProfile: ctCostProfileText(contract, ctRoundTripCostPct(contract)),
     training: { from: iso(contract.fromMs), to: iso(contract.trainingToMs), fromMs: contract.fromMs, toMs: contract.trainingToMs },
     developmentAndFinal: "학습 구간 이후 · 설계 도구로 열람 불가 · 개발은 서버 실험 요약만 전달",
     costs: contract.costs,

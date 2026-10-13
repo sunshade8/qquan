@@ -65,6 +65,8 @@ OS 로그인 서비스는 설치하지 않는다.
 | `state/research.sqlite` | 기존 앱/연구/거래 SQL 테이블, 다운로드 작업/구간/오류, catalog, 불변 snapshot 목록 |
 | `parquet/stock/YYYY-MM/<sha256>.parquet` | Massive NVDA 원주가 1분봉 |
 | `parquet/btc/YYYY-MM/<sha256>.parquet` | Binance Spot BTCUSDT 1분봉 |
+| `parquet/eth/…`, `parquet/sol/…` | Binance Spot ETHUSDT, SOLUSDT 1분봉(같은 파이프라인, 2026-10-14) |
+| `state/research.sqlite`의 `ct_orderbook_samples` | 비용 프로필용 공개 호가 스냅샷(아래 「호가 측정」) |
 | `research/out`, `research/journals` | CLI 연구 산출물과 연구 장부 mirror |
 | `logs/data-worker.log` | detached 다운로드 worker 오류 |
 | `backups/*.sqlite` | SQLite online backup 및 이전 전 사본 |
@@ -98,7 +100,7 @@ node --env-file=.dev.vars scripts/data/merge-owners.mjs
 Settings → **공유 로컬 1분봉 저장소**:
 
 - 주식 1분봉: NVDA / Massive / 최근 5년
-- 코인 1분봉: BTCUSDT Spot / Binance Public Data / 최근 5년
+- 코인 1분봉: BTCUSDT·ETHUSDT·SOLUSDT Spot(종목마다 버튼) / Binance Public Data / 최근 5년
 
 다운로드/증분 갱신은 저장된 작업 ID를 만들고 즉시 반환한다. 취소/재개는 같은 큐의 영구 상태를 변경한다. 진행률은 **파일 요청 구간 작업의 완료 수**이며 행 수/다운로드 바이트/ETA의 추정치가 아니다. 요청 기간과 검증 coverage, 내부 부족 범위, 손상 파일, 마지막 검증/최신 봉을 구분한다. 전체 5년 목표가 미완료여도 특정 연구 기간 coverage가 충분하면 사용할 수 있다.
 
@@ -109,6 +111,9 @@ node --env-file-if-exists=.dev.vars -e 'import {spawnSync} from "node:child_proc
 # 키가 이미 shell에 설정되었다면 stock Python CLI도 직접 사용 가능하다.
 .venv/bin/python scripts/data/download-stock-minute.py 2026-09-28 2026-09-29
 .venv/bin/python scripts/data/download-btc-minute.py 2025-01-01 2025-02-01
+# ETHUSDT / SOLUSDT도 같은 방식이다(기간을 생략하면 최근 5년, 이미 받은 구간은 건너뜀).
+.venv/bin/python scripts/data/download-eth-minute.py
+.venv/bin/python scripts/data/download-sol-minute.py
 .venv/bin/python scripts/data/store.py status
 .venv/bin/python scripts/data/store.py cancel JOB_UUID
 .venv/bin/python scripts/data/store.py resume JOB_UUID
@@ -121,7 +126,7 @@ npm run data:worker
 
 주식은 최근 구간부터 최대 7일씩 진행한다. 계정 이용 권한을 로컬 설정으로 바꾸지 않는다. **2021-10-13–14 실제 요청은 HTTP 403**이었다. 이 계정으로 5년 전체를 제공할 수 있다고 주장하지 않는다. 거부 구간과 이미 확보한 구간을 보존한다. 구독 변경/결제는 수행하지 않는다.
 
-Binance는 완료 월별 공식 ZIP/CHECKSUM을 우선하고, 부분 월/최근 구간/미공개 월별 파일은 일별 ZIP/CHECKSUM으로 보충한다. 404는 미공개 자료로 구분하며 실제 checksum/파싱 오류와 다르게 표시한다. 밀리초/2025년 이후 마이크로초를 UTC 밀리초로 정규화하고 원본 close-time의 마지막 마이크로초 대신 `end=start+60000`을 쓴다. 일별/월별 겹침은 결정적으로 제거한다. 정정은 `--refresh`로 새 hash 파일에 쓰며 기존 연구 snapshot은 유지한다.
+Binance는(BTC·ETH·SOL 공통, 종목은 데이터셋의 `instrument`) 완료 월별 공식 ZIP/CHECKSUM을 우선하고, 부분 월/최근 구간/미공개 월별 파일은 일별 ZIP/CHECKSUM으로 보충한다. 404는 미공개 자료로 구분하며 실제 checksum/파싱 오류와 다르게 표시한다. 밀리초/2025년 이후 마이크로초를 UTC 밀리초로 정규화하고 원본 close-time의 마지막 마이크로초 대신 `end=start+60000`을 쓴다. 일별/월별 겹침은 결정적으로 제거한다. 정정은 `--refresh`로 새 hash 파일에 쓰며 기존 연구 snapshot은 유지한다.
 
 ## 스키마, 품질과 분할 정책
 
@@ -151,6 +156,21 @@ XNYS `exchange-calendars 4.11.2`에서 2020–2035 세션/휴장/조기 폐장�
 남겨둔 외부 경로는 명시적으로 구별한다: 실시간 Toss/Upbit 호가·현재가·최근 봉, 계좌·잔고·주문·대사, Toss 현재 랭킹, TradingView 외부 표시용 위젯(연구 입력으로 사용하지 않음), 기존 급등주 실시간 후보의 전일 전체시장 통계(`allow-external`), 종목 메타 조회, 뉴스/SEC/FRED/공개 문서/모델 호출이다. 전체 시장 통계는 별도 기존 SQL 캐시이며 NVDA minute dataset이 대신 충족하지 않는다. 모델·검색·계좌 호출은 과거 시장 데이터 호출 수와 동일하지 않다. 기존 다른 코인 포지션의 감시/매도/취소는 유지하고 신규 매수는 BTC만 허용한다.
 
 Binance BTCUSDT 연구는 USDT capital/0.1% 편도 가정/0.01 USDT tick/UTC 일자 기준이다. 실제 주문 가능 규칙을 조회한 실행 전략이라는 뜻은 아니다. Upbit KRW-BTC와 가격·통화·수수료·호가가 달라 **새 Binance 연구의 Upbit 모의/실전 시작을 차단**한다. 통화 이름만 바꾸거나 거래소/실주문을 자동 변경하지 않는다. 기존 Upbit 연구의 기록과 운용 청산 경로는 보존한다.
+
+## 호가 측정과 비용 프로필 (2026-10-14)
+
+CT 비용 프로필(`lib/ct-costs.ts`)의 스프레드·슬리피지는 가정이 아니라 공개 호가의 측정값이다. 인증·계좌·주문 없이 Binance `GET /api/v3/depth`(500호가)와 Upbit `GET /v1/orderbook`만 1분마다 호출하고, $1,000와 $10,000 시장가 주문이 mid를 얼마나 미는지 계산해 SQLite `ct_orderbook_samples`에 저장한다.
+
+```sh
+# 72시간 수집(백그라운드, 절전 방지). 로그: ~/.qquan/logs/orderbook-sampler.log
+nohup caffeinate -i npm run data:orderbook -- --hours=72 >> ~/.qquan/logs/orderbook-sampler.log 2>&1 &
+npm run data:orderbook -- --once                 # 한 번만 측정해 출력
+npm run data:orderbook -- --summary              # 지금까지의 p50/p90/p99
+npm run data:orderbook -- --profile --write-lib  # p90(올림)을 lib/ct-cost-measurements.ts에 기록
+npm run data:orderbook -- --check                # 프로필이 측정 p90보다 낮으면 실패
+```
+
+측정 기간이 72시간을 채우기 전에는 프로필이 `provisional`(잠정)이고 화면에도 그렇게 표시된다. 컴퓨터가 잠들면 그 시간은 표본에 없다. 표를 갱신해도 이미 만들어진 계약의 비용은 바뀌지 않는다(계약이 숫자를 동결한다). 천장 측정은 `npm run research:ceiling`이다.
 
 ## 검증
 

@@ -28,6 +28,7 @@ import TriangleAlert from "lucide-react/dist/esm/icons/triangle-alert";
 import X from "lucide-react/dist/esm/icons/x";
 import type { GenerationJob } from "@/lib/strategy-generation-types";
 import type { CTResearch, CTToolTrace, CTTrial } from "@/lib/ct-research";
+import { ctCostProfileText, ctCostsRoundTripPct } from "@/lib/ct-costs";
 import {
   agentIdOf,
   agentOf,
@@ -248,6 +249,9 @@ export function LiveStatusBar({ job, runnerOnline, busy, onAct }: StatusProps) {
       {live ? <div className="ct-live-rail" role="progressbar" aria-label="연구 단계 진행" aria-valuemin={1} aria-valuemax={total} aria-valuenow={stepIndex} aria-valuetext={announce}>
         <i style={{ "--v": stepIndex / total } as React.CSSProperties} data-tone={tone === "idle" ? undefined : tone} />
       </div> : null}
+      <p className="ui-sub ct-live-profile">
+        비용 {ctCostProfileText(ct.contract, ctCostsRoundTripPct(ct.contract.costs))} · 기간 {new Date(ct.contract.fromMs).toISOString().slice(0, 10)}–{new Date(ct.contract.toMs).toISOString().slice(0, 10)} · {ct.contract.symbols.join(", ")}
+      </p>
       {/* The text only changes when the phase or status changes, so polling never re-announces. */}
       <span className="ui-sr-only" aria-live="polite" role="status">{announce}</span>
     </div>

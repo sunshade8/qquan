@@ -10,7 +10,7 @@ type Job = {
   end: number;
 };
 type Dataset = {
-  dataset: "stock" | "btc";
+  dataset: "stock" | "btc" | "eth" | "sol";
   location: string;
   status: string;
   target: number[];
@@ -80,7 +80,7 @@ export default function LocalDataSettings() {
           <h3>
             {d.dataset === "stock"
               ? "주식 1분봉 · NVDA · Massive"
-              : "코인 1분봉 · BTCUSDT Spot · Binance Public Data"}{" "}
+              : `코인 1분봉 · ${{ btc: "BTCUSDT", eth: "ETHUSDT", sol: "SOLUSDT" }[d.dataset]} Spot · Binance Public Data`}{" "}
             · 최근 5년
           </h3>
           <p>

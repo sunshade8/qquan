@@ -1,0 +1,32 @@
+{
+  "crypto-reversal": {
+    "trades": 73,
+    "net": -2.543912,
+    "digest": "8f2cbc60a502a2ed8f3dc9951666c5e252d03ce237e53bd64ebd1238f9008279"
+  },
+  "crypto-three-minute-two-stage": {
+    "trades": 340,
+    "net": -15.035608,
+    "digest": "a0fdf9a47891f1429ec687cbe334b2876dad789ab0570864f9754a997c524590"
+  },
+  "crypto-twelve-minute-swing": {
+    "trades": 28,
+    "net": -0.88345,
+    "digest": "f523b653108d4fbd8b3e3d38498b590001d73766296fd9de6defde13ac801ffa"
+  },
+  "crypto-with-holes": {
+    "trades": 13,
+    "net": 0,
+    "digest": "3d4aa79c1e05f713f1b32b3a21b98f5ebb1e49456d4b4b24eca3df8a644b35db"
+  },
+  "stock-session": {
+    "trades": 9,
+    "net": -0.386234,
+    "digest": "d5ed3cf0000462f5de5f46268d580dd4c57953b86b9346522a0f544cbf222f1e"
+  },
+  "stock-contraction-breakout": {
+    "trades": 15,
+    "net": -0.567224,
+    "digest": "87d572cd79962d6324a3816b795af0a508df2853b28d49b2d79a12b1bae7f390"
+  }
+}

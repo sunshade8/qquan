@@ -35,7 +35,25 @@ DATASETS = {
         quoteCurrency="USDT",
         adjustmentPolicy="none",
     ),
+    # ETHUSDT / SOLUSDT: the same Binance Public Data pipeline, catalog, coverage and quality report.
+    "eth": dict(
+        market="crypto",
+        instrument="ETHUSDT",
+        venue="BinanceSpot",
+        provider="BinancePublicData",
+        quoteCurrency="USDT",
+        adjustmentPolicy="none",
+    ),
+    "sol": dict(
+        market="crypto",
+        instrument="SOLUSDT",
+        venue="BinanceSpot",
+        provider="BinancePublicData",
+        quoteCurrency="USDT",
+        adjustmentPolicy="none",
+    ),
 }
+BINANCE_DATASETS = ("btc", "eth", "sol")
 FIELDS = ["startMs", "endMs", "open", "high", "low", "close", "volume", "quoteVolume"]
 SCHEMA = pa.schema(
     [("startMs", pa.int64()), ("endMs", pa.int64())]
@@ -224,15 +242,16 @@ def parse_binance(content, start, end):
             return result
 
 
-def binance(start, end):
+def binance(start, end, dataset="btc"):
+    symbol = DATASETS[dataset]["instrument"]
     if end - start > 86400000 and not (
         dt(start).day == 1 and dt(end).day == 1 and dt(end).month != dt(start).month
     ):
         rows = []
         sources = []
         for a in range(start, end, 86400000):
-            r, s = binance(a, min(a + 86400000, end))
-            publish(connect(), "btc", a, min(a + 86400000, end), r, s)
+            r, s = binance(a, min(a + 86400000, end), dataset)
+            publish(connect(), dataset, a, min(a + 86400000, end), r, s)
             rows.extend(r)
             sources.append(s)
         return rows, json.dumps(sources)
@@ -240,15 +259,15 @@ def binance(start, end):
     monthly = d.day == 1 and dt(end).day == 1 and dt(end).month != (d.month)
     label = d.strftime("%Y-%m" if monthly else "%Y-%m-%d")
     kind = "monthly" if monthly else "daily"
-    url = f"https://data.binance.vision/data/spot/{kind}/klines/BTCUSDT/1m/BTCUSDT-1m-{label}.zip"
+    url = f"https://data.binance.vision/data/spot/{kind}/klines/{symbol}/1m/{symbol}-1m-{label}.zip"
     checksum = request(url + ".CHECKSUM", optional=True)
     if checksum is None:
         if monthly:
             rows = []
             sources = []
             for a in range(start, end, 86400000):
-                r, s = binance(a, min(a + 86400000, end))
-                publish(connect(), "btc", a, min(a + 86400000, end), r, s)
+                r, s = binance(a, min(a + 86400000, end), dataset)
+                publish(connect(), dataset, a, min(a + 86400000, end), r, s)
                 rows.extend(r)
                 sources.append(s)
             return rows, json.dumps(sources)
@@ -340,7 +359,9 @@ def publish(db, dataset, start, end, rows, source):
         "datasetVersion": VERSION,
         "source": source,
         "interval": "1m",
-        "volumeUnit": "shares" if dataset == "stock" else "BTC",
+        "volumeUnit": "shares"
+        if dataset == "stock"
+        else DATASETS[dataset]["instrument"].removesuffix("USDT"),
         "numericPrecision": "decimal128(30,10)",
         "requestedStart": str(start),
         "requestedEnd": str(end),
@@ -530,7 +551,11 @@ def work(db):
             known = [p for p in parts(db, job["dataset"], a, b) if valid_part(p)]
             gaps = [[a, b]] if job["refresh"] else missing(known, a, b)
             for x, y in gaps:
-                rows, source = (stock if job["dataset"] == "stock" else binance)(x, y)
+                rows, source = (
+                    stock(x, y)
+                    if job["dataset"] == "stock"
+                    else binance(x, y, job["dataset"])
+                )
                 publish(db, job["dataset"], x, y, rows, source)
             assert_active()
             db.execute(
@@ -851,7 +876,7 @@ def main():
         if final["status"] != "complete":
             sys.exit(2)
     else:
-        raise ValueError("Usage: store.py worker|stock|btc|rpc")
+        raise ValueError("Usage: store.py worker|stock|btc|eth|sol|rpc")
 
 
 if __name__ == "__main__":
