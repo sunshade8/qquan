@@ -41,7 +41,7 @@ import {
   type CTMarket,
 } from "./ct-spec.ts";
 import {
-  CT_DESIGNER_SYSTEM,
+  ctDesignerSystem,
   CT_EVIDENCE_VERSION,
   ctBrief,
   ctEvidenceIds,
@@ -55,6 +55,7 @@ import {
   ctSubmissionSchema,
   validateCTCandidate,
   type CTCandidate,
+  type CTChartRecord,
   type CTQueryRecord,
   type CTResearch,
   type CTSession,
@@ -70,6 +71,26 @@ import {
   type CTCostHurdle,
 } from "./ct-design-tools.ts";
 import { ctDataPage, ctDb, ctResearchPageStart, loadCTData } from "./ct-data.ts";
+import {
+  CT_DIAGNOSIS_FEATURES,
+  ctContrastMoves,
+  ctContrastMovesSchema,
+  ctContrastSignatures,
+  ctDiagnoseTrades,
+  ctDiagnoseTradesSchema,
+  ctDiagnosisSignatures,
+  ctFeatureCondition,
+  ctGradeBlind,
+  ctGradeBlindSchema,
+  ctLabelMovesReport,
+  ctLabelMovesSchema,
+  ctRng,
+  ctRunLabels,
+  ctSeedOf,
+  ctViewChartsSchema,
+} from "./ct-trader-tools.ts";
+import { ctBase64, ctRenderChart } from "./ct-chart-image.ts";
+import { CT_PLAYBOOK_SCHEMA, ctPlaybookSnapshot, recordCTPlaybook } from "./ct-playbook.ts";
 import {
   ctCheckpointResult,
   ctGate,
@@ -112,6 +133,8 @@ export async function ensureCTSchema() {
     ctDb().prepare(
       "CREATE TABLE IF NOT EXISTS ct_strategies (id TEXT PRIMARY KEY,run_id TEXT NOT NULL UNIQUE,owner_id TEXT NOT NULL,market TEXT NOT NULL,frozen_hash TEXT NOT NULL,payload TEXT NOT NULL,created_at INTEGER NOT NULL)",
     ),
+    // Stage 3: the cross-run playbook, its per-run ledger, and the chart images the designer was shown.
+    ...CT_PLAYBOOK_SCHEMA.map((sql) => ctDb().prepare(sql)),
   ]);
 }
 /** Shared by paid-run creation and the read-only data preflight. */
@@ -442,6 +465,9 @@ export async function ctMemory(job: GenerationJob) {
         old.contract.developmentToMs > c.developmentToMs
       )
         return [];
+      // Leak rule: a rule measured on a window that reaches into THIS run's development or final split
+      // may be named and graded, but its measured numbers are withheld.
+      const overlaps = old.contract.developmentToMs > c.trainingToMs && old.contract.fromMs < c.toMs;
       return old.trials.map((t) => ({
         id: t.id,
         market: c.market,
@@ -449,7 +475,8 @@ export async function ctMemory(job: GenerationJob) {
         developmentToMs: old.contract.developmentToMs,
         rules: t.spec,
         diagnostics: t.reasons,
-        netReturnPct: t.development.netReturnPct,
+        netReturnPct: overlaps ? null : t.development.netReturnPct,
+        ...(overlaps ? { overlaps: true } : {}),
       }));
     })
     .slice(0, 12);
@@ -467,7 +494,7 @@ const jsonSchema = (schema: z.ZodType) => z.toJSONSchema(schema, { io: "input" }
  * The designer's tools. Deterministic definitions in a fixed order: they render before the
  * system prompt, so any byte change would invalidate every cached prefix.
  */
-export const CT_SESSION_TOOLS: Anthropic.Tool[] = [
+export const CT_SESSION_TOOLS_STAGE2: Anthropic.Tool[] = [
   {
     name: "query_conditional_returns",
     description:
@@ -496,6 +523,62 @@ export const CT_SESSION_TOOLS: Anthropic.Tool[] = [
   },
 ];
 
+/**
+ * Stage 3 (trader tools). Same four tools as before (screen_rule and submit_candidates describe their new
+ * fields) plus the five trader tools, in a fixed order: any byte change invalidates every cached prefix.
+ */
+const stage2 = (name: string) => CT_SESSION_TOOLS_STAGE2.find((t) => t.name === name)!;
+export const CT_SESSION_TOOLS: Anthropic.Tool[] = [
+  {
+    name: "label_moves",
+    description:
+      "Find the moments that were worth trading, on the TRAINING split only. For every minute: enter at the next bar's open and ask whether price reaches +k × the round-trip cost before it falls −m × the round-trip cost, within the horizon (a bar count, or the day's last tradable bar; never across the day boundary; costMultiplier 2 doubles the cost). Positive moments that run together are one event (the clustering rule is in the result; an event's representative time is the middle positive moment). Returns positive moments and events, events per day, the base rate, how the events are distributed over time of day, volatility regime, weekday and month against how often those conditions occur at all, representative event times AND matched control times the server issues for view_charts and read_bars, and a labelId for contrast_moves. Moments whose look-ahead would pass the training end are dropped. A lift here is a lead about where to look, never evidence of performance.",
+    input_schema: jsonSchema(ctLabelMovesSchema),
+  },
+  {
+    name: "contrast_moves",
+    description:
+      "What differed just before the moves? For a labelId from label_moves, measure up to 12 DSL features (feature, lookback, offset, timeframe, unit — no thresholds) at the event moments and at control minutes matched to the same hour of the day and month (3 per event, seeded). Per feature: quantiles before events vs controls and, per control quintile, how many events fall there and the lift (event share ÷ control share) with a z score. With tree: true also a depth-3 tree grown on the first 2/3 of the training days (trades still open when the last 1/3 begins are purged), each leaf with its training and HOLDOUT (last 1/3) lift, positive rate and after-cost net under the label's own exit. A leaf whose holdout lift disagrees with its training lift is noise. The result's contrastId is citable evidence for the features it measured. Every feature × quintile is added to the multiple-testing ledger (multipleTesting in the result).",
+    input_schema: jsonSchema(ctContrastMovesSchema),
+  },
+  {
+    name: "view_charts",
+    description:
+      "See moments as candle charts (PNG): left 5 days of 1-hour bars with the previous day's high/low; middle today's 5-minute bars with VWAP, the opening range (first 30 minutes) and the previous day's high/low/close; right the 90 minutes before the decision in 1-minute bars with volume. Axes are percent of the decision bar's close (no price levels), there are no dates, only bars completed by the decision time are drawn. Anchors must be times the server issued (event/control times from label_moves, query anchors, screen_rule trade times); up to 8 per call within the per-session image limit. blind: true mixes an equal number of event and control times in random order and hides which is which: decide each chart, then submit all calls with grade_blind. The result's text names each chart's number and (when not blind) its group.",
+    input_schema: jsonSchema(ctViewChartsSchema),
+  },
+  {
+    name: "grade_blind",
+    description:
+      "Grade your own eye. For a blindId from view_charts (blind: true), give a call (positive = an event moment, control = a matched control) for EVERY chart. Returns the accuracy and the exact one-sided binomial p-value against 50% (the set is balanced), then reveals the answers. A set is graded once. If p ≥ 0.05, your reading of charts shows no skill on this market in this sample.",
+    input_schema: jsonSchema(ctGradeBlindSchema),
+  },
+  stage2("query_conditional_returns"),
+  stage2("read_bars"),
+  {
+    name: "screen_rule",
+    description:
+      "Replay a complete candidate spec on the TRAINING split with the real engine (same detector, exits, sizing, costs) and get the server's gate verdict: net and mean daily return, positive-day share, worst day, trades, drawdown, win rate and the gate reasons it fails. Development results are never returned. Limited calls per session. A rule that fails here would fail the server's training gate after submission, so do not submit it. The result carries the rule's freedom (conditions + free exit/window numbers), the run's multipleTesting count, and a screenId you can give diagnose_trades.",
+    input_schema: jsonSchema(z.object({ spec: ctSpecSchema }).strict()),
+  },
+  {
+    name: "diagnose_trades",
+    description:
+      "Why does a rule lose? Takes the TRAINING trades of a screened rule (screenId from screen_rule) or of a submitted candidate (candidateId) and returns: expectancy by time of day, volatility regime, 1-hour trend (above/below its SMA20), weekday, holding time and exit reason; how many losers were ever in profit (+1R, or twice the round-trip cost: an EXIT problem) versus never covered the cost (an ENTRY problem) and how much of the winners' favourable move was kept; the same entries under other exit structures (the rule's own, fixed 2R, breakeven at +1R, trailing, time stop — each through the replay's own exit function); and filter hints. Hints are found on these very trades: use them as new hypotheses, record them as changes from the diagnosed rule, and remember each cell examined is added to the multiple-testing ledger. The diagnosisId is citable evidence for range_pct (1-minute) and sma_distance_pct (60-minute).",
+    input_schema: jsonSchema(ctDiagnoseTradesSchema),
+  },
+  {
+    name: "submit_candidates",
+    description:
+      "End this research session. Submit 1–3 candidates (each: spec, hypothesis, mapping of EVERY condition to evidence, parentId or null, observedProblem/changes/expectedEffect for revisions, memoryIds, and selfRebuttal: the three likeliest reasons the rule is chance, how you checked each in the data, and whether it is excluded yes/partly/no), or zero candidates with noEdgeReason when nothing survived. Always list rejectedHypotheses with the evidence (queryIds, contrastIds) and the result that rejected them. Invalid submissions come back as an error to fix in this session.",
+    // Not `strict`: the API refuses this schema ("compiled grammar is too large", 400, measured
+    // 2026-10-13). The server re-validates every submission with zod and answers is_error instead.
+    input_schema: jsonSchema(ctSubmissionSchema),
+  },
+];
+/** The tool set a contract runs under (stage 2 contracts keep the four original tools). */
+export const ctSessionTools = (contract: Pick<CTContract, "policy">) => (ctSessionPolicy(contract).traderTools ? CT_SESSION_TOOLS : CT_SESSION_TOOLS_STAGE2);
+
 type SessionMessage = Anthropic.MessageParam;
 async function loadSession(runId: string, session: CTSession) {
   const rows = await ctDb()
@@ -519,6 +602,30 @@ async function appendSession(job: GenerationJob, token: string, session: CTSessi
     session.messages++;
   }
 }
+
+/* ------------------------------------------------------- trader tool helpers */
+
+const MAX_CHART_ANCHORS = 400;
+/** Records times the server issued for view_charts (event and control), oldest dropped past the cap. */
+function issueChartAnchors(ct: CTResearch, anchors: Array<{ at: number; symbol: string; group: "positive" | "control" }>, ref: string) {
+  const map = (ct.chartAnchors ??= {});
+  for (const a of anchors) map[`${a.symbol}:${a.at}`] ??= { symbol: a.symbol, at: a.at, group: a.group, ref };
+  const keys = Object.keys(map);
+  for (const k of keys.slice(0, Math.max(0, keys.length - MAX_CHART_ANCHORS))) delete map[k];
+}
+/** Whether a bar closes exactly at `at` (rows are sorted). */
+function hasBarEnd(rows: CTBar[], at: number) {
+  let lo = 0,
+    hi = rows.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (rows[mid].endMs === at) return true;
+    if (rows[mid].endMs < at) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return false;
+}
+const GROUP_TEXT = { positive: "이벤트(양성) 시점", control: "대조군 시점", other: "서버가 제공한 조회·거래 시점" } as const;
 const submittedCount = (ct: CTResearch) => ct.submitted ?? ct.trials.length;
 const text = (value: unknown) => (typeof value === "string" ? value : JSON.stringify(value));
 /** Infrastructure failures end or pause the step; anything else is the model's input to fix. */
@@ -644,6 +751,14 @@ export async function advanceCTResearch(
         },
         () => ctMemory(job),
       );
+      if (ctSessionPolicy(c).traderTools)
+        ct.playbook = await tool(
+          job,
+          token,
+          "playbook_summary",
+          { market: c.market, symbols: c.symbols, trainingToMs: c.trainingToMs, toMs: c.toMs, ownerScope: true },
+          () => ctPlaybookSnapshot(job.ownerId, c, job.id),
+        );
       ct.phase = "sources";
       return;
     }
@@ -891,7 +1006,7 @@ export async function advanceCTResearch(
         if (!turn) throw new Error("설계 세션 실행기 없음");
         let reply = await turn(
           "ctDesigner",
-          { system: CT_DESIGNER_SYSTEM, tools: CT_SESSION_TOOLS, messages },
+          { system: ctDesignerSystem(c), tools: ctSessionTools(c), messages },
           { session: session.index, turn: session.turns },
           `설계 세션 ${session.index + 1} · 턴 ${session.turns + 1}/${policy.maxTurns}`,
         );
@@ -938,7 +1053,13 @@ export async function advanceCTResearch(
       for (const use of uses) {
         session.toolCalls++;
         const answer = (content: unknown, isError = false) =>
-          results.push({ type: "tool_result", tool_use_id: use.id, content: text(content).slice(0, 60_000), ...(isError ? { is_error: true } : {}) });
+          results.push({
+            type: "tool_result",
+            tool_use_id: use.id,
+            // Content blocks (text + base64 images) go through untouched; everything else is JSON text, capped.
+            content: Array.isArray(content) ? (content as Anthropic.ToolResultBlockParam["content"]) : text(content).slice(0, 60_000),
+            ...(isError ? { is_error: true } : {}),
+          });
         try {
           if (use.name !== "submit_candidates" && session.toolCalls > policy.maxToolCalls)
             throw new Error(`이 세션의 도구 호출 한도 ${policy.maxToolCalls}회를 넘었습니다. submit_candidates만 호출할 수 있습니다.`);
@@ -987,6 +1108,184 @@ export async function advanceCTResearch(
               ctReadBars(request, await bars(), c),
             );
             answer(out.map((w) => `${w.symbol} ${w.anchor} · ${w.bars}봉 · 결측 ${w.gaps} · ${w.format}\n${w.text}`).join("\n\n"));
+          } else if (use.name === "label_moves") {
+            if (!policy.traderTools) throw new Error("이 연구 계약에는 label_moves가 없습니다");
+            const params = ctLabelMovesSchema.parse(use.input);
+            if (c.market === "stock" && params.horizon !== "day_end" && params.horizon > 390) throw new Error("주식 보유 지평은 390봉 이하입니다");
+            const labelId = (await ctHash({ run: job.id, params })).slice(0, 16);
+            const out = await tool(job, token, "label_moves", { params, from: c.fromMs, to: c.trainingToMs, dataHash: ct.dataHash }, async () => {
+              const data = await bars();
+              const at = Date.now();
+              try {
+                return ctLabelMovesReport(params, ctRunLabels(params, data, c), c, labelId);
+              } finally {
+                ct.computeMs += Date.now() - at;
+              }
+            });
+            (ct.labels ??= {})[labelId] ??= {
+              labelId,
+              session: session.index,
+              at: new Date().toISOString(),
+              params,
+              events: out.events,
+              positiveMoments: out.positiveMoments,
+              eventsPerDay: out.eventsPerDay,
+            };
+            issueChartAnchors(ct, [...out.anchors, ...out.controlAnchors], labelId);
+            anchor(...out.anchors.map((a) => a.at), ...out.controlAnchors.map((a) => a.at));
+            ctRecordTest(ct, `label|k${params.k}|m${params.m}|h${params.horizon}|c${params.costMultiplier}`);
+            answer({ ...out, multipleTesting: ctTestLedger(ct) });
+          } else if (use.name === "contrast_moves") {
+            if (!policy.traderTools) throw new Error("이 연구 계약에는 contrast_moves가 없습니다");
+            const request = ctContrastMovesSchema.parse(use.input);
+            const label = ct.labels?.[request.labelId];
+            if (!label) throw new Error("알 수 없는 labelId: label_moves를 먼저 호출하세요");
+            const conditions = request.features.map(ctFeatureCondition);
+            const contrastId = (await ctHash({ run: job.id, request })).slice(0, 16);
+            const out = await tool(job, token, "contrast_moves", { request, params: label.params, from: c.fromMs, to: c.trainingToMs, dataHash: ct.dataHash }, async () => {
+              const data = await bars();
+              const at = Date.now();
+              try {
+                return { contrastId, ...ctContrastMoves(request, label.params, ctRunLabels(label.params, data, c), c, { deadline: deadline() }) };
+              } finally {
+                ct.computeMs += Date.now() - at;
+              }
+            });
+            ct.contrasts ??= [];
+            if (!ct.contrasts.some((x) => x.contrastId === out.contrastId)) {
+              const top = out.features
+                .flatMap((f) => f.bins.map((b) => ({ feature: f.feature, bin: b.bin, lift: b.lift ?? 0, z: b.z })))
+                .sort((a, b) => Math.abs(b.z) - Math.abs(a.z))[0];
+              ct.contrasts.push({
+                contrastId: out.contrastId,
+                labelId: request.labelId,
+                session: session.index,
+                at: new Date().toISOString(),
+                from: c.fromMs,
+                to: c.trainingToMs,
+                features: [...new Map(conditions.map((x) => [`${x.feature}:${x.timeframe}`, { feature: x.feature, timeframe: x.timeframe }])).values()],
+                topLift: top ? { feature: top.feature, bin: top.bin, lift: top.lift } : null,
+                treeLeaves: out.tree?.leaves.length ?? 0,
+                summary: `이벤트 ${out.events}건 · 특징 ${out.features.length}개${top ? ` · 최대 편차 ${top.feature} ${top.bin} lift ${top.lift}` : ""}`,
+              });
+              (ct.tests ??= { signatures: {} }).treeSplits = (ct.tests.treeSplits ?? 0) + out.treeSplitsEvaluated;
+            }
+            for (const sig of ctContrastSignatures(request, label.params, conditions)) ctRecordTest(ct, sig);
+            answer({ ...out, multipleTesting: ctTestLedger(ct) });
+          } else if (use.name === "view_charts") {
+            if (!policy.traderTools || !policy.maxCharts) throw new Error("이 연구 계약에는 view_charts가 없습니다");
+            const request = ctViewChartsSchema.parse(use.input);
+            const shown = session.charts ?? 0;
+            if (shown + request.anchors.length > policy.maxCharts)
+              throw new Error(`이 세션의 차트 이미지 한도 ${policy.maxCharts}장을 넘습니다(지금까지 ${shown}장, 요청 ${request.anchors.length}장).`);
+            if (request.blind && (session.blinds ?? 0) >= policy.maxBlindSets)
+              throw new Error(`이 세션의 블라인드 세트 한도 ${policy.maxBlindSets}개를 모두 썼습니다.`);
+            if (new Set(request.anchors).size !== request.anchors.length) throw new Error("같은 시각을 두 번 요청했습니다");
+            const out = await tool(job, token, "view_charts", { request, from: c.fromMs, to: c.trainingToMs, dataHash: ct.dataHash }, async () => {
+              const data = await bars();
+              type Item = { at: number; symbol: string; group: "positive" | "control" | "other" };
+              const issued = Object.values(ct.chartAnchors ?? {});
+              let items: Item[] = request.anchors.map((at) => {
+                const known = issued.find((a) => a.at === at);
+                const symbol = known?.symbol ?? c.symbols.find((sym) => hasBarEnd(data[sym] ?? [], at));
+                if (!symbol) throw new Error(`시각 ${at}에 마감하는 학습 봉이 없습니다`);
+                return { at, symbol, group: known?.group ?? "other" };
+              });
+              if (request.blind) {
+                const pos = items.filter((i) => i.group === "positive").length,
+                  ctl = items.filter((i) => i.group === "control").length;
+                if (pos < 2 || pos !== ctl || pos + ctl !== items.length)
+                  throw new Error(`블라인드 세트는 이벤트 시점과 대조군 시점의 개수가 같아야 합니다(이벤트 ${pos}, 대조군 ${ctl}, 그 밖 ${items.length - pos - ctl}; 각 2개 이상).`);
+                const rng = ctRng(ctSeedOf(`${job.id}:${[...request.anchors].sort((a, b) => a - b).join(",")}`));
+                items = items.map((i) => ({ i, k: rng() })).sort((a, b) => a.k - b.k).map((x) => x.i);
+              }
+              const blindId = request.blind ? (await ctHash({ run: job.id, blind: [...request.anchors].sort((a, b) => a - b) })).slice(0, 12) : null;
+              const charts: Array<{ n: number; chartId: string; symbol: string; at: number; group: Item["group"]; bytes: number }> = [];
+              const at0 = Date.now();
+              try {
+                for (const [k, item] of items.entries()) {
+                  const n = k + 1;
+                  const image = await ctRenderChart(data[item.symbol], item.at, c, item.symbol, n);
+                  const chartId = (await ctHash({ run: job.id, symbol: item.symbol, at: item.at, n, blind: blindId })).slice(0, 16);
+                  await ctDb()
+                    .prepare("INSERT OR REPLACE INTO ct_chart_images (run_id,chart_id,png,meta,created_at) VALUES (?,?,?,?,?)")
+                    .bind(job.id, chartId, ctBase64(image.png), JSON.stringify({ symbol: item.symbol, at: item.at, n, group: item.group, blind: blindId, width: image.width, height: image.height }), Date.now())
+                    .run();
+                  charts.push({ n, chartId, symbol: item.symbol, at: item.at, group: item.group, bytes: image.png.length });
+                }
+              } finally {
+                ct.computeMs += Date.now() - at0;
+              }
+              return { charts, blindId };
+            });
+            session.charts = shown + out.charts.length;
+            (ct.charts ??= []).push(
+              ...out.charts.map((x): CTChartRecord => ({ chartId: x.chartId, session: session.index, n: x.n, symbol: x.symbol, at: x.at, group: x.group, ...(out.blindId ? { blind: out.blindId } : {}) })),
+            );
+            if (out.blindId && !ct.blinds?.[out.blindId]) {
+              session.blinds = (session.blinds ?? 0) + 1;
+              (ct.blinds ??= {})[out.blindId] = { blindId: out.blindId, session: session.index, order: out.charts.map((x) => ({ chart: x.n, group: x.group as "positive" | "control" })) };
+            }
+            const blocks: Anthropic.ToolResultBlockParam["content"] = [
+              {
+                type: "text",
+                text: out.blindId
+                  ? `블라인드 세트 ${out.blindId}: 차트 ${out.charts.length}장(이벤트와 대조군이 절반씩, 순서는 무작위, 그룹은 숨김). 각 장에 positive 또는 control 예측을 정해 grade_blind(blindId, predictions)로 한 번에 제출하세요. 축은 결정 봉 종가 대비 %이고 날짜는 없으며 결정 시각 이후 봉은 그려지지 않았습니다.`
+                  : `차트 ${out.charts.length}장. 축은 결정 봉 종가 대비 %이고 날짜는 없으며 결정 시각 이후 봉은 그려지지 않았습니다(결정 = 오른쪽 끝 점선). 이 세션 이미지 ${session.charts}/${policy.maxCharts}장 사용.`,
+              },
+            ];
+            for (const x of out.charts) {
+              const row = await ctDb().prepare("SELECT png FROM ct_chart_images WHERE run_id=? AND chart_id=?").bind(job.id, x.chartId).first<{ png: string }>();
+              if (!row) throw new Error("차트 이미지 저장 기록 누락");
+              blocks.push({ type: "text", text: out.blindId ? `차트 #${x.n}` : `차트 #${x.n} · ${x.symbol} · ${GROUP_TEXT[x.group]}` });
+              blocks.push({ type: "image", source: { type: "base64", media_type: "image/png", data: row.png } });
+            }
+            answer(blocks);
+          } else if (use.name === "grade_blind") {
+            if (!policy.traderTools) throw new Error("이 연구 계약에는 grade_blind가 없습니다");
+            const request = ctGradeBlindSchema.parse(use.input);
+            const set = ct.blinds?.[request.blindId];
+            if (!set) throw new Error("알 수 없는 blindId");
+            const key = await ctHash([...request.predictions].sort((a, b) => a.chart - b.chart));
+            if (set.gradedKey && set.gradedKey !== key) throw new Error("이 세트는 이미 채점되었습니다(세트는 한 번만 채점됩니다).");
+            const out = await tool(job, token, "grade_blind", { request, from: c.fromMs, to: c.trainingToMs, dataHash: ct.dataHash }, async () => ctGradeBlind(set, request.predictions));
+            set.graded = { correct: out.correct, total: out.total, accuracyPct: out.accuracyPct, pValue: out.pValue };
+            set.gradedKey = key;
+            ctRecordTest(ct, `blind|${set.blindId}`);
+            answer({ ...out, multipleTesting: ctTestLedger(ct) });
+          } else if (use.name === "diagnose_trades") {
+            if (!policy.traderTools) throw new Error("이 연구 계약에는 diagnose_trades가 없습니다");
+            const request = ctDiagnoseTradesSchema.parse(use.input);
+            const spec = request.screenId
+              ? ct.screens![request.screenId]?.spec
+              : (ct.trials.find((t) => t.id === request.candidateId)?.spec ?? (ct.screened ?? []).find((t) => t.id === request.candidateId)?.candidate.spec);
+            if (!spec) throw new Error("진단할 규칙을 찾지 못했습니다");
+            const sourceId = request.screenId ?? request.candidateId!;
+            const diagnosisId = (await ctHash({ run: job.id, request })).slice(0, 16);
+            const out = await tool(job, token, "diagnose_trades", { request, from: c.fromMs, to: c.trainingToMs, dataHash: ct.dataHash }, async () => {
+              const data = await bars();
+              const at = Date.now();
+              try {
+                const training = replayCT(spec, data, c, c.fromMs, c.trainingToMs, await ctHash(executableCT(spec)), { deadline: deadline() });
+                return { diagnosisId, source: sourceId, ruleText: ctRuleText(spec), ...ctDiagnoseTrades(spec, training, data, c, { exitModes: request.exitModes, deadline: deadline() }) };
+              } finally {
+                ct.computeMs += Date.now() - at;
+              }
+            });
+            ct.diagnoses ??= [];
+            if (!ct.diagnoses.some((d) => d.diagnosisId === out.diagnosisId))
+              ct.diagnoses.push({
+                diagnosisId: out.diagnosisId,
+                source: sourceId,
+                session: session.index,
+                at: new Date().toISOString(),
+                features: CT_DIAGNOSIS_FEATURES.map((f) => ({ ...f })),
+                verdict: out.entryVsExit.verdict,
+                losersTouched1RPct: out.entryVsExit.losersTouched1RPct,
+                losersNeverProfitablePct: out.entryVsExit.losersNeverProfitablePct,
+              });
+            for (const sig of ctDiagnosisSignatures(spec, out)) ctRecordTest(ct, sig);
+            answer({ ...out, multipleTesting: ctTestLedger(ct) });
           } else if (use.name === "screen_rule") {
             if (session.screens >= policy.maxScreens)
               throw new Error(`이 세션의 screen_rule 한도 ${policy.maxScreens}회를 모두 썼습니다.`);
@@ -1030,7 +1329,15 @@ export async function advanceCTResearch(
             );
             anchor(...out.sampleTrades.map((t: { entryAt: number }) => t.entryAt).filter((at: number) => at < c.trainingToMs));
             ctRecordTest(ct, ctTestSignature(spec.stages, !!spec.entry.entryWindows?.length));
-            answer({ ...out, freedom: ctFreedom(spec), multipleTesting: ctTestLedger(ct) });
+            let screenId: string | undefined;
+            if (policy.traderTools) {
+              const hash = await ctHash(executableCT(spec));
+              screenId = (await ctHash({ run: job.id, hash })).slice(0, 16);
+              const screens = (ct.screens ??= {});
+              screens[screenId] ??= { screenId, session: session.index, at: new Date().toISOString(), hash, spec, trades: out.training.trades };
+              for (const key of Object.keys(screens).slice(0, Math.max(0, Object.keys(screens).length - 30))) delete screens[key];
+            }
+            answer({ ...out, ...(screenId ? { screenId } : {}), freedom: ctFreedom(spec), multipleTesting: ctTestLedger(ct) });
           } else if (use.name === "submit_candidates") {
             const parsed = ctSubmissionSchema.parse(use.input);
             const left = c.policy.maxCandidates - submittedCount(ct);
@@ -1285,7 +1592,21 @@ export async function advanceCTResearch(
       sessions: (ct.sessions ?? []).map((s) => ({ session: s.index + 1, turns: s.turns, toolCalls: s.toolCalls, screens: s.screens, status: s.status, endReason: s.endReason, submission: s.submission })),
       candidatesSubmitted: submittedCount(ct),
       // Distinct hypothesis tests (feature · timeframe · direction · unit combinations; threshold variants count once) and the candidate's free numbers.
-      multipleTesting: { ...ctTestLedger(ct), candidateFreedom: ctFreedom(selected.spec) },
+      multipleTesting: {
+        ...ctTestLedger(ct),
+        candidateFreedom: ctFreedom(selected.spec),
+        // Stage 3: tests earlier runs on this market already made (the playbook's ledger) — this run's result survived all of them, not just its own.
+        ...(ct.playbook ? { earlierRunsOnThisMarket: { runs: ct.playbook.priorRuns, hypothesisTests: ct.playbook.cumulativeTests }, cumulativeHypothesisTests: ctTestLedger(ct).hypothesisTests + ct.playbook.cumulativeTests } : {}),
+      },
+      ...(ct.playbook
+        ? {
+            playbook: ct.playbook.entries.map((e) => ({ mechanism: e.mechanism, structure: e.structure, grade: e.grade, reason: e.reason, comparable: e.comparable })),
+            labels: Object.values(ct.labels ?? {}).map((l) => ({ params: l.params, events: l.events, eventsPerDay: l.eventsPerDay })),
+            contrasts: (ct.contrasts ?? []).map((x) => ({ contrastId: x.contrastId, features: x.features, topLift: x.topLift, summary: x.summary })),
+            charts: { viewed: ct.charts?.length ?? 0, blindSets: Object.values(ct.blinds ?? {}).map((b) => ({ blindId: b.blindId, graded: b.graded ?? null })) },
+            diagnoses: (ct.diagnoses ?? []).map((d) => ({ diagnosisId: d.diagnosisId, source: d.source, verdict: d.verdict })),
+          }
+        : {}),
       rejectedAtTraining: (ct.screened ?? []).map((t) => ({ id: t.id, rule: ctRuleText(t.candidate.spec), training: ctBrief(t.training), reasons: t.reasons })),
       developmentTrials: ct.trials.map((t) => ({ id: t.id, rule: ctRuleText(t.spec), development: ctBrief(t.development), reasons: t.reasons })),
       mapping: selected.mapping,
@@ -1296,7 +1617,7 @@ export async function advanceCTResearch(
       ct.riskReview = await ask(
         roles.risk,
         reviewSchema,
-        `Independent critical CT review; reject source/rule mismatch, discretion falsely claimed implemented, leakage, unconfirmed pivots, incomplete higher bars, selection/survivorship bias, unrealistic costs/fills. OHLCV cannot prove orderbook liquidity; current sources may postdate history; require forward paper evidence before live. Check EVERY mapping against its actual evidence (web source text or the training-only query it cites: same feature and timeframe) and the rules. Judge data snooping and multiple testing explicitly: how many queries, hypotheses and candidates preceded this rule (research.multipleTesting.hypothesisTests counts the distinct condition combinations tested; threshold variants of one combination count once), whether the effect rests on few events or months, and whether the development pass could be luck given that search. The rule language now includes time windows, VWAP/previous-day/opening-range levels, ATR units and managed exits, so the search space is larger: weigh the development result against the number of tests, treat candidateFreedom (conditions + free exit/window numbers) as a cost of complexity, and prefer the simpler rule. Numeric gates binding. No tuning on final. ${JSON.stringify({ contract: c, sources: ct.sources.filter((s) => cited.has(s.id)), approaches: ct.approaches, candidate: { ...selected, training: ctSummary(selected.training), development: ctSummary(selected.development), developmentStability: ctStability(selected.development), stress: ctSummary(selected.stress), delayed: ctSummary(selected.delayed) }, ruleText: ctRuleText(selected.spec), trials: ct.trials.length, research })}`,
+        `Independent critical CT review; reject source/rule mismatch, discretion falsely claimed implemented, leakage, unconfirmed pivots, incomplete higher bars, selection/survivorship bias, unrealistic costs/fills. OHLCV cannot prove orderbook liquidity; current sources may postdate history; require forward paper evidence before live. Check EVERY mapping against its actual evidence (web source text or the training-only query it cites: same feature and timeframe) and the rules. Judge data snooping and multiple testing explicitly: how many queries, hypotheses and candidates preceded this rule (research.multipleTesting.hypothesisTests counts the distinct condition combinations tested; threshold variants of one combination count once), whether the effect rests on few events or months, and whether the development pass could be luck given that search. The rule language now includes time windows, VWAP/previous-day/opening-range levels, ATR units and managed exits, so the search space is larger: weigh the development result against the number of tests, treat candidateFreedom (conditions + free exit/window numbers) as a cost of complexity, and prefer the simpler rule. If research.playbook is present: say whether this rule is a variant of a mechanism the playbook already shows as rejected, and whether the development result is still meaningful given the cumulative number of hypothesis tests (this run plus earlier runs on this market: multipleTesting.cumulativeHypothesisTests); read the candidate's selfRebuttal against the data (queries, contrast cells, charts, blind-set results, diagnoses) and flag any "excluded: yes" the data does not support. Numeric gates binding. No tuning on final. ${JSON.stringify({ contract: c, sources: ct.sources.filter((s) => cited.has(s.id)), approaches: ct.approaches, candidate: { ...selected, training: ctSummary(selected.training), development: ctSummary(selected.development), developmentStability: ctStability(selected.development), stress: ctSummary(selected.stress), delayed: ctSummary(selected.delayed) }, ruleText: ctRuleText(selected.spec), trials: ct.trials.length, research })}`,
       );
       if (!ct.riskReview.approved || ct.riskReview.blockers.length) {
         done("독립 위험 검토 반려 · 통과 전략 없음");
@@ -1394,7 +1715,7 @@ export async function advanceCTResearch(
       ct.finalReview = await ask(
         roles.evidence,
         reviewSchema,
-        `Independent frozen CT evidence review. No revisions permitted after final exposure. Server gates binding. Audit repeated selection, sample size, dependence, costs and execution limits. Judge data snooping and multiple testing: weigh the final result against the number of training queries, hypotheses and candidates searched before freezing (research.multipleTesting.hypothesisTests = distinct condition combinations tested; the vocabulary is now large, so a single positive final is weaker evidence than before) and against the candidate's free numbers (multipleTesting.candidateFreedom). Do not claim unused historical data across training/LLM pretraining or original-source dates. Forward paper verification required for live. ${JSON.stringify({ contract: c, hash: ct.frozenHash, trials: ct.trials.length, candidate: { spec: selected.spec, hypothesis: selected.hypothesis, mapping: selected.mapping, training: ctSummary(selected.training), development: ctSummary(selected.development), sensitivity: selected.sensitivity, developmentStability: ctStability(selected.development) }, final: ctSummary(ct.final!), finalStability: ctStability(ct.final!), stress: ctSummary(ct.finalStress!), delay: ctSummary(ct.finalDelayed!), research })}`,
+        `Independent frozen CT evidence review. No revisions permitted after final exposure. Server gates binding. Audit repeated selection, sample size, dependence, costs and execution limits. Judge data snooping and multiple testing: weigh the final result against the number of training queries, hypotheses and candidates searched before freezing (research.multipleTesting.hypothesisTests = distinct condition combinations and examined cells; the vocabulary is now large, so a single positive final is weaker evidence than before; when present, multipleTesting.cumulativeHypothesisTests adds the tests earlier runs on this market made) and against the candidate's free numbers (multipleTesting.candidateFreedom). If research.playbook is present, say whether this rule is a variant of an idea the playbook already shows as rejected, and whether the candidate's selfRebuttal holds against the final evidence. Do not claim unused historical data across training/LLM pretraining or original-source dates. Forward paper verification required for live. ${JSON.stringify({ contract: c, hash: ct.frozenHash, trials: ct.trials.length, candidate: { spec: selected.spec, hypothesis: selected.hypothesis, mapping: selected.mapping, training: ctSummary(selected.training), development: ctSummary(selected.development), sensitivity: selected.sensitivity, developmentStability: ctStability(selected.development) }, final: ctSummary(ct.final!), finalStability: ctStability(ct.final!), stress: ctSummary(ct.finalStress!), delay: ctSummary(ct.finalDelayed!), research })}`,
       );
       done(
         ct.finalReview.approved && !ct.finalReview.blockers.length
@@ -1406,6 +1727,14 @@ export async function advanceCTResearch(
     }
   } finally {
     ct.activeMs += Date.now() - started;
+    // A finished run goes into the playbook (ideas and ledger) exactly once; a failure never undoes the run.
+    if (ct.phase === "done" && !ct.playbookRecorded) {
+      try {
+        ct.playbookRecorded = { at: new Date().toISOString(), entries: await recordCTPlaybook(job) };
+      } catch (error) {
+        ct.tools.push({ id: await ctHash({ playbook: String(error), at: Date.now() }), name: "playbook_record", input: {}, at: new Date().toISOString(), status: "failed", error: error instanceof Error ? error.message : String(error) });
+      }
+    }
   }
 }
 export type CTPackage = {

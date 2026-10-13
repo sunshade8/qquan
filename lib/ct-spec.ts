@@ -258,21 +258,42 @@ export const CT_POLICY = Object.freeze({
   stagnation: 3,
   reserveFraction: 0.35,
   // Designer research session (2026-10-13): one Opus tool loop per design/reflect step.
-  sessionMaxTurns: 12,
-  sessionMaxToolCalls: 24,
+  // 2026-10-14 (stage 3, trader tools): 16 turns, 40 tool calls, up to 32 chart images, 2 blind sets.
+  sessionMaxTurns: 16,
+  sessionMaxToolCalls: 40,
   sessionMaxScreens: 6,
   maxSessions: 3,
+  sessionMaxCharts: 32,
+  sessionMaxBlindSets: 2,
+  /** 1 = the designer has label_moves / contrast_moves / view_charts / grade_blind / diagnose_trades and the playbook. */
+  traderTools: 1,
 });
 /** Fields added after contracts were first frozen; older contracts lack them. */
-type CTPolicyLater = "minMeanDailyReturnPct" | "sessionMaxTurns" | "sessionMaxToolCalls" | "sessionMaxScreens" | "maxSessions";
-/** The session limits a contract runs under; contracts frozen before they existed get today's. */
+type CTPolicyLater =
+  | "minMeanDailyReturnPct"
+  | "sessionMaxTurns"
+  | "sessionMaxToolCalls"
+  | "sessionMaxScreens"
+  | "maxSessions"
+  | "sessionMaxCharts"
+  | "sessionMaxBlindSets"
+  | "traderTools";
+/**
+ * The session limits a contract runs under. A contract frozen before a limit existed gets the value
+ * of the stage that introduced it (never today's higher one): sessions that started with 12 turns,
+ * 24 tool calls and no trader tools keep exactly that.
+ */
 export function ctSessionPolicy(contract: Pick<CTContract, "policy">) {
   const p = contract.policy;
   return {
-    maxTurns: p.sessionMaxTurns ?? CT_POLICY.sessionMaxTurns,
-    maxToolCalls: p.sessionMaxToolCalls ?? CT_POLICY.sessionMaxToolCalls,
-    maxScreens: p.sessionMaxScreens ?? CT_POLICY.sessionMaxScreens,
-    maxSessions: p.maxSessions ?? CT_POLICY.maxSessions,
+    maxTurns: p.sessionMaxTurns ?? 12,
+    maxToolCalls: p.sessionMaxToolCalls ?? 24,
+    maxScreens: p.sessionMaxScreens ?? 6,
+    maxSessions: p.maxSessions ?? 3,
+    maxCharts: p.sessionMaxCharts ?? 0,
+    maxBlindSets: p.sessionMaxBlindSets ?? 0,
+    /** Stage 3: the trader tools, the playbook and the self-rebuttal exist only on contracts that carry the flag. */
+    traderTools: (p.traderTools ?? 0) === 1,
   };
 }
 export type CTContract = {

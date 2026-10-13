@@ -8,6 +8,7 @@ import { slotById, SLOTS, assertTradable } from "./trade-slots.ts";
 import { researchRequestSchema, researchCalendar, discoveryPlanSchema, validateDiscoveryPlan } from "./strategy-discovery.ts";
 import { discoverResearchUniverse } from "@/lib/strategy-discovery-data";
 import { shiftDate } from "./market-clock.ts";
+import { designerRequestChars } from "./designer-request-size.ts";
 import { lastCompleteDate, loadRelaySessions } from "@/lib/relay-data";
 import {
   designerTurn,
@@ -388,7 +389,8 @@ async function ask<T extends z.ZodType>(job: GenerationJob, role: GenerationRole
 async function askTurn(job: GenerationJob, role: GenerationRole, request: DesignerTurnRequest, at: { session: number; turn: number }, label: string) {
   const key = await sha256({ ct: "design-session-turn", run: job.id, role, session: at.session, turn: at.turn, prev: await sha256(request) });
   const model = researchModel(role, job.recovery?.failures);
-  const chars = JSON.stringify(request).length;
+  // Base64 chart images count as the tokens they cost, not as 4 characters of text each.
+  const chars = designerRequestChars(request);
   return paidCall<DesignerTurn>(job, role, key,
     limits => ((chars / 2) * model.input * 1.25 + limits.maxOutputTokens * model.output) / 1_000_000,
     (limits, onUsage) => designerTurn(job.ownerId, role, request, { failures: job.recovery?.failures, ct: true, ...limits, onUsage }),

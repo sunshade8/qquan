@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { designerRequestChars } from "./designer-request-size.ts";
 import type Anthropic from "@anthropic-ai/sdk";
 import { zodTextFormat } from "openai/helpers/zod";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
@@ -210,7 +211,7 @@ export async function designerTurn(
   const limits = researchCallLimits(role);
   const maxOutputTokens = options.maxOutputTokens ?? limits.maxOutputTokens;
   const effort = options.effort ?? limits.effort;
-  const meter = usageMeter(JSON.stringify(request.messages), options);
+  const meter = usageMeter("x".repeat(designerRequestChars(request.messages)), options);
   let abort: (() => void) | undefined;
   try {
     await meter.emit(true, true);

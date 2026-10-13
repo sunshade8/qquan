@@ -1,6 +1,13 @@
 import { z } from "zod";
 import { ctCandidateSchema, ctSubmissionSchema, type CTResearch } from "./ct-research.ts";
 import { ctQuerySchema, ctReadBarsSchema } from "./ct-design-tools.ts";
+import {
+  ctContrastMovesSchema,
+  ctDiagnoseTradesSchema,
+  ctGradeBlindSchema,
+  ctLabelMovesSchema,
+  ctViewChartsSchema,
+} from "./ct-trader-tools.ts";
 import { ctEngineSchema, ctSpecSchema } from "./ct-spec.ts";
 const time = z.number().int().nonnegative();
 export const ctBarSchema = z.object({
@@ -171,9 +178,47 @@ export const CT_TOOLS = {
         developmentToMs: time,
         rules: ctCandidateSchema.shape.spec,
         diagnostics: z.array(z.string()),
-        netReturnPct: z.number().finite(),
+        netReturnPct: z.number().finite().nullable(),
+        overlaps: z.boolean().optional(),
       }),
     ),
+  },
+  // Stage 3 trader tools: training split only, server computed, free. Images never travel in a tool
+  // output (they are stored in ct_chart_images); outputs stay small and cacheable.
+  label_moves: {
+    phases: ["design", "reflect"],
+    input: z.object({ params: ctLabelMovesSchema, from: time, to: time, dataHash: z.string() }).strict(),
+    output: z.object({ labelId: z.string(), events: z.number().int().nonnegative(), positiveMoments: z.number().int().nonnegative() }).passthrough(),
+  },
+  contrast_moves: {
+    phases: ["design", "reflect"],
+    input: z.object({ request: ctContrastMovesSchema, params: ctLabelMovesSchema, from: time, to: time, dataHash: z.string() }).strict(),
+    output: z.object({ contrastId: z.string(), labelId: z.string(), events: z.number().int().nonnegative() }).passthrough(),
+  },
+  view_charts: {
+    phases: ["design", "reflect"],
+    input: z.object({ request: ctViewChartsSchema, from: time, to: time, dataHash: z.string() }).strict(),
+    output: z
+      .object({
+        charts: z.array(z.object({ n: z.number().int().positive(), chartId: z.string(), symbol: z.string(), at: time, group: z.enum(["positive", "control", "other"]) }).passthrough()),
+        blindId: z.string().nullable(),
+      })
+      .passthrough(),
+  },
+  grade_blind: {
+    phases: ["design", "reflect"],
+    input: z.object({ request: ctGradeBlindSchema, from: time, to: time, dataHash: z.string() }).strict(),
+    output: z.object({ correct: z.number().int(), total: z.number().int(), accuracyPct: z.number(), pValue: z.number() }).passthrough(),
+  },
+  diagnose_trades: {
+    phases: ["design", "reflect"],
+    input: z.object({ request: ctDiagnoseTradesSchema, from: time, to: time, dataHash: z.string() }).strict(),
+    output: z.object({ diagnosisId: z.string(), trades: z.number().int().nonnegative() }).passthrough(),
+  },
+  playbook_summary: {
+    phases: ["data"],
+    input: z.object({ market: z.enum(["stock", "crypto"]), symbols: z.array(z.string()), trainingToMs: time, toMs: time, ownerScope: z.literal(true) }).strict(),
+    output: z.object({ entries: z.array(z.unknown()), cumulativeTests: z.number().int().nonnegative(), priorRuns: z.number().int().nonnegative(), omitted: z.number().int().nonnegative() }).passthrough(),
   },
   search_public_approaches: {
     phases: ["sources"],
@@ -305,6 +350,38 @@ export function assertCTTool(name: string, input: unknown, ct: CTResearch) {
       )
     )
       throw new Error("CT 1분봉 열람은 서버가 제공한 학습 구간 시각만 허용");
+  }
+  if (
+    name === "label_moves" ||
+    name === "contrast_moves" ||
+    name === "view_charts" ||
+    name === "grade_blind" ||
+    name === "diagnose_trades"
+  ) {
+    const data = value as { from: number; to: number; dataHash: string };
+    if (data.dataHash !== ct.dataHash || !training(data.from, data.to))
+      throw new Error("CT 설계 도구는 학습 구간만 허용");
+  }
+  if (name === "contrast_moves") {
+    const data = value as z.infer<typeof CT_TOOLS.contrast_moves.input>;
+    if (!ct.labels?.[data.request.labelId]) throw new Error("알 수 없는 labelId: label_moves를 먼저 호출하세요");
+  }
+  if (name === "view_charts") {
+    const data = value as z.infer<typeof CT_TOOLS.view_charts.input>;
+    const issued = new Set([...(ct.anchors ?? []), ...Object.values(ct.chartAnchors ?? {}).map((a) => a.at)]);
+    if (data.request.anchors.some((at) => !issued.has(at) || at > ct.contract.trainingToMs))
+      throw new Error("CT 차트는 서버가 제공한 학습 구간 시각만 허용");
+  }
+  if (name === "grade_blind") {
+    const data = value as z.infer<typeof CT_TOOLS.grade_blind.input>;
+    if (!ct.blinds?.[data.request.blindId]) throw new Error("알 수 없는 blindId");
+  }
+  if (name === "diagnose_trades") {
+    const data = value as z.infer<typeof CT_TOOLS.diagnose_trades.input>;
+    const { screenId, candidateId } = data.request;
+    if (screenId && !ct.screens?.[screenId]) throw new Error("알 수 없는 screenId: screen_rule 결과의 screenId를 쓰세요");
+    if (candidateId && ![...ct.trials.map((t) => t.id), ...(ct.screened ?? []).map((t) => t.id)].includes(candidateId))
+      throw new Error("알 수 없는 후보 id");
   }
   if (name === "collect_market_data") {
     const data = value as z.infer<typeof CT_TOOLS.collect_market_data.input>;
