@@ -93,14 +93,6 @@ export function ctBinomialUpperP(n: number, k: number, p = 0.5) {
   for (let x = k; x <= n; x++) total += Math.exp(logChoose(n, x) + x * Math.log(p) + (n - x) * Math.log(1 - p));
   return Math.min(1, total);
 }
-const normalCdf = (z: number) => 0.5 * (1 + erf(z / Math.SQRT2));
-function erf(x: number) {
-  const s = Math.sign(x),
-    a = Math.abs(x),
-    t = 1 / (1 + 0.3275911 * a),
-    y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-a * a);
-  return s * y;
-}
 
 /* -------------------------------------------------------------- label_moves */
 
@@ -464,8 +456,14 @@ export function ctContrastMoves(
     const pcols = ctFeatureColumns(conditions, run.rows, events, contract, run.symbol);
     const ccols = ctFeatureColumns(conditions, run.rows, controls, contract, run.symbol);
     conditions.forEach((_, f) => {
-      for (const v of pcols[f]) (Number.isFinite(v) ? pos[f].push(v) : posMissing[f]++);
-      for (const v of ccols[f]) (Number.isFinite(v) ? ctl[f].push(v) : ctlMissing[f]++);
+      for (const v of pcols[f]) {
+        if (Number.isFinite(v)) pos[f].push(v);
+        else posMissing[f]++;
+      }
+      for (const v of ccols[f]) {
+        if (Number.isFinite(v)) ctl[f].push(v);
+        else ctlMissing[f]++;
+      }
     });
   }
   const qs = [0.1, 0.25, 0.5, 0.75, 0.9] as const;

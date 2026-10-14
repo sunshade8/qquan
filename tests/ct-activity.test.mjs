@@ -105,3 +105,30 @@ test("truncation uses the recorded stop reason and allowance, not the role defau
   const retry = call({ maxOutputTokens: 32000, effort: "medium" });
   assert.equal(ctNow(job({ calls: [cut, retry] }), mergeCalls([cut, retry], null)).maxTokens, 32000);
 });
+
+import { traderSummary, toolDoing, sessionProgress } from "../lib/ct-activity.ts";
+import { CT_POLICY } from "../lib/ct-spec.ts";
+test("the progress view summarises the trader tools and names them while they run", () => {
+  assert.equal(traderSummary({}), null);
+  const summary = traderSummary({
+    labels: { a: { labelId: "a", session: 0, at: "", params: { k: 3, m: 1, horizon: "day_end", costMultiplier: 1 }, events: 40, positiveMoments: 900, eventsPerDay: 0.2 } },
+    contrasts: [{ contrastId: "c", labelId: "a", session: 0, at: "", from: 0, to: 1, features: [], topLift: { feature: "range_pct(10, 1m)", bin: "하위 20%", lift: 3.1 }, treeLeaves: 4, summary: "" }],
+    charts: [{ chartId: "x", session: 0, n: 1, symbol: "BTCUSDT", at: 1, group: "positive" }],
+    blinds: { b: { blindId: "b", session: 0, order: [], graded: { correct: 6, total: 8, accuracyPct: 75, pValue: 0.145 } } },
+    diagnoses: [{ diagnosisId: "d", source: "s", session: 0, at: "", features: [], verdict: "청산 문제 의심", losersTouched1RPct: 55, losersNeverProfitablePct: 20 }],
+  });
+  assert.equal(summary.events, 40);
+  assert.equal(summary.topLift.lift, 3.1);
+  assert.equal(summary.blindAccuracyPct, 75);
+  assert.equal(summary.blindP, 0.145);
+  assert.equal(summary.lastDiagnosis.losersTouched1RPct, 55);
+  assert.match(toolDoing({ name: "label_moves", input: { params: { k: 3, m: 1, horizon: "day_end" } } }), /거래할 가치/);
+  assert.match(toolDoing({ name: "view_charts", input: { request: { anchors: [1, 2], blind: true } } }), /블라인드/);
+  assert.match(toolDoing({ name: "diagnose_trades", input: {} }), /손실 원인/);
+  const ctWith = { contract: { policy: CT_POLICY }, sessions: [{ index: 0, turns: 3, toolCalls: 5, screens: 1, charts: 4 }], queries: [], tests: { signatures: {} } };
+  assert.match(sessionProgress(ctWith), /턴 3\/16 · 도구 5\/40/);
+  assert.match(sessionProgress(ctWith), /차트 4\/32/);
+  const old = { ...ctWith, contract: { policy: { ...CT_POLICY, traderTools: undefined, sessionMaxTurns: undefined, sessionMaxToolCalls: undefined, sessionMaxCharts: undefined } } };
+  assert.match(sessionProgress(old), /턴 3\/12 · 도구 5\/24/);
+  assert.doesNotMatch(sessionProgress(old), /차트/);
+});

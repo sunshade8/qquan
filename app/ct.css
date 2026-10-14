@@ -404,3 +404,20 @@
 @media (hover: hover) and (pointer: fine) {
   .ct-feed-details > summary:hover, .ct-trial > summary:hover { background: var(--panel-alt); }
 }
+
+/* Stage 3: trader tools summary, chart thumbnails and the read-only playbook */
+.ct-trader { display: grid; gap: var(--sp-3); }
+.ct-trader-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--sp-3); list-style: none; margin: 0; padding: 0; }
+.ct-trader-stats li { display: grid; gap: 2px; padding: var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-2, 8px); }
+.ct-trader-stats b { font-size: var(--fs-4, 1.15rem); }
+.ct-trader-stats small { color: var(--secondary); }
+.ct-thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: var(--sp-2); }
+.ct-thumb { display: grid; gap: 2px; text-decoration: none; color: inherit; }
+.ct-thumb img { width: 100%; height: auto; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+.ct-thumb small { color: var(--secondary); }
+.ct-playbook-filters { display: flex; flex-wrap: wrap; gap: var(--sp-3); margin: var(--sp-2) 0; }
+.ct-playbook { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp-2); }
+.ct-playbook li { display: grid; gap: 2px; padding: var(--sp-2) 0; border-top: 1px solid var(--line); }
+.ct-grade { display: inline-block; width: fit-content; padding: 0 var(--sp-2); border-radius: 999px; border: 1px solid var(--line); font-size: var(--fs-1, 0.8rem); color: var(--secondary); margin-right: var(--sp-1, 4px); }
+.ct-grade-passed_final, .ct-grade-adopted_daily { color: var(--positive, #0f9d58); border-color: currentColor; }
+.ct-grade-failed_final, .ct-grade-development_failed, .ct-grade-screen_failed { color: var(--amber, #b45309); border-color: currentColor; }

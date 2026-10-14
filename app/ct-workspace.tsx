@@ -10,7 +10,7 @@ import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw";
 import TriangleAlert from "lucide-react/dist/esm/icons/triangle-alert";
 import X from "lucide-react/dist/esm/icons/x";
 import type { GenerationJob, ResearchMeter } from "@/lib/strategy-generation-types";
-import { mergeCalls, pickMeter } from "@/lib/ct-activity";
+import { mergeCalls, pickMeter, traderSummary } from "@/lib/ct-activity";
 import type { ActiveGeneration } from "@/lib/strategy-generation-store";
 import type { CTPackage } from "@/lib/ct-research-store";
 import type { CTBar, CTResult } from "@/lib/ct-engine";
@@ -217,13 +217,38 @@ const Sources = memo(
 
 /** The designer's research: sessions, every training query, rejected hypotheses and training-gate rejections. */
 const ResearchSessions = memo(
-  function ResearchSessions({ ct }: { ct: CTResearch }) {
+  function ResearchSessions({ ct, jobId }: { ct: CTResearch; jobId: string }) {
     const sessions = ct.sessions ?? [];
     if (!sessions.length && !ct.sourceNote) return null;
+    const trader = traderSummary(ct);
+    const ledger = ct.tests ? Object.keys(ct.tests.signatures).length : 0;
     return (
       <section className="ct-section" aria-labelledby="ct-sessions-h">
         <h2 className="ui-title" id="ct-sessions-h">설계 세션 <span className="ct-count ui-num">{sessions.length}</span></h2>
         {ct.sourceNote ? <p className="ui-sub">{ct.sourceNote}</p> : null}
+        {trader ? (
+          <div className="ct-trader" aria-label="단타 고수 도구 요약">
+            <ul className="ct-trader-stats">
+              <li><b className="ui-num">{trader.events}</b> 이벤트 <small>라벨 {trader.labelSets}세트{trader.lastLabel ? ` · 하루 ${trader.lastLabel.eventsPerDay}건` : ""}</small></li>
+              <li><b className="ui-num">{trader.topLift ? `×${trader.topLift.lift}` : "—"}</b> 최대 lift <small>{trader.topLift ? `${trader.topLift.feature} · ${trader.topLift.bin}` : "contrast 미실행"}</small></li>
+              <li><b className="ui-num">{trader.chartsViewed}</b> 본 차트 <small>블라인드 {trader.blindSets}세트</small></li>
+              <li><b className="ui-num">{trader.blindAccuracyPct === null ? "—" : `${trader.blindAccuracyPct}%`}</b> 보정 정답률 <small>{trader.blindP === null ? "미채점" : `p=${trader.blindP}`}</small></li>
+              <li><b className="ui-num">{trader.lastDiagnosis ? `${trader.lastDiagnosis.losersTouched1RPct}% / ${trader.lastDiagnosis.losersNeverProfitablePct}%` : "—"}</b> 청산 / 진입 문제 <small>손실 거래 중 +1R 도달 / 수익권 미도달{trader.lastDiagnosis ? "" : " · 복기 미실행"}</small></li>
+              <li><b className="ui-num">{ledger}</b> 가설 검정 <small>{ct.playbook ? `이전 연구 ${ct.playbook.cumulativeTests}회 별도` : "누적 장부"}</small></li>
+            </ul>
+            {ct.charts?.length ? (
+              <div className="ct-thumbs" aria-label="설계자가 본 차트">
+                {ct.charts.slice(-12).map((c) => (
+                  <a key={c.chartId} className="ct-thumb" href={`/api/invest/ct?chartImage=${c.chartId}&id=${jobId}`} target="_blank" rel="noreferrer" title={`차트 #${c.n} · ${c.symbol}${c.blind ? " · 블라인드" : ""}`}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={`/api/invest/ct?chartImage=${c.chartId}&id=${jobId}`} alt={`차트 ${c.n} ${c.symbol}`} loading="lazy" />
+                    <small>{c.blind ? "블라인드" : c.group === "positive" ? "이벤트" : c.group === "control" ? "대조군" : "조회 시점"} · #{c.n}</small>
+                  </a>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         {sessions.map((s) => {
           const queries = (ct.queries ?? []).filter((q) => q.session === s.index);
           const screened = (ct.screened ?? []).filter((t) => t.session === s.index);
@@ -272,8 +297,79 @@ const ResearchSessions = memo(
       </section>
     );
   },
-  (a, b) => JSON.stringify(a.ct.sessions) === JSON.stringify(b.ct.sessions) && a.ct.queries?.length === b.ct.queries?.length && a.ct.screened?.length === b.ct.screened?.length,
+  (a, b) =>
+    a.jobId === b.jobId &&
+    JSON.stringify(a.ct.sessions) === JSON.stringify(b.ct.sessions) &&
+    a.ct.queries?.length === b.ct.queries?.length &&
+    a.ct.screened?.length === b.ct.screened?.length &&
+    JSON.stringify(traderSummary(a.ct)) === JSON.stringify(traderSummary(b.ct)) &&
+    a.ct.charts?.length === b.ct.charts?.length,
 );
+
+type PlaybookItem = { id: string; market: string; timeframe: string; comparable: boolean; mechanism: string; structure: string; grade: string; reason: string; measured: string; run: string; source: string; detail?: Record<string, number | string> };
+const GRADE_TEXT: Record<string, string> = {
+  rejected_in_training: "학습 기각",
+  screen_failed: "학습 게이트 탈락",
+  development_failed: "개발 탈락",
+  passed_final: "최종 통과",
+  failed_final: "최종 탈락",
+  adopted_daily: "일봉 채택",
+};
+/** Read-only playbook of one market: what earlier runs tried and how each ended, with filters. Numbers follow the same leak rule the designer gets. */
+const PlaybookPanel = memo(function PlaybookPanel({ market }: { market: CTMarket }) {
+  const [data, setData] = useState<{ entries: PlaybookItem[]; runs: Array<{ runId: string; tests: number; timeframe: string; note: string; at: string }>; cumulativeTests: number } | null>(null);
+  const [error, setError] = useState("");
+  const [grade, setGrade] = useState("all");
+  const [timeframe, setTimeframe] = useState("all");
+  const [query, setQuery] = useState("");
+  useEffect(() => {
+    let live = true;
+    fetch(`/api/invest/ct?playbook=1&market=${market}`, { cache: "no-store" })
+      .then(async (r) => {
+        const body = (await r.json()) as typeof data & { error?: string };
+        if (!live) return;
+        if (!r.ok || !body || (body as { error?: string }).error) setError((body as { error?: string } | null)?.error ?? "플레이북을 불러오지 못했습니다");
+        else setData(body);
+      })
+      .catch(() => live && setError("플레이북을 불러오지 못했습니다"));
+    return () => {
+      live = false;
+    };
+  }, [market]);
+  const shown = (data?.entries ?? []).filter((e) => e.market === market && (grade === "all" || e.grade === grade) && (timeframe === "all" || e.timeframe === timeframe) && (!query.trim() || `${e.mechanism} ${e.structure} ${e.reason}`.toLowerCase().includes(query.trim().toLowerCase())));
+  return (
+    <section className="ct-section" aria-labelledby="ct-playbook-h">
+      <details className="ui-disclosure">
+        <summary id="ct-playbook-h">
+          플레이북 · {market === "stock" ? "주식" : "코인"}
+          <small className="ui-num">{data ? `${data.entries.length}개 항목 · 이전 단타 연구 가설 검정 ${data.cumulativeTests}회` : "불러오는 중"}</small>
+        </summary>
+        <div className="ui-disclosure-body ui-korean">
+          <p className="ui-sub">연구가 끝날 때마다 기각·탈락·통과한 아이디어를 시장별로 쌓습니다. 설계자는 이 목록(메커니즘과 결과 등급)을 보고 시작하고, 최종 구간 성과 수치는 어디에도 저장되지 않습니다. 일봉 항목은 단타(1분봉)와 직접 비교할 수 없습니다.</p>
+          {error ? <p role="alert" className="ct-error">{error}</p> : null}
+          <div className="ct-playbook-filters">
+            <label>등급 <select value={grade} onChange={(e) => setGrade(e.target.value)}><option value="all">전체</option>{Object.entries(GRADE_TEXT).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label>
+            <label>주기 <select value={timeframe} onChange={(e) => setTimeframe(e.target.value)}><option value="all">전체</option><option value="1m">1분봉(단타)</option><option value="daily">일봉(직접 비교 불가)</option></select></label>
+            <label>검색 <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="메커니즘·구조·사유" /></label>
+          </div>
+          <ul className="ct-playbook">
+            {shown.map((e) => (
+              <li key={e.id}>
+                <b>{e.mechanism}</b>
+                <span className={`ct-grade ct-grade-${e.grade}`}>{GRADE_TEXT[e.grade] ?? e.grade}</span>
+                {!e.comparable ? <span className="ct-grade">단타와 직접 비교 불가</span> : null}
+                <small className="ui-num">{e.structure}</small>
+                <span>{e.reason}</span>
+                <small className="ui-num">{e.measured} · 실행 {e.run}{e.detail ? ` · ${Object.entries(e.detail).map(([k, v]) => `${k} ${v}`).join(" · ")}` : ""}</small>
+              </li>
+            ))}
+            {data && !shown.length ? <li>조건에 맞는 항목이 없습니다.</li> : null}
+          </ul>
+        </div>
+      </details>
+    </section>
+  );
+});
 
 /** Chart evidence for any candidate (the latest by default); the frozen final result only belongs to the latest. */
 function TradeEvidencePanel({
@@ -931,7 +1027,8 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
         </section>
       ) : null}
 
-      {cj ? <ResearchSessions ct={cj.ct} /> : null}
+      {cj ? <ResearchSessions ct={cj.ct} jobId={cj.id} /> : null}
+      <PlaybookPanel market={market} />
 
       {cj ? <TrialHistory trials={cj.ct.trials} /> : null}
 

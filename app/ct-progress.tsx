@@ -181,6 +181,13 @@ export function describeTool(t: CTToolTrace) {
     case "query_conditional_returns": return `조건부 수익 조회 · ${queryFeatures(i)}`;
     case "read_bars": return `학습 1분봉 열람 · ${((i.request as { anchors?: unknown[] } | undefined)?.anchors?.length ?? 0)}개 시각`;
     case "screen_rule": return `학습 구간 사전 검사 · ${((i.spec as { name?: string } | undefined)?.name) ?? "후보"}`;
+    case "label_moves": return `움직임 라벨 · 목표 ${((i.params as { k?: number } | undefined)?.k ?? 3)}× 비용`;
+    case "contrast_moves": return `직전 특징 대조 · ${((i.request as { features?: unknown[] } | undefined)?.features?.length ?? 0)}개 특징`;
+    case "view_charts": return `차트 열람 · ${((i.request as { anchors?: unknown[]; blind?: boolean } | undefined)?.anchors?.length ?? 0)}장${(i.request as { blind?: boolean } | undefined)?.blind ? " · 블라인드" : ""}`;
+    case "grade_blind": return "블라인드 채점";
+    case "diagnose_trades": return "손실 거래 복기";
+    case "playbook_summary": return "플레이북 조회";
+    case "playbook_record": return "플레이북 기록 실패";
     case "submit_candidates": {
       const n = ((i.submission as { candidates?: unknown[] } | undefined)?.candidates?.length) ?? 0;
       return n ? `후보 제출 · ${n}개` : "후보 0개 제출 · 우위 없음 보고";

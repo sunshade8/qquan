@@ -9,6 +9,7 @@
 import type { GenerationJob, ResearchCall, ResearchMeter } from "./strategy-generation-types.ts";
 import type { CTResearch, CTToolTrace } from "./ct-research.ts";
 import { RESEARCH_MODELS, researchMaxTokens, type CTRole, type GenerationRole } from "./strategy-generation-models.ts";
+import { ctSessionPolicy } from "./ct-spec.ts";
 
 export type CTCall = Omit<ResearchCall, "result" | "key">;
 export type CTActivityJob = Pick<
@@ -126,6 +127,18 @@ export function toolDoing(t: Pick<CTToolTrace, "name" | "input">) {
     case "query_conditional_returns": return `조건부 수익을 조회하고 있습니다 · ${queryFeatures(i)}`;
     case "read_bars": return `조회 이벤트 주변 학습 1분봉을 읽고 있습니다 · ${((i.request as { anchors?: unknown[] } | undefined)?.anchors?.length ?? 0)}개 시각`;
     case "screen_rule": return `후보 규칙을 학습 구간에서 사전 검사하고 있습니다 · ${((i.spec as { name?: string } | undefined)?.name) ?? "후보"}`;
+    case "label_moves": {
+      const p = (i.params ?? {}) as { k?: number; m?: number; horizon?: unknown };
+      return `거래할 가치가 있던 순간을 찾고 있습니다 · 목표 ${p.k ?? 3}× / 손절 ${p.m ?? 1}× 비용 · 보유 ${p.horizon === "day_end" || p.horizon === undefined ? "당일 끝까지" : `${p.horizon}봉`}`;
+    }
+    case "contrast_moves": return `이벤트 직전과 대조군의 차이를 재고 있습니다 · 특징 ${((i.request as { features?: unknown[] } | undefined)?.features?.length ?? 0)}개`;
+    case "view_charts": {
+      const r = (i.request ?? {}) as { anchors?: unknown[]; blind?: boolean };
+      return `차트 ${r.anchors?.length ?? 0}장을 그리고 있습니다${r.blind ? " · 블라인드 세트" : ""}`;
+    }
+    case "grade_blind": return "블라인드 차트 예측을 채점하고 있습니다";
+    case "diagnose_trades": return "학습 구간 거래의 손실 원인(진입 · 청산 · 시간대)을 분해하고 있습니다";
+    case "playbook_summary": return "이전 연구의 플레이북(기각된 아이디어와 누적 검정 수)을 불러오고 있습니다";
     case "submit_candidates": return "제출된 후보를 검증하고 있습니다";
     case "compile_strategy": return "후보 규칙을 컴파일하고 실행 가능성을 검사하고 있습니다";
     case "backtest": return `${backtestKind(i.kind)} 백테스트를 실행하고 있습니다`;
@@ -155,11 +168,40 @@ export function callDoing(role: GenerationRole | string, ct: CTResearch, call?: 
 export function sessionProgress(ct: CTResearch) {
   const s = ct.sessions?.at(-1);
   if (!s) return null;
-  const p = ct.contract.policy;
-  const max = { turns: p.sessionMaxTurns ?? 12, tools: p.sessionMaxToolCalls ?? 24, sessions: p.maxSessions ?? 3 };
+  const p = ctSessionPolicy(ct.contract);
+  const max = { turns: p.maxTurns, tools: p.maxToolCalls, sessions: p.maxSessions };
   const queries = (ct.queries ?? []).filter((q) => q.session === s.index).length;
   const tests = Object.keys(ct.tests?.signatures ?? {}).length;
-  return `세션 ${s.index + 1}/${max.sessions} · 턴 ${s.turns}/${max.turns} · 도구 ${s.toolCalls}/${max.tools} · 조회 ${queries} · 사전 검사 ${s.screens}${tests ? ` · 가설 검정 ${tests}회` : ""}`;
+  return `세션 ${s.index + 1}/${max.sessions} · 턴 ${s.turns}/${max.turns} · 도구 ${s.toolCalls}/${max.tools} · 조회 ${queries} · 사전 검사 ${s.screens}${p.traderTools ? ` · 차트 ${s.charts ?? 0}/${p.maxCharts}` : ""}${tests ? ` · 가설 검정 ${tests}회` : ""}`;
+}
+
+/**
+ * What the trader tools found, from numbers the job already holds: labelled events, the strongest
+ * contrast lift, charts viewed, the blind-set accuracy and the diagnoses' entry/exit verdict.
+ * Null when no trader tool ran (older runs).
+ */
+export function traderSummary(ct: Pick<CTResearch, "labels" | "contrasts" | "charts" | "blinds" | "diagnoses">) {
+  const labels = Object.values(ct.labels ?? {});
+  const contrasts = ct.contrasts ?? [];
+  const charts = ct.charts ?? [];
+  const blinds = Object.values(ct.blinds ?? {});
+  const diagnoses = ct.diagnoses ?? [];
+  if (!labels.length && !contrasts.length && !charts.length && !blinds.length && !diagnoses.length) return null;
+  const top = contrasts.map((c) => c.topLift).filter((x): x is NonNullable<typeof x> => Boolean(x)).sort((a, b) => Math.abs(Math.log(b.lift || 1)) - Math.abs(Math.log(a.lift || 1)))[0] ?? null;
+  const graded = blinds.filter((b) => b.graded);
+  const last = diagnoses.at(-1);
+  return {
+    labelSets: labels.length,
+    events: labels.reduce((s, l) => s + l.events, 0),
+    lastLabel: labels.at(-1) ?? null,
+    topLift: top,
+    chartsViewed: charts.length,
+    blindSets: blinds.length,
+    blindAccuracyPct: graded.length ? Math.round((graded.reduce((s, b) => s + b.graded!.correct, 0) / graded.reduce((s, b) => s + b.graded!.total, 0)) * 100) : null,
+    blindP: graded.length ? graded.at(-1)!.graded!.pValue : null,
+    diagnoses: diagnoses.length,
+    lastDiagnosis: last ? { verdict: last.verdict, losersTouched1RPct: last.losersTouched1RPct, losersNeverProfitablePct: last.losersNeverProfitablePct } : null,
+  };
 }
 
 /** Concrete context for the current phase, built from counts the job already has. */

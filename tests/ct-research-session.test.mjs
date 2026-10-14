@@ -95,6 +95,7 @@ const reply = (...content) => ({ content: [{ type: "thinking", thinking: "", sig
 const draft = (mutate = () => {}) => {
   const c = structuredClone(candidate());
   delete c.evidenceVersion;
+  c.selfRebuttal = [1, 2, 3].map((n) => ({ chance: `우연 가능성 ${n}: 표본이 적거나 한 시기에 몰렸을 수 있음`, check: `월별 분포와 비용 2배 결과로 ${n}번째 가능성을 확인함`, excluded: "partly" }));
   mutate(c);
   return c;
 };
@@ -192,7 +193,7 @@ test("Opus session turns: adaptive thinking at explicit high effort, auto tools,
       assert.ok(first.slice(1).every((b) => !b.cache_control));
       // strict grammar for the full DSL is refused by the API (400 "compiled grammar is too large"); the server validates instead.
       assert.equal(body.tools.some((t) => t.strict), false);
-      assert.deepEqual(body.tools.map((t) => t.name), ["query_conditional_returns", "read_bars", "screen_rule", "submit_candidates"]);
+      assert.deepEqual(body.tools.map((t) => t.name), ["label_moves", "contrast_moves", "view_charts", "grade_blind", "query_conditional_returns", "read_bars", "screen_rule", "diagnose_trades", "submit_candidates"]);
     }
     // No raw source text or raw price CSV in the designer's input.
     assert.ok(!requests[0].raw.includes(created.ct.sources[0].text));
@@ -209,7 +210,7 @@ test("Opus session turns: adaptive thinking at explicit high effort, auto tools,
     assert.equal(paid.length, 2);
     assert.equal(paid[1].usage.cache_read_input_tokens, 12000);
     assert.ok(paid.every((c) => c.result?.ref === "ct_session_messages"));
-    assert.equal(paid[0].label, "설계 세션 1 · 턴 1/12");
+    assert.equal(paid[0].label, "설계 세션 1 · 턴 1/16");
     // 9: zero candidates is a normal "no passing strategy" ending; the final split stays sealed.
     assert.equal(job.status, "completed");
     assert.equal(job.ct.passed, false);

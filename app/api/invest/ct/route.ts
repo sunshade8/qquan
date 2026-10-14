@@ -23,6 +23,7 @@ import { ctDb, loadCTData, ctDataPage, aggregateCT } from "@/lib/ct-data";
 import { ctRunnerOnline } from "@/lib/ct-trading";
 import { generationAvailability } from "@/lib/strategy-generation-llm";
 import { ctCostPreview } from "@/lib/ct-costs";
+import { ctPlaybookList } from "@/lib/ct-playbook";
 export const dynamic = "force-dynamic";
 const headers = (owner: string, request: Request) => ({
   "set-cookie": researchOwnerCookie(owner, request),
@@ -70,6 +71,21 @@ export async function GET(request: Request) {
             },
             { status: 404 },
           );
+    }
+    if (url.searchParams.has("playbook")) {
+      // Read-only list of what earlier runs on this market tried; windows reaching today count as overlapping, so no run's numbers leak.
+      return Response.json(await ctPlaybookList(owner, market), { headers: headers(owner, request) });
+    }
+    if (url.searchParams.has("chartImage")) {
+      // A chart the designer was shown (stored PNG). Owner-only, like every other research artifact.
+      const job = await getGenerationJob(url.searchParams.get("id") ?? "");
+      const chartId = url.searchParams.get("chartImage") ?? "";
+      if (!job?.ct || job.ownerId !== owner || !/^[a-f0-9]{16}$/.test(chartId))
+        return Response.json({ error: "차트 없음" }, { status: 404 });
+      const row = await ctDb().prepare("SELECT png FROM ct_chart_images WHERE run_id=? AND chart_id=?").bind(job.id, chartId).first<{ png: string }>();
+      if (!row) return Response.json({ error: "차트 없음" }, { status: 404 });
+      const bytes = Uint8Array.from(atob(row.png), (c) => c.charCodeAt(0));
+      return new Response(bytes, { headers: { "content-type": "image/png", "cache-control": "private, max-age=31536000, immutable" } });
     }
     if (url.searchParams.has("artifact")) {
       const job = await getGenerationJob(url.searchParams.get("id") ?? "");

@@ -641,7 +641,7 @@ export function validateCTCandidate(candidate: CTCandidate, ct: CTResearch) {
     throw new Error("수정의 부모·실측 문제·변경·기대 효과 필요");
   if (candidate.memoryIds.some((id) => !ct.memory.some((m) => m.id === id)))
     throw new Error("허용되지 않은 연구 기억");
-  if (ctSessionPolicy(ct.contract).traderTools) {
+  if (v2 && ctSessionPolicy(ct.contract).traderTools) {
     const r = candidate.selfRebuttal ?? [];
     if (r.length < 3) throw new Error("selfRebuttal: 이 규칙이 우연일 가장 그럴듯한 이유 3가지와, 각각을 데이터로 배제했는지(excluded)를 적어야 합니다");
   }
