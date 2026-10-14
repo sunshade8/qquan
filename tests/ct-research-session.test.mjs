@@ -178,7 +178,8 @@ test("Opus session turns: adaptive thinking at explicit high effort, auto tools,
     assert.equal(requests.length, 2);
     for (const { body } of requests) {
       assert.equal(body.model, "claude-opus-5-5");
-      assert.deepEqual(body.thinking, { type: "adaptive" });
+      // Stage 4 (traderTools = 2) asks for summarized thinking explicitly; the default shows none (docs/ct.md「설계자의 생각」).
+      assert.deepEqual(body.thinking, { type: "adaptive", display: "summarized" });
       assert.equal(body.output_config.effort, "high");
       for (const banned of ["temperature", "top_p", "top_k", "budget_tokens"]) assert.equal(banned in body, false, banned);
       assert.equal(JSON.stringify(body.thinking).includes("budget_tokens"), false);

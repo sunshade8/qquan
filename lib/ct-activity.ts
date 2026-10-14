@@ -345,3 +345,25 @@ export function ctTimeline(tools: CTToolTrace[], calls: CTCall[]): CTTimelineEnt
   ];
   return entries.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
 }
+
+/**
+ * The designer's thinking per model turn, from the session's stored messages (ct_session_messages — no separate store).
+ * Stage-4 sessions ask for summarized thinking, so the text is there; earlier sessions stored only the signature (the API
+ * default shows none), which is reported as an empty text and not guessed.
+ * `messages` are the session's rows in order (the first is the user's context message).
+ */
+export function sessionThinking(messages: Array<{ role: string; content: unknown }>) {
+  const out: Array<{ turn: number; text: string; tools: string[]; blocks: number }> = [];
+  for (const m of messages) {
+    if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
+    const blocks = m.content as Array<{ type?: string; thinking?: string; name?: string }>;
+    const thinking = blocks.filter((b) => b.type === "thinking");
+    out.push({
+      turn: out.length + 1,
+      text: thinking.map((b) => (b.thinking ?? "").trim()).filter(Boolean).join("\n\n"),
+      tools: blocks.filter((b) => b.type === "tool_use").map((b) => b.name ?? ""),
+      blocks: thinking.length,
+    });
+  }
+  return out;
+}

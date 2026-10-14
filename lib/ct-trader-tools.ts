@@ -32,7 +32,7 @@ import {
   type CTTrade,
 } from "./ct-engine.ts";
 import { buildDayLevels } from "./ct-levels.ts";
-import { dayInfo, describeLeaf, growTree, labelMoves, leafPath, leaves, type DayInfo, type MoveLabels } from "./ct-moves.ts";
+import { dayInfo, describeLeaf, growTree, labelMoves, leafPath, leaves, MOVE_REASON, type DayInfo, type MoveLabels } from "./ct-moves.ts";
 import { buildHigherSeries, higherWindow, type CTHigherSeries } from "./ct-timeframes.ts";
 import { ctConditionSchema, ctIsManagedExit, ctTestSignature, type CTCondition, type CTContract, type CTManagedExit, type CTSpec } from "./ct-spec.ts";
 import { ctTimeBucket } from "./ct-design-tools.ts";
@@ -236,7 +236,7 @@ export function ctMatchedControls(runs: CTLabelRun[], picks: Array<{ symbol: str
  * The label_moves report: how many moments were worth trading, how many separate events, and when
  * they cluster, each against the same dimension over all valid moments.
  */
-export function ctLabelMovesReport(params: CTLabelParams, runs: CTLabelRun[], contract: CTContract, labelId: string) {
+export function ctLabelMovesReport(params: CTLabelParams, runs: CTLabelRun[], contract: CTContract, labelId: string, options: { blindReserve?: boolean } = {}) {
   const days = trainingDays(contract);
   const costPct = ctRoundTripCostPct(contract, params.costMultiplier);
   const eventKeys = { time: [] as string[], vol: [] as string[], weekday: [] as string[], month: [] as string[] };
@@ -290,6 +290,27 @@ export function ctLabelMovesReport(params: CTLabelParams, runs: CTLabelRun[], co
   }));
   const seed = ctSeedOf(labelId);
   const controls = ctMatchedControls(runs, picked.map(({ run, i }) => ({ symbol: run.symbol, index: i })), contract, seed);
+  // Stage 4: reserve anchors for blind sets (16–32 charts need up to 16 events and 16 controls beyond the 12 + 12 above).
+  // Same representative-time rule; events are spread over the remaining timeline; controls are matched with another seed
+  // and never repeat a displayed control or one another.
+  let blindReserve: { anchors: CTMoveAnchor[]; controlAnchors: CTMoveAnchor[]; note: string } | undefined;
+  if (options.blindReserve) {
+    const rest = all.filter((e) => !picked.includes(e));
+    const takeReserve = Math.min(16, rest.length);
+    const reservePicks = Array.from({ length: takeReserve }, (_, k) => rest[Math.min(rest.length - 1, Math.floor(((k + 0.5) * rest.length) / takeReserve))]);
+    const seen = new Set(controls.map((c) => `${c.symbol}:${c.at}`));
+    const reserveControls = ctMatchedControls(runs, reservePicks.map(({ run, i }) => ({ symbol: run.symbol, index: i })), contract, ctSeedOf(`${labelId}:blind`)).filter((c) => {
+      const key = `${c.symbol}:${c.at}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    blindReserve = {
+      anchors: reservePicks.map(({ run, i }) => ({ at: run.rows[i].endMs, time: new Date(run.rows[i].endMs).toISOString(), symbol: run.symbol, netPct: round(run.labels.grossPct[i] - run.costPct), group: "positive" as const })),
+      controlAnchors: reserveControls,
+      note: "블라인드 세트(16–32장)용 예비 이벤트·대조군 시각. 위 anchors·controlAnchors와 합치면 이벤트와 대조군을 같은 수로 최대 32장까지 만들 수 있다. 일반 보기(blind 아님)로 이미 본 시각은 블라인드 세트에 쓸 수 없다.",
+    };
+  }
   return {
     labelId,
     params,
@@ -313,6 +334,7 @@ export function ctLabelMovesReport(params: CTLabelParams, runs: CTLabelRun[], co
     volatilityCutoffsPct: { prior60BarRangeP33: round(cut[0]), prior60BarRangeP67: round(cut[1]) },
     anchors,
     controlAnchors: controls,
+    ...(blindReserve ? { blindReserve } : {}),
     note: "lift = 사건 비율 ÷ 전체 유효 순간 비율(기저 분포는 3분마다 표본). lift는 어디를 볼지의 단서일 뿐 성과 근거가 아니다. 학습 구간만.",
   };
 }
@@ -331,7 +353,8 @@ export const ctFeatureSpecSchema = z
     atrTimeframe: z.union([z.literal(1), z.literal(3), z.literal(12), z.literal(60), z.literal(240), z.literal(1440)]).optional(),
   })
   .strict();
-export const ctContrastMovesSchema = z
+/** Stage 3 request (frozen: the tool definition's JSON schema is part of every cached prefix of a traderTools = 1 run). */
+export const ctContrastMovesSchemaStage3 = z
   .object({
     labelId: z.string().min(8).max(40),
     features: z.array(ctFeatureSpecSchema).min(1).max(12),
@@ -339,7 +362,23 @@ export const ctContrastMovesSchema = z
     seed: z.number().int().min(0).max(1_000_000).default(1),
   })
   .strict();
-export type CTContrastRequest = z.infer<typeof ctContrastMovesSchema>;
+/**
+ * Control groups (stage 4, docs/ct.md「대조군 모드」): "time" = same hour of the day and month (the stage-3 control, byte
+ * for byte); "vol_matched" = also the same 60-minute-ATR quintile; "losers" = the label's own stop-first events matched on hour, month and volatility.
+ */
+export const CT_CONTROL_MODES = ["time", "vol_matched", "losers"] as const;
+export type CTControlMode = (typeof CT_CONTROL_MODES)[number];
+export const ctContrastMovesSchema = z
+  .object({
+    labelId: z.string().min(8).max(40),
+    features: z.array(ctFeatureSpecSchema).min(1).max(12),
+    controls: z.enum(CT_CONTROL_MODES).default("time"),
+    tree: z.boolean().default(true),
+    seed: z.number().int().min(0).max(1_000_000).default(1),
+  })
+  .strict();
+/** `controls` is absent on a stage-3 request; the result then keeps the stage-3 shape exactly. */
+export type CTContrastRequest = Omit<z.infer<typeof ctContrastMovesSchema>, "controls"> & { controls?: CTControlMode };
 
 /** The neutral condition (no threshold) a feature spec stands for. Throws the condition schema's message when the spec is not a legal feature. */
 export function ctFeatureCondition(spec: z.infer<typeof ctFeatureSpecSchema>): CTCondition {
@@ -395,6 +434,130 @@ function binIndex(edges: number[], v: number) {
   return b;
 }
 
+
+/* ---------------------------------------------------- stage 4: control modes */
+
+/**
+ * 60-minute ATR(14) as percent of the last completed hourly bar's close — the DSL's atr_pct(14, 60m) — per base bar
+ * (NaN until 15 contiguous hourly bars exist). The value only changes when an hourly bar completes, so the feature is
+ * evaluated once per completed hourly bar and carried forward over the minutes that follow it.
+ */
+export function ctVolatilityColumn(run: Pick<CTLabelRun, "rows" | "symbol">, contract: Pick<CTContract, "market">): Float32Array {
+  const n = run.rows.length,
+    col = new Float32Array(n).fill(NaN);
+  const series = buildHigherSeries(run.rows, 60, contract.market, run.symbol);
+  const update: number[] = [];
+  let c = 0;
+  for (let i = 0; i < n; i++) {
+    const before = c;
+    while (c < series.bars.length && series.bars[c].endMs <= run.rows[i].endMs) c++;
+    if (c !== before) update.push(i);
+  }
+  const cond = ctConditionSchema.parse({ feature: "atr_pct", lookback: 14, offset: 0, timeframe: 60, op: "gte", value: 0 });
+  const values = ctFeatureColumns([cond], run.rows, update, contract, run.symbol)[0];
+  update.forEach((u, k) => {
+    const end = k + 1 < update.length ? update[k + 1] : n;
+    if (Number.isFinite(values[k])) col.fill(values[k], u, end);
+  });
+  return col;
+}
+const QUINTILES = [0.2, 0.4, 0.6, 0.8] as const;
+/** Quintile edges of the volatility column over every valid training moment of one symbol. */
+export function ctVolatilityEdges(run: Pick<CTLabelRun, "rows" | "labels">, vol: Float32Array) {
+  const xs: number[] = [];
+  for (let i = 0; i < run.rows.length; i++) if (run.labels.label[i] >= 0 && Number.isFinite(vol[i])) xs.push(vol[i]);
+  const s = sorted(xs);
+  return QUINTILES.map((q) => quantile(s, q));
+}
+/** Losing events of a label: stop hit before the target, clustered and represented exactly like positive events. */
+export function ctLoserEvents(run: Pick<CTLabelRun, "rows" | "labels">) {
+  const { label, reason, exitIndex } = run.labels;
+  const members: number[][] = [];
+  let eventEnd = -1;
+  for (let i = 0; i < run.rows.length; i++) {
+    if (label[i] !== 0 || reason[i] !== MOVE_REASON.stop) continue;
+    if (i > eventEnd) {
+      members.push([i]);
+      eventEnd = exitIndex[i];
+    } else members[members.length - 1].push(i);
+  }
+  return members.map((m) => m[Math.floor((m.length - 1) / 2)]);
+}
+
+/**
+ * How a feature's lift is shaped across the control quintiles (stage 4). A quintile is "elevated" when its lift is at
+ * least 1.25 and its z at least 2 (the event share is clearly above the control share). Lower tail = bins[0], upper
+ * tail = bins[4].
+ *   two_tailed   both tails elevated (events sit at the extremes of either sign: a volatility-type effect)
+ *   monotone_up  upper tail elevated, lower tail not, and the upper lift above the lower lift
+ *   monotone_down lower tail elevated, upper tail not, and the lower lift above the upper lift
+ *   flat         otherwise (no tail is clearly elevated)
+ * Pure rule on the printed bins; the thresholds are a reading aid, not a significance test (no multiplicity correction).
+ */
+export type CTLiftShape = "monotone_up" | "monotone_down" | "two_tailed" | "flat";
+export const CT_SHAPE_RULE = "모양 분류: 양 끝 5분위 중 lift ≥ 1.25 이고 z ≥ 2 이면 '높음'. 양 끝 모두 높음 = two_tailed(부호와 무관한 극단 = 변동성형), 위쪽만 높음 = monotone_up, 아래쪽만 높음 = monotone_down, 그 밖 = flat.";
+export function ctLiftShape(bins: Array<{ lift: number | null; z: number }>): CTLiftShape {
+  const high = (b: { lift: number | null; z: number } | undefined) => Boolean(b && b.lift !== null && b.lift >= 1.25 && b.z >= 2);
+  const lo = bins[0],
+    hi = bins[bins.length - 1];
+  const up = high(hi),
+    down = high(lo);
+  if (up && down) return "two_tailed";
+  if (up && (lo?.lift ?? 0) < (hi.lift ?? 0)) return "monotone_up";
+  if (down && (hi?.lift ?? 0) < (lo.lift ?? 0)) return "monotone_down";
+  return "flat";
+}
+const CONTROL_RULES: Record<CTControlMode, string> = {
+  time: "대조군 = 같은 시간대(하루 시작 후 같은 시)와 같은 달의 유효 순간에서 사건당 3개를 시드 고정 무작위로 추출(라벨 무관 기저 모집단). lift = 구간 안 양성 비율 ÷ 구간 안 대조군 비율. bin은 대조군 분위로 자른 5구간, z는 대조군 비율 대비 양성 개수의 정규근사 편차(다중 비교 미보정).",
+  vol_matched:
+    "대조군 = 같은 시간대·같은 달·같은 변동성 5분위(결정 시점에 완성된 60분봉 ATR(14) ÷ 그 60분봉 종가, 5분위 경계 = 학습 구간 유효 순간 전체)의 유효 순간에서 사건당 3개를 비복원·시드 고정 무작위로 추출(라벨 무관). 같은 칸에 후보가 3개 미만이거나 변동성을 못 구한 사건은 버린다(droppedEvents). 변동성을 맞췄으므로 여기서도 남는 lift는 변동성 효과가 아니다. lift·bin·z는 time과 같다.",
+  losers:
+    "대조군 = 같은 라벨에서 손절이 목표보다 먼저 닿은 순간을 양성 사건과 같은 규칙으로 묶은 음성 사건(대표 시각 = 묶음 안 중앙값 순간). 양성 사건과 같은 시간대·같은 달·같은 변동성 5분위 칸에서 사건당 최대 3개(최소 1개)를 비복원·시드 고정으로 뽑고, 칸에 음성 사건이 없으면 그 양성 사건은 버린다(droppedEvents). lift = '같은 시각·같은 변동성에서 위로 갔는가 아래로 갔는가'의 차이.",
+};
+/** One symbol's kept events with the controls drawn for each (`groups`), the dropped-event count and the volatility quintile edges used. */
+export type MatchedSymbol = { run: CTLabelRun; events: number[]; controls: number[]; groups: Array<{ event: number; controls: number[] }>; dropped: number; edges: number[] };
+export function ctControlSets(runs: CTLabelRun[], mode: "vol_matched" | "losers", contract: CTContract, rng: () => number): MatchedSymbol[] {
+  return runs.map((run) => {
+    const vol = ctVolatilityColumn(run, contract),
+      edges = ctVolatilityEdges(run, vol);
+    const month = (i: number) => ctDate(run.rows[i].endMs, contract.market, contract.timezone).slice(0, 7);
+    const key = (i: number) => `${Math.floor((run.rows[i].endMs - run.day.startMs[i]) / (60 * MINUTE))}|${month(i)}|${binIndex(edges, vol[i])}`;
+    const pool = new Map<string, number[]>();
+    const add = (i: number) => {
+      const k = key(i);
+      (pool.get(k) ?? pool.set(k, []).get(k)!).push(i);
+    };
+    if (mode === "vol_matched") {
+      for (let i = 0; i < run.rows.length; i += 2) if (run.labels.label[i] >= 0 && Number.isFinite(vol[i])) add(i);
+    } else for (const i of ctLoserEvents(run)) if (Number.isFinite(vol[i])) add(i);
+    const need = mode === "vol_matched" ? 3 : 1;
+    const events: number[] = [],
+      controls: number[] = [],
+      groups: MatchedSymbol["groups"] = [];
+    let dropped = 0;
+    for (const i of run.events.slice(0, 4000)) {
+      const candidates = Number.isFinite(vol[i]) ? pool.get(key(i)) : undefined;
+      if (!candidates || candidates.length < need) {
+        dropped++;
+        continue;
+      }
+      // Without replacement: partial Fisher–Yates on a copy.
+      const copy = candidates.slice();
+      const take = Math.min(3, copy.length),
+        mine: number[] = [];
+      for (let r = 0; r < take; r++) {
+        const j = r + Math.floor(rng() * (copy.length - r));
+        [copy[r], copy[j]] = [copy[j], copy[r]];
+        controls.push(copy[r]);
+        mine.push(copy[r]);
+      }
+      events.push(i);
+      groups.push({ event: i, controls: mine });
+    }
+    return { run, events, controls, groups, dropped, edges };
+  });
+}
+
 export type CTContrastResult = ReturnType<typeof ctContrastMoves>;
 /**
  * For each feature: the distribution just before the events against matched control minutes, lift per
@@ -415,7 +578,9 @@ export function ctContrastMoves(
     if (options.deadline && Date.now() > options.deadline) throw new Error("CT 계산 시간 상한");
   };
   // Positive events and time-matched controls (same hour of the day and month, any label: the base population).
-  const perSymbol = runs.map((run) => {
+  const mode = request.controls;
+  const matched = mode === "vol_matched" || mode === "losers" ? ctControlSets(runs, mode, contract, rng) : null;
+  const perSymbol: Array<{ run: CTLabelRun; events: number[]; controls: number[] }> = matched ?? runs.map((run) => {
     const pool = new Map<string, number[]>(),
       hourPool = new Map<number, number[]>();
     for (let i = 0; i < run.rows.length; i += 2) {
@@ -446,6 +611,7 @@ export function ctContrastMoves(
     control: { n: number; missing: number; mean: number; quantiles: Record<string, number> };
     bins: Array<{ bin: string; upTo?: number; positive: number; control: number; lift: number | null; z: number }>;
     bestBin: { bin: string; lift: number | null } | null;
+    shape?: CTLiftShape;
   }> = [];
   const pos: number[][] = conditions.map(() => []),
     ctl: number[][] = conditions.map(() => []);
@@ -494,15 +660,29 @@ export function ctContrastMoves(
       control: { n: ctl[f].length, missing: ctlMissing[f], mean: round(mean(ctl[f])), quantiles: quant(ctl[f]) },
       bins: bins.map(({ edge, ...rest }) => ({ ...rest, ...(edge !== null ? { upTo: edge } : {}) })),
       bestBin: best ? { bin: best.bin, lift: best.lift } : null,
+      ...(mode ? { shape: ctLiftShape(bins) } : {}),
     });
   });
-  const tree = request.tree ? contrastTree(conditions, names, runs, contract, params, options) : null;
+  const tree = request.tree ? contrastTree(conditions, names, runs, contract, params, options, matched ? perSymbol : undefined) : null;
   const eventCount = perSymbol.reduce((s, x) => s + x.events.length, 0);
+  const controlCount = perSymbol.reduce((s, x) => s + x.controls.length, 0);
   return {
     labelId: request.labelId,
     events: eventCount,
-    controls: perSymbol.reduce((s, x) => s + x.controls.length, 0),
-    controlRule: "대조군 = 같은 시간대(하루 시작 후 같은 시)와 같은 달의 유효 순간에서 사건당 3개를 시드 고정 무작위로 추출(라벨 무관 기저 모집단). lift = 구간 안 양성 비율 ÷ 구간 안 대조군 비율. bin은 대조군 분위로 자른 5구간, z는 대조군 비율 대비 양성 개수의 정규근사 편차(다중 비교 미보정).",
+    controls: controlCount,
+    controlRule: CONTROL_RULES.time,
+    // Stage 4 only (a request with `controls`): the mode, what it dropped, and how to read the shapes.
+    ...(mode
+      ? {
+          controlMode: mode,
+          controlRule: CONTROL_RULES[mode],
+          droppedEvents: matched ? matched.reduce((s, x) => s + x.dropped, 0) : 0,
+          positiveEvents: eventCount,
+          controlsPerEvent: eventCount ? round(controlCount / eventCount, 2) : 0,
+          ...(matched ? { volatilityQuintileEdgesPct: matched.map((m) => ({ symbol: m.run.symbol, edges: m.edges.map((e) => round(e)) })) } : {}),
+          shapeRule: CT_SHAPE_RULE,
+        }
+      : {}),
     features,
     tree,
     testedBins: conditions.length * 5,
@@ -511,14 +691,20 @@ export function ctContrastMoves(
   };
 }
 
-function contrastTree(conditions: CTCondition[], names: string[], runs: CTLabelRun[], contract: CTContract, params: CTLabelParams, options: { deadline?: number }) {
+function contrastTree(conditions: CTCondition[], names: string[], runs: CTLabelRun[], contract: CTContract, params: CTLabelParams, options: { deadline?: number }, matched?: Array<{ run: CTLabelRun; events: number[]; controls: number[] }>) {
   // Sampled moments: every Nth valid moment so the table stays near 15,000 rows.
   const totalValid = runs.reduce((s, r) => s + r.validMoments, 0);
   const stride = Math.max(3, Math.ceil(totalValid / 15_000));
-  type Row = { run: CTLabelRun; i: number; key: number };
+  type Row = { run: CTLabelRun; i: number; key: number; cls?: 0 | 1 };
   const sample: Row[] = [];
-  for (const run of runs) for (let i = 0; i < run.rows.length; i += stride) if (run.labels.label[i] >= 0) sample.push({ run, i, key: run.day.key[i] });
-  if (sample.length < 400) return null;
+  // Stage 4 (vol_matched / losers): the tree separates the kept events (class 1) from the chosen controls (class 0).
+  if (matched) {
+    for (const m of matched) {
+      for (const i of m.events) sample.push({ run: m.run, i, key: m.run.day.key[i], cls: 1 });
+      for (const i of m.controls) sample.push({ run: m.run, i, key: m.run.day.key[i], cls: 0 });
+    }
+  } else for (const run of runs) for (let i = 0; i < run.rows.length; i += stride) if (run.labels.label[i] >= 0) sample.push({ run, i, key: run.day.key[i] });
+  if (sample.length < (matched ? 150 : 400)) return null;
   const dayKeys = [...new Set(sample.map((r) => r.key))].sort((a, b) => a - b);
   if (dayKeys.length < 6) return null;
   const cutKey = dayKeys[Math.floor((dayKeys.length * 2) / 3)];
@@ -556,7 +742,7 @@ function contrastTree(conditions: CTCondition[], names: string[], runs: CTLabelR
   const label = new Int8Array(table.length),
     net = new Float32Array(table.length);
   table.forEach((r, t) => {
-    label[t] = r.run.labels.label[r.i] === 1 ? 1 : 0;
+    label[t] = r.cls ?? (r.run.labels.label[r.i] === 1 ? 1 : 0);
     net[t] = r.run.labels.grossPct[r.i] - r.run.costPct;
   });
   const arrays = cols.map((c) => Float32Array.from(c));
@@ -842,12 +1028,16 @@ export function ctDiagnosisSignatures(spec: CTSpec, diagnosis: Pick<CTDiagnosis,
 /** Ledger signatures of a contrast run: one per feature × control quintile (and the tree's feature set). */
 export function ctContrastSignatures(request: CTContrastRequest, params: CTLabelParams, conditions: CTCondition[]) {
   const label = `k${params.k}m${params.m}h${params.horizon}c${params.costMultiplier}`;
-  return conditions.flatMap((c) => BIN_LABELS.map((_, b) => `contrast|${c.feature}|${c.timeframe}|${c.unit ?? "pct"}|q${b}|${label}`));
+  // Stage 4: the same feature and quintile against a different control group is a different hypothesis. "time" is the
+  // stage-3 control, so it keeps the stage-3 signature (and stays comparable with earlier runs' ledgers).
+  const mode = request.controls && request.controls !== "time" ? `|${request.controls}` : "";
+  return conditions.flatMap((c) => BIN_LABELS.map((_, b) => `contrast|${c.feature}|${c.timeframe}|${c.unit ?? "pct"}|q${b}|${label}${mode}`));
 }
 
 /* ------------------------------------------------------------------ view_charts */
 
-export const ctViewChartsSchema = z
+/** Stage 3 request (frozen for traderTools = 1 contracts): up to 8 anchors whether blind or not. */
+export const ctViewChartsSchemaStage3 = z
   .object({
     // Times the server issued (event and control times from label_moves, query anchors, screen_rule trade times).
     anchors: z.array(z.number().int().nonnegative()).min(1).max(8),
@@ -855,20 +1045,101 @@ export const ctViewChartsSchema = z
     blind: z.boolean().default(false),
   })
   .strict();
+/** Blind-set size of a stage-4 contract (policy.blindSize): a blind set is 16–32 charts, half events and half controls. */
+export const CT_BLIND_MIN = 16,
+  CT_BLIND_MAX = 32,
+  CT_BLIND_DEFAULT = 24;
+/**
+ * Stage 4: an ordinary view is up to 8 charts, a blind set 16–32 (equal numbers of event and control times, checked by the
+ * server). The size limit sits in the refinement (not in the JSON schema), so the tool definition stays one shape.
+ */
+export const ctViewChartsSchema = z
+  .object({
+    anchors: z.array(z.number().int().nonnegative()).min(1).max(CT_BLIND_MAX),
+    blind: z.boolean().default(false),
+  })
+  .strict()
+  .superRefine((v, ctx) => {
+    if (!v.blind && v.anchors.length > 8) ctx.addIssue({ code: "custom", path: ["anchors"], message: "일반 보기는 호출당 8장 이하입니다(블라인드 세트만 16–32장)" });
+    if (v.blind && (v.anchors.length < CT_BLIND_MIN || v.anchors.length % 2 !== 0))
+      ctx.addIssue({ code: "custom", path: ["anchors"], message: `블라인드 세트는 이벤트와 대조군을 같은 수로 ${CT_BLIND_MIN}–${CT_BLIND_MAX}장(짝수)이어야 합니다(기본 ${CT_BLIND_DEFAULT}장)` });
+  });
 export type CTViewChartsRequest = z.infer<typeof ctViewChartsSchema>;
 
 /* ----------------------------------------------------------------- blind grading */
 
-export const ctGradeBlindSchema = z
+/** Stage 3 request (frozen): up to 64 predictions. */
+export const ctGradeBlindSchemaStage3 = z
   .object({
     blindId: z.string().min(4).max(40),
     predictions: z.array(z.object({ chart: z.number().int().min(1).max(64), call: z.enum(["positive", "control"]) }).strict()).min(4).max(64),
   })
   .strict();
-export type CTBlindSet = { blindId: string; session: number; order: Array<{ chart: number; group: "positive" | "control" }>; graded?: { correct: number; total: number; accuracyPct: number; pValue: number } };
+/** Stage 4: one prediction per chart of a 16–32-chart set. */
+export const ctGradeBlindSchema = z
+  .object({
+    blindId: z.string().min(4).max(40),
+    predictions: z.array(z.object({ chart: z.number().int().min(1).max(CT_BLIND_MAX), call: z.enum(["positive", "control"]) }).strict()).min(CT_BLIND_MIN).max(CT_BLIND_MAX),
+  })
+  .strict();
+export type CTBlindSet = { blindId: string; session: number; order: Array<{ chart: number; group: "positive" | "control" }>; graded?: { correct: number; total: number; accuracyPct: number; pValue: number; verdict?: "skill" | "no_skill" | "inconclusive" } };
+
+/** Smallest hit count k with P(X ≥ k | n, 0.5) < 0.05: what a set of n charts needs to show skill. */
+export function ctBlindNeededHits(n: number, alpha = 0.05) {
+  for (let k = 0; k <= n; k++) if (ctBinomialUpperP(n, k, 0.5) < alpha) return k;
+  return n + 1;
+}
+/** Power of the one-sided 5% test of a set of n charts if the eye is really right with probability `accuracy`. */
+export function ctBlindPower(n: number, accuracy: number) {
+  const k = ctBlindNeededHits(n);
+  return k > n ? 0 : ctBinomialUpperP(n, k, accuracy);
+}
+/** Power the verdict needs before "no skill" may be said at all, and the accuracy it is judged against. */
+export const CT_CALIBRATION_POWER_TARGET = 0.8,
+  CT_CALIBRATION_REFERENCE_ACCURACY = 0.7;
+export type CTCalibrationVerdict = "skill" | "no_skill" | "inconclusive";
+/**
+ * skill        p < 0.05
+ * no_skill     p ≥ 0.05 AND the set was large enough to catch a real 70% eye with power ≥ 0.8
+ * inconclusive anything else (a small set with a high p says nothing: it is absence of evidence)
+ */
+export function ctCalibrationVerdict(n: number, k: number): CTCalibrationVerdict {
+  const p = ctBinomialUpperP(n, k, 0.5);
+  if (p < 0.05) return "skill";
+  return ctBlindPower(n, CT_CALIBRATION_REFERENCE_ACCURACY) >= CT_CALIBRATION_POWER_TARGET ? "no_skill" : "inconclusive";
+}
+export const CT_VERDICT_TEXT: Record<CTCalibrationVerdict, string> = {
+  skill: "눈에 신호가 있다(p < 0.05)",
+  no_skill: "눈에 신호가 없다(표본이 충분했다)",
+  inconclusive: "표본이 작아 판정 불가(증거 없음 ≠ 판별력 없음)",
+};
+/** The calibration facts of a set of n charts with k hits (stage 4 grade_blind result and the calibration record). */
+export function ctCalibrationFacts(n: number, k: number) {
+  const needed = ctBlindNeededHits(n);
+  const verdict = ctCalibrationVerdict(n, k);
+  return {
+    verdict,
+    verdictText: CT_VERDICT_TEXT[verdict],
+    neededHitsForSignificance: needed,
+    powerIfEyeIs70Pct: round(ctBlindPower(n, 0.7), 2),
+    powerIfEyeIs75Pct: round(ctBlindPower(n, 0.75), 2),
+  };
+}
+
+const legacyReading = (pValue: number) =>
+  pValue < 0.05
+    ? `우연보다 잘 맞혔다(p=${pValue.toPrecision(2)}): 이 시장·이 차트 구성에서 눈에 신호가 있을 가능성이 있다. 그래도 한 세트의 결과이고 이 검정도 장부에 합산된다.`
+    : `우연과 구분되지 않는다(p=${pValue.toPrecision(2)}): 이 구성에서는 눈으로 양성과 대조군을 가르지 못했다. 차트로 본 패턴은 가설일 뿐, 숫자 조회로 확인되기 전에는 근거가 아니다.`;
+function calibrationReading(n: number, k: number, pValue: number) {
+  const f = ctCalibrationFacts(n, k);
+  const head = `${n}장 중 ${k}장 적중(p=${pValue.toPrecision(2)}) · 이 크기의 세트가 5%에서 유의하려면 ${f.neededHitsForSignificance}장 이상 맞혀야 하고, 눈의 실제 정확도가 70%/75%일 때 그것을 잡아낼 확률은 ${Math.round(f.powerIfEyeIs70Pct * 100)}%/${Math.round(f.powerIfEyeIs75Pct * 100)}%다. 판정: ${f.verdictText}.`;
+  if (f.verdict === "skill") return `${head} 한 세트의 결과이고 이 검정도 장부에 합산된다. 숫자 조회로 확인되기 전에는 차트에서 본 패턴이 근거가 아니다.`;
+  if (f.verdict === "no_skill") return `${head} 이 구성에서는 눈으로 양성과 대조군을 가르지 못했다. 차트의 패턴은 가설일 뿐이다.`;
+  return `${head} 이 결과는 \u201C판별력 없음\u201D이 아니라 \u201C이 표본으로는 알 수 없음\u201D이다. 이 측정은 거래 메커니즘의 기각 가설이 아니라 도구 보정 기록이다(rejectedHypotheses에 넣지 않는다).`;
+}
 
 /** Exact one-sided binomial test against 50%: the set is balanced, so a coin flip is the null. */
-export function ctGradeBlind(set: CTBlindSet, predictions: Array<{ chart: number; call: "positive" | "control" }>) {
+export function ctGradeBlind(set: CTBlindSet, predictions: Array<{ chart: number; call: "positive" | "control" }>, options: { calibration?: boolean } = {}) {
   const truth = new Map(set.order.map((o) => [o.chart, o.group]));
   const seen = new Set<number>();
   for (const p of predictions) {
@@ -885,10 +1156,8 @@ export function ctGradeBlind(set: CTBlindSet, predictions: Array<{ chart: number
     total,
     accuracyPct: pct(correct, total),
     pValue: Number(pValue.toPrecision(3)),
+    ...(options.calibration ? ctCalibrationFacts(total, correct) : {}),
     answers: set.order.map((o) => ({ chart: o.chart, group: o.group })),
-    reading:
-      pValue < 0.05
-        ? `우연보다 잘 맞혔다(p=${pValue.toPrecision(2)}): 이 시장·이 차트 구성에서 눈에 신호가 있을 가능성이 있다. 그래도 한 세트의 결과이고 이 검정도 장부에 합산된다.`
-        : `우연과 구분되지 않는다(p=${pValue.toPrecision(2)}): 이 구성에서는 눈으로 양성과 대조군을 가르지 못했다. 차트로 본 패턴은 가설일 뿐, 숫자 조회로 확인되기 전에는 근거가 아니다.`,
+    reading: options.calibration ? calibrationReading(total, correct, pValue) : legacyReading(pValue),
   };
 }

@@ -17,6 +17,7 @@ import { ctDb } from "./ct-data.ts";
 import { ctRuleText, ctTestSignature, ctFreedom, type CTContract, type CTSpec } from "./ct-spec.ts";
 import type { CTCandidate, CTPlaybookSnapshot, CTResearch } from "./ct-research.ts";
 import type { GenerationJob } from "./strategy-generation-types.ts";
+import { ctIsCalibrationHypothesis, ctMigrateCalibration } from "./ct-calibration.ts";
 
 export const CT_PLAYBOOK_GRADES = ["rejected_in_training", "screen_failed", "development_failed", "passed_final", "failed_final", "adopted_daily"] as const;
 export type CTPlaybookGrade = (typeof CT_PLAYBOOK_GRADES)[number];
@@ -110,6 +111,9 @@ export function ctPlaybookRows(job: Pick<GenerationJob, "id" | "ownerId"> & { ct
   // 1) Hypotheses the designer rejected on training evidence.
   for (const s of ct.sessions ?? []) {
     (s.submission?.rejectedHypotheses ?? []).forEach((h, k) => {
+      // A hypothesis whose only evidence is a blind set is a measurement of the designer's eye, not a trading idea:
+      // it lives in ct_calibration (lib/ct-calibration.ts) and must never be filed (or revived by a backfill) as a rejected mechanism.
+      if (ctIsCalibrationHypothesis(h.evidence, ct.blinds)) return;
       rows.push({
         ...base,
         id: `${job.id}:rej:${s.index}:${k}`,
@@ -290,6 +294,8 @@ export function backfillPlaybook(): Promise<number> {
       if (!job.ct || !job.ct.sessions?.length) continue;
       n += await recordCTPlaybook(job, "backfill");
     }
+    // Stage 4: blind-set results move to ct_calibration and leave the playbook (idempotent).
+    await ctMigrateCalibration();
     return n;
   })().catch((error) => {
     backfilled = null;
@@ -343,7 +349,7 @@ const MAX_ENTRIES = 40;
  * The playbook the designer starts a run with: same market, most recent first (1-minute runs before the
  * daily seeds), at most 40 entries, never the run itself. Also the market's cumulative test count.
  */
-export async function ctPlaybookSnapshot(ownerId: string, contract: CTContract, runId: string): Promise<CTPlaybookSnapshot> {
+export async function ctPlaybookSnapshot(ownerId: string, contract: CTContract, runId: string, options: { distinctTests?: boolean } = {}): Promise<CTPlaybookSnapshot> {
   await backfillPlaybook();
   const db = ctDb();
   const rows = await db
@@ -370,15 +376,38 @@ export async function ctPlaybookSnapshot(ownerId: string, contract: CTContract, 
     .bind(contract.market, ownerId, runId)
     .all<{ timeframe: string; hypothesis_tests: number }>();
   const minute = runs.results.filter((r) => r.timeframe === "1m");
+  const rawTests = minute.reduce((s, r) => s + r.hypothesis_tests, 0);
   return {
     entries,
-    cumulativeTests: minute.reduce((s, r) => s + r.hypothesis_tests, 0),
+    // Stage 4 counts DISTINCT signatures across earlier runs (a signature a rerun counted again is not a new test).
+    cumulativeTests: options.distinctTests ? (await ctDistinctPriorTests(ownerId, contract.market, runId)).total : rawTests,
     priorRuns: minute.length,
     omitted,
     ...(runs.results.some((r) => r.timeframe !== "1m")
       ? { dailyTests: runs.results.filter((r) => r.timeframe !== "1m").reduce((s, r) => s + r.hypothesis_tests, 0) }
       : {}),
   };
+}
+
+/**
+ * Hypothesis tests of the owner's earlier 1-minute runs on a market, counted once per distinct ledger signature.
+ * A run with a ledger contributes its signatures; an older run without one contributes its recorded count.
+ * (Stage 4 rule: a rerun's ledger counts a signature again for the rerun itself, but the cumulative count over runs does not add it twice.)
+ */
+export async function ctDistinctPriorTests(ownerId: string, market: string, runId: string, own?: string[]) {
+  const db = ctDb();
+  const priorRuns = "SELECT run_id FROM ct_playbook_runs WHERE market=? AND (owner_id=? OR owner_id='') AND timeframe='1m' AND run_id<>?";
+  const signed = await db
+    .prepare(`SELECT DISTINCT j.key AS sig FROM strategy_generation_runs r, json_each(r.payload,'$.ct.tests.signatures') j WHERE r.id IN (${priorRuns})`)
+    .bind(market, ownerId, runId)
+    .all<{ sig: string }>();
+  const unsigned = await db
+    .prepare(`SELECT COALESCE(SUM(hypothesis_tests),0) AS n FROM ct_playbook_runs WHERE market=? AND (owner_id=? OR owner_id='') AND timeframe='1m' AND run_id<>? AND run_id NOT IN (SELECT r.id FROM strategy_generation_runs r, json_each(r.payload,'$.ct.tests.signatures') j)`)
+    .bind(market, ownerId, runId)
+    .first<{ n: number }>();
+  const prior = new Set(signed.results.map((r) => r.sig));
+  const extra = own ? own.filter((sig) => !prior.has(sig)).length : 0;
+  return { distinctSignatures: prior.size, unsignedRuns: unsigned?.n ?? 0, total: prior.size + (unsigned?.n ?? 0), withOwn: prior.size + (unsigned?.n ?? 0) + extra };
 }
 
 /** The owner's read-only list: every entry of one market with the numbers the same leak rule allows against `contract`. */

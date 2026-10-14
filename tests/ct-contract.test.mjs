@@ -193,3 +193,113 @@ test("development summaries carry per-quarter mean daily returns and the positiv
   const c = await research.prepareCTContract(request());
   assert.deepEqual(ctGate({ ...result, daily: [] }, c), ctGate({ ...flipped, daily: [] }, c));
 });
+
+/* ------------------------------------------------------------------ stage 4: board signature */
+
+import { ctBoardSignature, ctNormalizeBrief, CTBoardRepeatError } from "../lib/ct-board.ts";
+import { CT_POLICY, ctSelectionLabel } from "../lib/ct-spec.ts";
+// One dispatcher counts every outbound call (the model-access check is a call); the client caches the fetch it first saw.
+let outbound = 0;
+globalThis.fetch = async () => {
+  outbound++;
+  throw new Error("no network in tests");
+};
+const modelChecks = () => globalThis.__modelAccessChecks ?? 0;
+Object.assign(globalThis.__strategyTestEnv, { OPENAI_API_KEY: "test-openai", ANTHROPIC_API_KEY: "test-anthropic" });
+const store4 = await import("../lib/strategy-generation-store.ts");
+
+test("the board signature ignores symbol order and whitespace and changes with anything that changes what a run can learn", async () => {
+  const a = await research.prepareCTContract(request({ symbols: ["BTCUSDT", "ETHUSDT"], brief: "거래량이  줄어드는\n눌림목" }));
+  const b = await research.prepareCTContract(request({ symbols: ["BTCUSDT", "ETHUSDT"], brief: " 거래량이 줄어드는 눌림목 " }));
+  assert.match(a.boardSignature, /^[0-9a-f]{64}$/);
+  assert.equal(a.boardSignature, b.boardSignature, "whitespace differences in the brief are not a new board");
+  assert.equal(ctNormalizeBrief("  a \n b\t c "), "a b c");
+  // Symbol order: the contract keeps the order given, the signature sorts it.
+  assert.equal(await ctBoardSignature({ ...a, symbols: ["ETHUSDT", "BTCUSDT"] }, "거래량이 줄어드는 눌림목"), a.boardSignature);
+  const sig = (over, brief = "거래량이 줄어드는 눌림목") => ctBoardSignature({ ...a, ...over }, brief);
+  const base = a.boardSignature;
+  for (const [what, value] of [
+    ["fromMs", await sig({ fromMs: a.fromMs - DAY })],
+    ["trainingToMs", await sig({ trainingToMs: a.trainingToMs + DAY })],
+    ["developmentToMs", await sig({ developmentToMs: a.developmentToMs + DAY })],
+    ["toMs", await sig({ toMs: a.toMs + DAY })],
+    ["costs", await sig({ costs: { ...a.costs, feePct: 0.11 } })],
+    ["cost profile version", await sig({ costProfile: { ...a.costProfile, version: a.costProfile.version + 1 } })],
+    ["tool version", await sig({ policy: { ...a.policy, traderTools: 1 } })],
+    ["data hash", await sig({ dataSnapshots: { ...a.dataSnapshots, BTCUSDT: "changed" } })],
+    ["engine", await sig({ engine: "ct-pattern-2" })],
+    ["symbols", await sig({ symbols: ["BTCUSDT"], dataSnapshots: undefined, dataSnapshot: a.dataSnapshots.BTCUSDT })],
+    ["brief", await sig({}, "다른 연구 방향")],
+  ]) assert.notEqual(value, base, what);
+  // Creation time and budget are not part of it.
+  assert.equal(await sig({ createdAt: "2030-01-01T00:00:00Z" }), base);
+});
+
+test("the same board is refused before any paid call (409, zero outbound calls); a reason lets it run and is recorded as 'N-th run of the same board'", async () => {
+  sqlite.exec("DELETE FROM ct_exposure"); // an earlier test opened a final window on BTCUSDT
+  const input = (over = {}) => ({ ...request({ symbols: ["BTCUSDT"], brief: "같은 판 실험" }), ...over });
+  const first = await research.createCTResearch("owner-a", input());
+  assert.equal(first.ct.contract.boardSignature.length, 64);
+  assert.equal(first.ct.contract.repeat, undefined);
+  assert.equal(modelChecks(), 1, "a fresh run reaches the model-access check (the first provider call)");
+  // 1) Still running: refused.
+  const checks = modelChecks();
+  await assert.rejects(() => research.createCTResearch("owner-a", input()), (error) => {
+    assert.ok(error instanceof CTBoardRepeatError);
+    assert.equal(error.status, 409);
+    assert.equal(error.detail.previous[0].id, first.id);
+    assert.match(error.message, new RegExp(first.id.slice(0, 8)));
+    assert.match(error.message, /같은 판/);
+    assert.match(error.message, /종목, 연구 기간, 연구 방향/, "what to change to make it a new board");
+    assert.match(error.message, /진행 중/);
+    return true;
+  });
+  assert.equal(modelChecks(), checks, "the refusal came before the model-access check");
+  assert.equal(outbound, 0, "no outbound call");
+  // 2) Finished without a passing strategy: refused, with the reason it ended.
+  sqlite.prepare("UPDATE strategy_generation_runs SET status='completed', payload=json_set(payload,'$.ct.phase','done','$.ct.endReason','설계자 판단: 비용 후 우위 미발견 · 통과 전략 없음','$.ct.passed',json('false')) WHERE id=?").run(first.id);
+  await assert.rejects(() => research.createCTResearch("owner-a", input()), (error) => {
+    assert.match(error.message, /통과 전략 없음/);
+    assert.match(error.message, /이미 끝났습니다/);
+    return true;
+  });
+  assert.equal(modelChecks(), checks);
+  assert.equal(outbound, 0);
+  // 3) A short reason is not a reason; another owner, another brief or another period is a new board.
+  await assert.rejects(() => research.createCTResearch("owner-a", input({ repeatReason: "다시" })), /10/);
+  assert.ok(await research.createCTResearch("owner-b", input()), "another owner");
+  sqlite.prepare("UPDATE strategy_generation_runs SET status='cancelled' WHERE owner_id='owner-b'").run();
+  assert.ok(await research.createCTResearch("owner-a", input({ brief: "다른 연구 방향" })), "another brief");
+  sqlite.prepare("UPDATE strategy_generation_runs SET status='cancelled' WHERE owner_id='owner-a' AND status='running'").run();
+  // 4) With a reason it runs; the reason is on the contract; the third run is the third.
+  const second = await research.createCTResearch("owner-a", input({ repeatReason: "새 정책의 대조군 모드를 같은 데이터에서 확인한다" }));
+  assert.deepEqual([second.ct.contract.repeat.n, second.ct.contract.repeat.reason, second.ct.contract.repeat.previousRuns], [2, "새 정책의 대조군 모드를 같은 데이터에서 확인한다", [first.id]]);
+  assert.equal(second.ct.contract.boardSignature, first.ct.contract.boardSignature);
+  sqlite.prepare("UPDATE strategy_generation_runs SET status='completed', payload=json_set(payload,'$.ct.passed',json('false')) WHERE id=?").run(second.id);
+  const third = await research.createCTResearch("owner-a", input({ repeatReason: "비용 프로필 갱신 전 마지막 확인" }));
+  assert.equal(third.ct.contract.repeat.n, 3);
+  assert.deepEqual(third.ct.contract.repeat.previousRuns.sort(), [first.id, second.id].sort());
+  // 5) A run that passed (or was cancelled) does not block the board.
+  sqlite.prepare("UPDATE strategy_generation_runs SET status='cancelled' WHERE id=?").run(third.id);
+  sqlite.prepare("UPDATE strategy_generation_runs SET status='cancelled' WHERE id IN (?,?)").run(first.id, second.id);
+  const again = await research.createCTResearch("owner-a", input());
+  assert.equal(again.ct.contract.repeat, undefined, "cancelled runs are not 'a finished run on this board'");
+  // The preflight (read-only) explains the refusal as well, with the same error.
+  await assert.rejects(() => research.assertBoardFree("owner-a", again.ct.contract), CTBoardRepeatError);
+  assert.equal((await research.assertBoardFree("owner-a", again.ct.contract, "10자 이상의 이유를 적었다")).repeat.n, 2);
+  void store4;
+});
+
+test("a coin contract no longer says 'NVDA'; contracts stored before the fix are shown correctly without being rewritten", async () => {
+  const coin = await research.prepareCTContract(request());
+  assert.match(coin.selection, /Binance BTCUSDT/);
+  assert.doesNotMatch(coin.selection, /NVDA/);
+  const stock = await research.prepareCTContract(request({ market: "stock" }));
+  assert.match(stock.selection, /NVDA/);
+  assert.doesNotMatch(stock.selection, /Binance/);
+  const old = { market: "crypto", selection: "NVDA 단일 종목 / Binance BTCUSDT 연구 · 다른 종목에 일반화 검증되지 않음" };
+  assert.doesNotMatch(ctSelectionLabel(old), /NVDA/);
+  assert.equal(old.selection.startsWith("NVDA"), true, "the stored value is untouched");
+  assert.equal(ctSelectionLabel({ market: "crypto", selection: "사용자 지정" }), "사용자 지정");
+  assert.equal(CT_POLICY.traderTools, 2);
+});

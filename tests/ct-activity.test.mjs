@@ -127,8 +127,26 @@ test("the progress view summarises the trader tools and names them while they ru
   assert.match(toolDoing({ name: "diagnose_trades", input: {} }), /손실 원인/);
   const ctWith = { contract: { policy: CT_POLICY }, sessions: [{ index: 0, turns: 3, toolCalls: 5, screens: 1, charts: 4 }], queries: [], tests: { signatures: {} } };
   assert.match(sessionProgress(ctWith), /턴 3\/16 · 도구 5\/40/);
-  assert.match(sessionProgress(ctWith), /차트 4\/32/);
+  assert.match(sessionProgress(ctWith), /차트 4\/48/);
   const old = { ...ctWith, contract: { policy: { ...CT_POLICY, traderTools: undefined, sessionMaxTurns: undefined, sessionMaxToolCalls: undefined, sessionMaxCharts: undefined } } };
   assert.match(sessionProgress(old), /턴 3\/12 · 도구 5\/24/);
   assert.doesNotMatch(sessionProgress(old), /차트/);
+});
+
+import { sessionThinking } from "../lib/ct-activity.ts";
+test("the progress data lists the designer's summarized thinking turn by turn; stage-3 turns (signature only) are reported empty", () => {
+  const messages = [
+    { role: "user", content: [{ type: "text", text: "<context>…" }] },
+    { role: "assistant", content: [{ type: "thinking", thinking: "비용 장벽부터 본다. 이벤트가 하루 몇 건인지 확인한다.", signature: "sig-1" }, { type: "tool_use", id: "t1", name: "label_moves", input: {} }, { type: "tool_use", id: "t2", name: "view_charts", input: {} }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "{}" }] },
+    { role: "assistant", content: [{ type: "thinking", thinking: "", signature: "sig-2" }, { type: "tool_use", id: "t3", name: "contrast_moves", input: {} }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "t3", content: "{}" }] },
+    { role: "assistant", content: [{ type: "text", text: "끝" }] },
+  ];
+  const turns = sessionThinking(messages);
+  assert.deepEqual(turns.map((t) => t.turn), [1, 2, 3]);
+  assert.equal(turns[0].text, "비용 장벽부터 본다. 이벤트가 하루 몇 건인지 확인한다.");
+  assert.deepEqual(turns[0].tools, ["label_moves", "view_charts"]);
+  assert.deepEqual([turns[1].text, turns[1].blocks], ["", 1], "signature only: nothing to show, and nothing made up");
+  assert.deepEqual([turns[2].text, turns[2].blocks, turns[2].tools], ["", 0, []]);
 });

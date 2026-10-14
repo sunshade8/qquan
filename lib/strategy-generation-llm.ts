@@ -188,6 +188,12 @@ export type DesignerTurnRequest = {
   system: string;
   tools: Anthropic.Tool[];
   messages: Anthropic.MessageParam[];
+  /**
+   * Stage 4 (traderTools = 2): ask for summarized thinking explicitly. Stage 3 sessions sent `thinking: {type:"adaptive"}` only
+   * and received empty thinking text (signature only); their requests stay byte for byte as they were, so this key is set only
+   * for the new policy.
+   */
+  thinkingDisplay?: "summarized";
 };
 /** One assistant turn, stored and replayed byte for byte (thinking blocks included). */
 export type DesignerTurn = {
@@ -221,7 +227,7 @@ export async function designerTurn(
       system: [{ type: "text", text: request.system, cache_control: { type: "ephemeral" } }],
       tools: request.tools,
       tool_choice: { type: "auto" },
-      thinking: { type: "adaptive" },
+      thinking: request.thinkingDisplay ? { type: "adaptive", display: request.thinkingDisplay } : { type: "adaptive" },
       output_config: { effort },
       cache_control: { type: "ephemeral" },
       messages: request.messages,

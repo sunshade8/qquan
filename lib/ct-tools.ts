@@ -5,8 +5,10 @@ import {
   ctContrastMovesSchema,
   ctDiagnoseTradesSchema,
   ctGradeBlindSchema,
+  ctGradeBlindSchemaStage3,
   ctLabelMovesSchema,
   ctViewChartsSchema,
+  ctViewChartsSchemaStage3,
 } from "./ct-trader-tools.ts";
 import { ctEngineSchema, ctSpecSchema } from "./ct-spec.ts";
 const time = z.number().int().nonnegative();
@@ -197,7 +199,8 @@ export const CT_TOOLS = {
   },
   view_charts: {
     phases: ["design", "reflect"],
-    input: z.object({ request: ctViewChartsSchema, from: time, to: time, dataHash: z.string() }).strict(),
+    // Stage 4 sizes (blind 16–32) or the stage-3 request (up to 8, also blind): the contract decides which the session accepts.
+    input: z.object({ request: z.union([ctViewChartsSchema, ctViewChartsSchemaStage3]), from: time, to: time, dataHash: z.string() }).strict(),
     output: z
       .object({
         charts: z.array(z.object({ n: z.number().int().positive(), chartId: z.string(), symbol: z.string(), at: time, group: z.enum(["positive", "control", "other"]) }).passthrough()),
@@ -207,13 +210,24 @@ export const CT_TOOLS = {
   },
   grade_blind: {
     phases: ["design", "reflect"],
-    input: z.object({ request: ctGradeBlindSchema, from: time, to: time, dataHash: z.string() }).strict(),
+    input: z.object({ request: z.union([ctGradeBlindSchema, ctGradeBlindSchemaStage3]), from: time, to: time, dataHash: z.string() }).strict(),
     output: z.object({ correct: z.number().int(), total: z.number().int(), accuracyPct: z.number(), pValue: z.number() }).passthrough(),
   },
   diagnose_trades: {
     phases: ["design", "reflect"],
     input: z.object({ request: ctDiagnoseTradesSchema, from: time, to: time, dataHash: z.string() }).strict(),
     output: z.object({ diagnosisId: z.string(), trades: z.number().int().nonnegative() }).passthrough(),
+  },
+  // Stage 4: frozen at the start of a run (like playbook_summary) so a resume sees the same stable block.
+  calibration_summary: {
+    phases: ["data"],
+    input: z.object({ market: z.enum(["stock", "crypto"]), trainingToMs: time, toMs: time, ownerScope: z.literal(true) }).strict(),
+    output: z.object({ note: z.string(), records: z.array(z.unknown()), pooled: z.unknown() }).passthrough(),
+  },
+  measured_summary: {
+    phases: ["data"],
+    input: z.object({ market: z.enum(["stock", "crypto"]), symbols: z.array(z.string()), fromMs: time, trainingToMs: time, dataHash: z.string(), ownerScope: z.literal(true) }).strict(),
+    output: z.object({ note: z.string(), runs: z.array(z.unknown()) }).passthrough(),
   },
   playbook_summary: {
     phases: ["data"],

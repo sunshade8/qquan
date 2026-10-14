@@ -259,14 +259,19 @@ export const CT_POLICY = Object.freeze({
   reserveFraction: 0.35,
   // Designer research session (2026-10-13): one Opus tool loop per design/reflect step.
   // 2026-10-14 (stage 3, trader tools): 16 turns, 40 tool calls, up to 32 chart images, 2 blind sets.
+  // 2026-10-14 (stage 4): 48 chart images per session so a 24-chart blind set and 16 ordinary charts fit.
   sessionMaxTurns: 16,
   sessionMaxToolCalls: 40,
   sessionMaxScreens: 6,
   maxSessions: 3,
-  sessionMaxCharts: 32,
+  sessionMaxCharts: 48,
   sessionMaxBlindSets: 2,
-  /** 1 = the designer has label_moves / contrast_moves / view_charts / grade_blind / diagnose_trades and the playbook. */
-  traderTools: 1,
+  /**
+   * 1 = the designer has label_moves / contrast_moves / view_charts / grade_blind / diagnose_trades and the playbook.
+   * 2 = stage 4: contrast control modes (time / vol_matched / losers), 16–32-chart blind sets with reserve anchors,
+   *     calibration records and "already measured" in the stable block, summarized thinking, and the stage-4 brief.
+   */
+  traderTools: 2,
 });
 /** Fields added after contracts were first frozen; older contracts lack them. */
 type CTPolicyLater =
@@ -292,9 +297,23 @@ export function ctSessionPolicy(contract: Pick<CTContract, "policy">) {
     maxSessions: p.maxSessions ?? 3,
     maxCharts: p.sessionMaxCharts ?? 0,
     maxBlindSets: p.sessionMaxBlindSets ?? 0,
-    /** Stage 3: the trader tools, the playbook and the self-rebuttal exist only on contracts that carry the flag. */
-    traderTools: (p.traderTools ?? 0) === 1,
+    /** Stage 3+: the trader tools, the playbook and the self-rebuttal exist only on contracts that carry the flag. */
+    traderTools: (p.traderTools ?? 0) >= 1,
+    /** 0 = stage-2 tools, 1 = stage-3 trader tools (frozen bytes), 2 = stage-4 tools, brief and request options. */
+    toolsVersion: (p.traderTools ?? 0) as 0 | 1 | 2,
+    /** Blind-set size for toolsVersion 2: min / default / max charts (stage 3 sets are 4–64 charts of any even size, per its own schema). */
+    blindSize: (p.traderTools ?? 0) >= 2 ? { min: 16, default: 24, max: 32 } : null,
   };
+}
+/**
+ * Display text for a contract's `selection`. Contracts frozen before 2026-10-14 stored the NVDA/BTC sentence for
+ * every default run (so coin runs said "NVDA 단일 종목"); stored contracts are never rewritten, only shown correctly.
+ */
+export function ctSelectionLabel(contract: Pick<CTContract, "market" | "selection">) {
+  if (contract.market === "crypto" && /NVDA/.test(contract.selection))
+    return "Binance BTCUSDT(또는 선택 종목) 연구 · 다른 종목에 일반화 검증되지 않음";
+  if (contract.market === "stock" && /Binance/.test(contract.selection)) return "NVDA 단일 종목 연구 · 다른 종목에 일반화 검증되지 않음";
+  return contract.selection;
 }
 export type CTContract = {
   market: CTMarket;
@@ -328,6 +347,10 @@ export type CTContract = {
   createdAt: string;
   selection: string;
   calendarVersion?: string;
+  /** Stage 4: identity of the board (docs/ct.md「판 서명」); absent on contracts frozen before it. */
+  boardSignature?: string;
+  /** Stage 4: set when a same-board rerun was started on purpose (repeatReason). */
+  repeat?: { n: number; reason: string; previousRuns: string[] };
 };
 export async function ctHash(value: unknown) {
   return Array.from(

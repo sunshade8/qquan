@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { ctFreedom, ctRuleText, ctSessionPolicy, ctSpecSchema, type CTContract, type CTSpec } from "./ct-spec.ts";
-import type { CTBlindSet, CTLabelParams } from "./ct-trader-tools.ts";
+import type { CTBlindSet, CTControlMode, CTLabelParams } from "./ct-trader-tools.ts";
+import type { CTCalibrationSnapshot } from "./ct-calibration.ts";
+import type { CTMeasuredBefore } from "./ct-measured.ts";
 import { ctRoundTripCostPct, ctStability, ctSummary, type CTResult } from "./ct-engine.ts";
 import { ctCostProfileText } from "./ct-costs.ts";
 import type { GenerationReview } from "./strategy-generation-spec.ts";
@@ -17,6 +19,8 @@ export const ctRequestSchema = z
     capital: z.number().positive().max(100000000).optional(),
     // Crypto up to 3 years; stocks up to the local coverage (checked against the catalog). Default 1 year: docs/ct.md「데이터 범위」.
     days: z.number().int().min(90).max(1095).default(365),
+    // Stage 4: why the same board is run again on purpose (docs/ct.md「판 서명」); at least 10 characters.
+    repeatReason: z.string().trim().min(10).max(500).optional(),
   })
   .strict();
 export const ctSearchSchema = z
@@ -191,6 +195,8 @@ export type CTSession = {
     duplicates: number;
     noEdgeReason: string | null;
     rejectedHypotheses: CTSubmission["rejectedHypotheses"];
+    /** Stage 4: hypotheses whose only evidence was a blind set; the server moved them out of rejectedHypotheses (they are calibration records). */
+    calibrationRefs?: Array<{ blindId: string; hypothesis: string; result: string }>;
   };
   endReason?: string;
 };
@@ -233,6 +239,10 @@ export type CTContrastRecord = {
   topLift: { feature: string; bin: string; lift: number } | null;
   treeLeaves: number;
   summary: string;
+  /** Stage 4: the request as asked (features with lookback/unit, control group), for "already measured" lists and shape/ledger reports. */
+  request?: { features: Array<{ feature: string; lookback: number; timeframe: number; unit?: string }>; controls: CTControlMode };
+  /** Stage 4: lift shape per feature (monotone_up / monotone_down / two_tailed / flat). */
+  shapes?: Record<string, string>;
 };
 /** A screen_rule replay the designer may diagnose. */
 export type CTScreenRecord = { screenId: string; session: number; at: string; hash: string; spec: CTSpec; trades: number };
@@ -321,6 +331,9 @@ export type CTResearch = {
   blinds?: Record<string, CTBlindSet & { gradedKey?: string }>;
   /** The playbook as of this run's start; frozen so the cached prefix is stable and resumes see the same thing. */
   playbook?: CTPlaybookSnapshot;
+  /** Stage 4: calibration records and what earlier runs measured on this very training data, frozen at the start like the playbook. */
+  calibration?: CTCalibrationSnapshot;
+  measured?: CTMeasuredBefore;
   /** Set once the finished run was written to the playbook. */
   playbookRecorded?: { at: string; entries: number };
   /** Set when research continued without web sources (search optional). */
@@ -460,9 +473,30 @@ const SYS3_WORKFLOW = `How an intraday trader works, and why (a default order, n
 8. Before you submit, argue against yourself. For each candidate give selfRebuttal: the three likeliest reasons this rule is chance (few events, one or two months, a regime that will not return, a threshold tuned to the sample, a filter chosen after seeing the losses, a cost assumption) and for each what in the data rules it out (excluded: yes, partly or no). Be honest: "no" and "partly" are information for the reviewers, and a rule you cannot defend is better left out.`;
 const SYS3_GUARD = `Guard against fooling yourself: every measurement raises the chance that something looks good by luck, and the full log of queries, contrast cells, charts, blind-set results and diagnoses goes to independent reviewers together with the running count of hypothesis tests (this run and earlier runs on this market). Distrust effects that rest on few events, on one or two months, or that vanish against the baseline or under doubled costs. Prefer a few simple conditions with a clear mechanism over many tuned ones. Web principles in the context are inspiration only — never evidence of performance. A chart that looks convincing is a hypothesis, not a result.`;
 const SYS3_TOOLS = `Tools and their limits: every tool sees the training split only; the server rejects anything past it and drops any moment whose look-ahead would cross it. Evidence ids a candidate's mapping may cite: a queryId (query_conditional_returns), a contrastId (contrast_moves) or a diagnosisId (diagnose_trades), each only for the features and timeframes it actually measured (a diagnosis measured range_pct on 1-minute bars and sma_distance_pct on 60-minute bars), or a web source id; spec.sourceIds lists the ids the rule uses. read_bars and view_charts only open times the server issued (event and control times from label_moves, query anchors, screen_rule trade times); view_charts takes up to 8 times per call within the per-session image limit stated in the context; a blind set needs equal numbers of event and control times and is graded once. screen_rule has a per-session limit. submit_candidates ends the session: 1–3 candidates, or zero candidates with noEdgeReason when nothing survived — record every hypothesis you rejected and why. A revision of an earlier measured candidate names it as parentId and states the measured problem, the exact changes and the expected effect; a new idea has parentId null. A candidate that uses a diagnose_trades filter says so in observedProblem and changes.`;
-export const CT_DESIGNER_SYSTEM = [SYS3_INTRO, SYS_SUCCESS, SYS_COSTS, SYS_EXIT_STRUCTURE, SYS3_WORKFLOW, SYS3_GUARD, SYS_LANGUAGE, SYS_LEVELS, SYS_EXITS, SYS3_TOOLS, SYS_DATA].join("\n\n");
-/** The brief a contract runs under: the trader's brief when it carries the trader tools, the stage-2 brief otherwise (byte for byte, so cached prefixes of older runs survive). */
-export const ctDesignerSystem = (contract: Pick<CTContract, "policy">) => (ctSessionPolicy(contract).traderTools ? CT_DESIGNER_SYSTEM : CT_DESIGNER_SYSTEM_STAGE2);
+/** The stage-3 brief, byte for byte: traderTools = 1 contracts keep it (SHA-256 pinned in tests/ct-trader-session.test.mjs). */
+export const CT_DESIGNER_SYSTEM_STAGE3 = [SYS3_INTRO, SYS_SUCCESS, SYS_COSTS, SYS_EXIT_STRUCTURE, SYS3_WORKFLOW, SYS3_GUARD, SYS_LANGUAGE, SYS_LEVELS, SYS_EXITS, SYS3_TOOLS, SYS_DATA].join("\n\n");
+
+/* ------------------------------------------------------------------------------------------
+ * Stage 4 (2026-10-14): same rule language and gates. The control groups of contrast_moves can ask about
+ * direction, the designer's eye is calibrated with sets large enough to say something, and the context
+ * says what earlier runs already measured on this very data.
+ * ------------------------------------------------------------------------------------------ */
+const SYS4_WORKFLOW = `How an intraday trader works, and why (a default order, not a script — you may start from a hypothesis, but know what each step buys you):
+1. Read the board. The context holds the cost hurdle; the playbook of what earlier runs on this market tried and how each ended (mechanism and outcome grade; numbers appear only where they cannot leak this run's development or final data) and the cumulative number of distinct hypothesis tests made on this market; alreadyMeasured — the label definitions and contrast requests earlier runs made on exactly this training data, with the conclusion each run drew (asking the same question again teaches nothing new, so ask a different one); and eyeCalibration — how your own reading of charts did in blind sets before. Do not re-run a mechanism the playbook shows as failed unless you can say what is different now, and remember that every test you add makes the next positive result cheaper to find by luck.
+2. Look at the moves worth trading before you theorise. label_moves marks the moments where price reached k × the round-trip cost before it fell m × the cost (training split only), clusters them into events and tells you when they happen (time of day, volatility, weekday, month) next to how often those conditions occur at all. You are poor at searching threshold space by hand and good at recognising what a setup looks like and whether a mechanism stands behind it, so let the server find the moments and spend your effort judging them. view_charts shows moments as pictures: 1-hour context with the previous day's range, today's 5-minute bars with VWAP and the opening range, the last 90 one-minute bars with volume. Axes are percent of the decision bar's close, there are no dates, and nothing after the decision time is drawn. Look at several events and at their matched controls: what do the events share in context, location (VWAP, opening range, yesterday's range) and volume behaviour that the controls do not?
+3. Find what differed just before — and choose the control group for the question you are asking. contrast_moves compares DSL features at the event moments with control minutes, gives a lift per control quintile, and optionally a depth-3 tree grown on the first two thirds of training and re-measured on the last third. Three control groups, because the answer depends on who the events are compared with: "time" (same hour of the day and month) shows where events sit, but moves worth +k × cost mostly happen in high-volatility stretches, so a feature that is extreme in EITHER direction is over-represented among the events (both tails of the lift rise together: shape two_tailed) — that is the volatility regime, not a direction. "vol_matched" also matches the volatility quintile (60-minute ATR), so what remains is not the volatility regime. "losers" compares the events with the label's own stop-first moments, matched on hour, month and volatility quintile: it asks what differed just before price went UP rather than DOWN from a similar place, which is the question a long-only rule needs answered. Each feature's lift shape (monotone_up, monotone_down, two_tailed, flat) is classified for you. A lift is a lead about where to look, never evidence of performance; the proof is query_conditional_returns and screen_rule on the DSL conditions that express the idea. A tree leaf whose holdout lift does not point the same way as its training lift is noise even inside training. Every feature × quintile × control group is added to the multiple-testing ledger, so ask about a handful of features you have a reason to suspect, not about everything.
+4. Calibrate your eye when your confidence rests on charts. view_charts with blind: true shows 16–32 charts (default 24; half events, half controls, random order, group hidden), and grade_blind takes your call for each chart and returns the accuracy, the exact binomial p-value, how many hits that set size needs to be significant, and a verdict. The size matters: with 8 charts you need 7 hits, and a real 75% eye gets there only 37% of the time, so a small set that "shows no skill" shows nothing; 24 charts need 17 hits (a 75% eye gets there 77% of the time). Verdicts: skill (p < 0.05), no_skill (p ≥ 0.05 and the set was large enough to catch a real 70% eye with power ≥ 0.8) or inconclusive (too small to say). A blind set may only use times you have not looked at in an ordinary view_charts call (the server refuses a chart whose answer you have seen). Calibration is a measurement of your tool, not a trading idea: it is recorded by the server as a calibration record, never put it in rejectedHypotheses, and "inconclusive" is not evidence that charts are useless. If you decide to rely on numbers and skip charts, that is a legitimate choice — say why in your reasoning.
+5. Write the mechanism and what would falsify it before you measure: who is forced to trade, or what information arrives, that moves price after this condition, and what result would show you wrong.
+6. Confirm with numbers. query_conditional_returns on the DSL conditions that express the setup gives the net after costs against the same-time-of-day baseline, months and MFE/MAE; exitCompare puts fixed, breakeven, trailing and time-stop exits on the SAME events. screen_rule replays the complete rule on training and returns the server's gate verdict.
+7. Learn from the losses. diagnose_trades takes a screened rule (screenId) or a submitted candidate and splits its training trades by time of day, volatility, the 1-hour trend, weekday, holding time and exit reason. It measures how many losers were once in profit (an exit problem: breakeven, trailing, an earlier exit) against how many never went in the money (an entry problem: the condition does not select), and replays the same entries under other exit structures. A filter it suggests was found on these very trades, so it is a new hypothesis that must earn its way: record it as a change from the rule you diagnosed, re-measure it, and count the cells you looked at.
+8. Before you submit, argue against yourself. For each candidate give selfRebuttal: the three likeliest reasons this rule is chance (few events, one or two months, a regime that will not return, a threshold tuned to the sample, a filter chosen after seeing the losses, a cost assumption) and for each what in the data rules it out (excluded: yes, partly or no). Be honest: "no" and "partly" are information for the reviewers, and a rule you cannot defend is better left out.`;
+const SYS4_TOOLS = `Tools and their limits: every tool sees the training split only; the server rejects anything past it and drops any moment whose look-ahead would cross it. Evidence ids a candidate's mapping may cite: a queryId (query_conditional_returns), a contrastId (contrast_moves) or a diagnosisId (diagnose_trades), each only for the features and timeframes it actually measured (a diagnosis measured range_pct on 1-minute bars and sma_distance_pct on 60-minute bars), or a web source id; spec.sourceIds lists the ids the rule uses. read_bars and view_charts only open times the server issued (event and control times from label_moves — its blindReserve holds extra times for large blind sets — query anchors, screen_rule trade times); an ordinary view_charts call takes up to 8 times within the per-session image limit stated in the context; a blind set takes 16–32 times with equal numbers of event and control times, none of them seen in an ordinary view, and is graded once. screen_rule has a per-session limit. submit_candidates ends the session: 1–3 candidates, or zero candidates with noEdgeReason when nothing survived — record every trading hypothesis you rejected and why (blind-set results are calibration records, not rejected hypotheses). A revision of an earlier measured candidate names it as parentId and states the measured problem, the exact changes and the expected effect; a new idea has parentId null. A candidate that uses a diagnose_trades filter says so in observedProblem and changes.`;
+export const CT_DESIGNER_SYSTEM = [SYS3_INTRO, SYS_SUCCESS, SYS_COSTS, SYS_EXIT_STRUCTURE, SYS4_WORKFLOW, SYS3_GUARD, SYS_LANGUAGE, SYS_LEVELS, SYS_EXITS, SYS4_TOOLS, SYS_DATA].join("\n\n");
+/** The brief a contract runs under: stage 4 / stage 3 trader briefs by tools version, the stage-2 brief otherwise (all frozen byte for byte, so cached prefixes of older runs survive). */
+export const ctDesignerSystem = (contract: Pick<CTContract, "policy">) => {
+  const v = ctSessionPolicy(contract).toolsVersion;
+  return v >= 2 ? CT_DESIGNER_SYSTEM : v === 1 ? CT_DESIGNER_SYSTEM_STAGE3 : CT_DESIGNER_SYSTEM_STAGE2;
+};
 
 /** The contract as the designer needs it: boundaries, costs and gates. Stable across sessions. */
 function contractView(contract: CTContract) {
@@ -495,6 +529,7 @@ function contractView(contract: CTContract) {
       toolCallsPerSession: s.maxToolCalls,
       screensPerSession: s.maxScreens,
       ...(s.traderTools ? { chartImagesPerSession: s.maxCharts, blindSetsPerSession: s.maxBlindSets } : {}),
+      ...(s.blindSize ? { blindSetSize: s.blindSize } : {}),
     },
   };
 }
@@ -569,6 +604,9 @@ export function ctSessionContext(ct: CTResearch, brief: string, hurdle: CTCostHu
       ...(m.netReturnPct === null ? { developmentNetReturnPct: "비공개(이 연구의 개발·최종 구간과 겹침)" } : { developmentNetReturnPct: r4(m.netReturnPct) }),
       diagnostics: m.diagnostics,
     })),
+    // Stage 4: what the designer's eye did in blind sets before, and what earlier runs already measured on this very data.
+    ...(ct.calibration ? { eyeCalibration: ct.calibration } : {}),
+    ...(ct.measured ? { alreadyMeasured: ct.measured } : {}),
     // Stage 3: what earlier runs on this market tried and how it ended, and how many tests that took.
     ...(ct.playbook
       ? {
@@ -607,7 +645,7 @@ export function ctSessionContext(ct: CTResearch, brief: string, hurdle: CTCostHu
   const s = ctSessionPolicy(ct.contract);
   const left = ct.contract.policy.maxCandidates - (ct.submitted ?? ct.trials.length);
   const task = [
-    `세션 ${session.index + 1}/${s.maxSessions} (${session.kind === "design" ? "첫 설계" : "측정 결과 반영 후 재설계"}). 남은 후보 제출 한도 ${Math.max(0, left)}개 · 이 세션은 모델 턴 ${s.maxTurns}회, 도구 호출 ${s.maxToolCalls}회, screen_rule ${s.maxScreens}회${s.traderTools ? `, 차트 이미지 ${s.maxCharts}장(블라인드 세트 ${s.maxBlindSets}개)` : ""}까지.`,
+    `세션 ${session.index + 1}/${s.maxSessions} (${session.kind === "design" ? "첫 설계" : "측정 결과 반영 후 재설계"}). 남은 후보 제출 한도 ${Math.max(0, left)}개 · 이 세션은 모델 턴 ${s.maxTurns}회, 도구 호출 ${s.maxToolCalls}회, screen_rule ${s.maxScreens}회${s.traderTools ? `, 차트 이미지 ${s.maxCharts}장(블라인드 세트 ${s.maxBlindSets}개${s.blindSize ? `, 세트당 ${s.blindSize.min}–${s.blindSize.max}장` : ""})` : ""}까지.`,
     session.kind === "reflect"
       ? "이전 세션의 조회와 후보 측정 결과가 위에 있습니다. 같은 아이디어의 미세 조정보다, 측정이 가리키는 다른 메커니즘이나 명확한 실패 원인의 수정을 우선하세요. 이전 queryId·contrastId·diagnosisId도 근거로 인용할 수 있습니다."
       : s.traderTools

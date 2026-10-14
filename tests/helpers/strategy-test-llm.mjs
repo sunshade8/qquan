@@ -1,5 +1,6 @@
 export const generationAvailability=()=>({ready:true,missing:[]});
-export const checkGenerationModels=async()=>{};
+// Counted so a test can prove a refused run never reached the first provider call (the model-access check precedes every paid call).
+export const checkGenerationModels=async()=>{globalThis.__modelAccessChecks=(globalThis.__modelAccessChecks??0)+1;};
 export const generationCall=async(owner,role,schema,prompt,options={})=>{
  // Opt-in: run the real provider layer against a test's fake fetch stream (never the network).
  if (globalThis.__strategyTestHooks.realLlm) return (await import("../../lib/strategy-generation-llm.ts")).generationCall(owner,role,schema,prompt,options);

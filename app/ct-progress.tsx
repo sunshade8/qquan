@@ -258,6 +258,7 @@ export function LiveStatusBar({ job, runnerOnline, busy, onAct }: StatusProps) {
       </div> : null}
       <p className="ui-sub ct-live-profile">
         비용 {ctCostProfileText(ct.contract, ctCostsRoundTripPct(ct.contract.costs))} · 기간 {new Date(ct.contract.fromMs).toISOString().slice(0, 10)}–{new Date(ct.contract.toMs).toISOString().slice(0, 10)} · {ct.contract.symbols.join(", ")}
+        {ct.contract.repeat ? ` · 같은 판 ${ct.contract.repeat.n}번째 실행 · 사유: ${ct.contract.repeat.reason}` : ""}
       </p>
       {/* The text only changes when the phase or status changes, so polling never re-announces. */}
       <span className="ui-sr-only" aria-live="polite" role="status">{announce}</span>

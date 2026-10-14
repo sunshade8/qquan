@@ -9,11 +9,13 @@ import { ctState } from "./helpers/ct-fixture.mjs";
 import { plantedMarket, plantedContract, MINUTE } from "./helpers/ct-trader-fixture.mjs";
 import { ctHash, executableCT, CT_ENGINE, CT_POLICY, ctSessionPolicy } from "../lib/ct-spec.ts";
 import { ctRunLabels, ctLabelMovesReport, ctLabelMovesSchema } from "../lib/ct-trader-tools.ts";
-import { CT_DESIGNER_SYSTEM, CT_DESIGNER_SYSTEM_STAGE2, ctDesignerSystem } from "../lib/ct-research.ts";
+import { CT_DESIGNER_SYSTEM, CT_DESIGNER_SYSTEM_STAGE2, CT_DESIGNER_SYSTEM_STAGE3, ctDesignerSystem } from "../lib/ct-research.ts";
 import { assertCTTool } from "../lib/ct-tools.ts";
 import { designerRequestChars } from "../lib/designer-request-size.ts";
 register("./helpers/slot-test-loader.mjs", import.meta.url);
 
+/** The policy of a contract frozen at stage 3 (before the 2026-10-14 stage-4 policy). */
+const STAGE3_POLICY = { ...CT_POLICY, traderTools: 1, sessionMaxCharts: 32 };
 const sqlite = new DatabaseSync(":memory:");
 class Statement {
   constructor(sql, values = []) { this.sql = sql; this.values = values; }
@@ -77,11 +79,16 @@ const messages = (id) => sqlite.prepare("SELECT payload FROM ct_session_messages
 
 test("the stage-2 brief is byte-identical, contracts decide which brief and tools run", () => {
   assert.equal(createHash("sha256").update(CT_DESIGNER_SYSTEM_STAGE2).digest("hex"), "12fa22726e2b1f10700de1f6d9a3bc5b50b0ba2df22024c3e9b566695dbeeffd");
+  assert.equal(createHash("sha256").update(CT_DESIGNER_SYSTEM_STAGE3).digest("hex"), "08e7ef36f0ec5d9a8a4731aa37ae6d47216ae3be4e4e7520217b4058e32cacba");
+  assert.equal(ctDesignerSystem({ policy: STAGE3_POLICY }), CT_DESIGNER_SYSTEM_STAGE3);
   assert.equal(ctDesignerSystem({ policy: CT_POLICY }), CT_DESIGNER_SYSTEM);
+  assert.notEqual(CT_DESIGNER_SYSTEM, CT_DESIGNER_SYSTEM_STAGE3);
   const old = { policy: { ...CT_POLICY, traderTools: undefined, sessionMaxTurns: undefined, sessionMaxToolCalls: undefined, sessionMaxCharts: undefined, sessionMaxBlindSets: undefined } };
   assert.equal(ctDesignerSystem(old), CT_DESIGNER_SYSTEM_STAGE2);
-  assert.deepEqual(ctSessionPolicy(old), { maxTurns: 12, maxToolCalls: 24, maxScreens: 6, maxSessions: 3, maxCharts: 0, maxBlindSets: 0, traderTools: false });
-  assert.deepEqual(ctSessionPolicy({ policy: CT_POLICY }), { maxTurns: 16, maxToolCalls: 40, maxScreens: 6, maxSessions: 3, maxCharts: 32, maxBlindSets: 2, traderTools: true });
+  assert.deepEqual(ctSessionPolicy(old), { maxTurns: 12, maxToolCalls: 24, maxScreens: 6, maxSessions: 3, maxCharts: 0, maxBlindSets: 0, traderTools: false, toolsVersion: 0, blindSize: null });
+  // Stage 3 contracts (traderTools = 1) keep 32 images and their own brief; stage 4 (= 2) has 48 images and 16–32-chart blind sets.
+  assert.deepEqual(ctSessionPolicy({ policy: STAGE3_POLICY }), { maxTurns: 16, maxToolCalls: 40, maxScreens: 6, maxSessions: 3, maxCharts: 32, maxBlindSets: 2, traderTools: true, toolsVersion: 1, blindSize: null });
+  assert.deepEqual(ctSessionPolicy({ policy: CT_POLICY }), { maxTurns: 16, maxToolCalls: 40, maxScreens: 6, maxSessions: 3, maxCharts: 48, maxBlindSets: 2, traderTools: true, toolsVersion: 2, blindSize: { min: 16, default: 24, max: 32 } });
   assert.match(CT_DESIGNER_SYSTEM, /selfRebuttal/);
   assert.match(CT_DESIGNER_SYSTEM, /label_moves[\s\S]*contrast_moves[\s\S]*grade_blind[\s\S]*diagnose_trades/);
 });
@@ -101,11 +108,11 @@ test("trader tools are refused outside the training split, for unknown ids and f
   assert.throws(() => assertCTTool("label_moves", { params, ...ok }, ct), /단계/);
 });
 
-test("a full trader session: labels → contrast → charts (images in tool_result) → blind grade → screen → diagnose → submit; playbook written", async () => {
+test("a full STAGE-3 trader session (traderTools = 1 contract): labels → contrast → charts (images in tool_result) → blind grade → screen → diagnose → submit; playbook written", async () => {
   const original = globalThis.fetch;
   globalThis.__strategyTestHooks.realLlm = true;
   const requests = [];
-  const created = await job();
+  const created = await job({ contract: { policy: STAGE3_POLICY } });
   const label = (await ctHash({ run: created.id, params })).slice(0, 16);
   // Event and control times are what label_moves will issue for this run's labelId (the seed derives from it).
   const issued = ctLabelMovesReport(params, ctRunLabels(params, { BTCUSDT: bars }, contract), contract, label);
@@ -145,7 +152,7 @@ test("a full trader session: labels → contrast → charts (images in tool_resu
     // Tool set, brief, cache points.
     for (const { body } of requests) {
       assert.deepEqual(body.tools.map((t) => t.name), ["label_moves", "contrast_moves", "view_charts", "grade_blind", "query_conditional_returns", "read_bars", "screen_rule", "diagnose_trades", "submit_candidates"]);
-      assert.equal(body.system[0].text, CT_DESIGNER_SYSTEM);
+      assert.equal(body.system[0].text, CT_DESIGNER_SYSTEM_STAGE3);
       assert.deepEqual(body.cache_control, { type: "ephemeral" });
       assert.deepEqual(body.messages[0].content[0].cache_control, { type: "ephemeral" });
       assert.deepEqual(body.thinking, { type: "adaptive" });

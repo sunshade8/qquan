@@ -11,6 +11,7 @@ import TriangleAlert from "lucide-react/dist/esm/icons/triangle-alert";
 import X from "lucide-react/dist/esm/icons/x";
 import type { GenerationJob, ResearchMeter } from "@/lib/strategy-generation-types";
 import { mergeCalls, pickMeter, traderSummary } from "@/lib/ct-activity";
+import { ctSessionPolicy } from "@/lib/ct-spec";
 import type { ActiveGeneration } from "@/lib/strategy-generation-store";
 import type { CTPackage } from "@/lib/ct-research-store";
 import type { CTBar, CTResult } from "@/lib/ct-engine";
@@ -215,6 +216,50 @@ const Sources = memo(
   (a, b) => a.sources.length === b.sources.length && a.approaches?.length === b.approaches?.length,
 );
 
+/**
+ * The designer's thinking, turn by turn, from the session's stored messages. A stage-4 contract asks for summarized thinking;
+ * an older contract stored only the signature, which is said plainly instead of shown as an empty box.
+ */
+function SessionThinking({ jobId, session, turns, summarized }: { jobId: string; session: number; turns: number; summarized: boolean }) {
+  const [items, setItems] = useState<Array<{ turn: number; text: string; tools: string[] }> | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let live = true;
+    fetch(`/api/invest/ct?thinking=1&id=${encodeURIComponent(jobId)}&session=${session}`, { cache: "no-store" })
+      .then(async (r) => {
+        const body = (await r.json()) as { turns?: Array<{ turn: number; text: string; tools: string[] }> };
+        if (!live) return;
+        if (r.ok && body.turns) {
+          setItems(body.turns);
+          setFailed(false);
+        } else setFailed(true);
+      })
+      .catch(() => live && setFailed(true));
+    return () => {
+      live = false;
+    };
+  }, [jobId, session, turns]);
+  if (failed) return <p className="ui-sub">설계자 생각을 불러오지 못했습니다.</p>;
+  if (!items) return <p className="ui-sub">설계자 생각 불러오는 중…</p>;
+  if (!items.length) return null;
+  return (
+    <div className="ct-thinking" aria-label="설계자 생각(요약)">
+      <p><b>설계자 생각(요약)</b></p>
+      {items.map((t) => (
+        <details className="ui-disclosure" key={t.turn}>
+          <summary>
+            턴 {t.turn}
+            <small className="ui-num">{t.tools.length ? t.tools.join(" · ") : "도구 호출 없음"}</small>
+          </summary>
+          <div className="ui-disclosure-body ui-korean">
+            {t.text ? <p className="ct-thinking-text">{t.text}</p> : <p className="ui-sub">{summarized ? "이 턴은 생각 요약이 없습니다(모델이 생각 없이 응답함)." : "기록 없음(이 계약은 생각 요약을 받지 않음)"}</p>}
+          </div>
+        </details>
+      ))}
+    </div>
+  );
+}
+
 /** The designer's research: sessions, every training query, rejected hypotheses and training-gate rejections. */
 const ResearchSessions = memo(
   function ResearchSessions({ ct, jobId }: { ct: CTResearch; jobId: string }) {
@@ -226,6 +271,12 @@ const ResearchSessions = memo(
       <section className="ct-section" aria-labelledby="ct-sessions-h">
         <h2 className="ui-title" id="ct-sessions-h">설계 세션 <span className="ct-count ui-num">{sessions.length}</span></h2>
         {ct.sourceNote ? <p className="ui-sub">{ct.sourceNote}</p> : null}
+        {ct.contract.repeat ? (
+          <p className="ui-alert" data-tone="info" role="note">
+            같은 판 {ct.contract.repeat.n}번째 실행 · 사유: {ct.contract.repeat.reason}
+            <small className="ui-num"> 이전 실행 {ct.contract.repeat.previousRuns.map((id) => id.slice(0, 8)).join(", ")}</small>
+          </p>
+        ) : null}
         {trader ? (
           <div className="ct-trader" aria-label="단타 고수 도구 요약">
             <ul className="ct-trader-stats">
@@ -259,6 +310,7 @@ const ResearchSessions = memo(
                 <small className="ui-num">턴 {s.turns} · 도구 {s.toolCalls} · 조회 {queries.length} · 사전 검사 {s.screens}{s.endReason ? ` · ${s.endReason}` : ""}</small>
               </summary>
               <div className="ui-disclosure-body ui-korean">
+                <SessionThinking jobId={jobId} session={s.index} turns={s.turns} summarized={ctSessionPolicy(ct.contract).toolsVersion >= 2} />
                 {s.submission?.noEdgeReason ? <p><b>우위 없음 판단</b> {s.submission.noEdgeReason}</p> : null}
                 {s.submission?.rejectedHypotheses.length ? (
                   <>
@@ -269,6 +321,9 @@ const ResearchSessions = memo(
                       ))}
                     </ul>
                   </>
+                ) : null}
+                {s.submission?.calibrationRefs?.length ? (
+                  <p className="ui-sub">눈(차트 판독) 보정 결과 {s.submission.calibrationRefs.length}건은 기각 가설이 아니라 보정 기록으로 저장되었습니다.</p>
                 ) : null}
                 {queries.length ? (
                   <>
@@ -306,6 +361,8 @@ const ResearchSessions = memo(
     a.ct.charts?.length === b.ct.charts?.length,
 );
 
+type CalibrationItem = { run: string; symbols: string[]; blindId: string; n: number; hits: number; pValue: number; verdict: "skill" | "no_skill" | "inconclusive"; reading: string; neededHits: number; powerIfEyeIs70Pct: number; measured: string; source: string };
+const VERDICT_TEXT: Record<CalibrationItem["verdict"], string> = { skill: "신호 있음", no_skill: "신호 없음", inconclusive: "판정 불가" };
 type PlaybookItem = { id: string; market: string; timeframe: string; comparable: boolean; mechanism: string; structure: string; grade: string; reason: string; measured: string; run: string; source: string; detail?: Record<string, number | string> };
 const GRADE_TEXT: Record<string, string> = {
   rejected_in_training: "학습 기각",
@@ -317,7 +374,7 @@ const GRADE_TEXT: Record<string, string> = {
 };
 /** Read-only playbook of one market: what earlier runs tried and how each ended, with filters. Numbers follow the same leak rule the designer gets. */
 const PlaybookPanel = memo(function PlaybookPanel({ market }: { market: CTMarket }) {
-  const [data, setData] = useState<{ entries: PlaybookItem[]; runs: Array<{ runId: string; tests: number; timeframe: string; note: string; at: string }>; cumulativeTests: number } | null>(null);
+  const [data, setData] = useState<{ entries: PlaybookItem[]; runs: Array<{ runId: string; tests: number; timeframe: string; note: string; at: string }>; cumulativeTests: number; calibration?: CalibrationItem[] } | null>(null);
   const [error, setError] = useState("");
   const [grade, setGrade] = useState("all");
   const [timeframe, setTimeframe] = useState("all");
@@ -352,6 +409,21 @@ const PlaybookPanel = memo(function PlaybookPanel({ market }: { market: CTMarket
             <label>주기 <select value={timeframe} onChange={(e) => setTimeframe(e.target.value)}><option value="all">전체</option><option value="1m">1분봉(단타)</option><option value="daily">일봉(직접 비교 불가)</option></select></label>
             <label>검색 <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="메커니즘·구조·사유" /></label>
           </div>
+          {data?.calibration?.length ? (
+            <div className="ct-calibration" aria-label="설계자의 눈 보정 기록">
+              <p><b>보정 기록 · 설계자의 눈</b> <small>거래 아이디어의 기각이 아니라 도구 측정입니다. 작은 세트의 p가 큰 것은 &lsquo;판별력 없음&rsquo;이 아니라 &lsquo;알 수 없음&rsquo;입니다.</small></p>
+              <ul className="ct-playbook">
+                {data.calibration.map((c) => (
+                  <li key={`${c.run}-${c.blindId}`}>
+                    <b>{c.symbols.join(", ")} · 블라인드 {c.n}장 중 {c.hits}장 적중 (p={c.pValue})</b>
+                    <span className={`ct-grade ct-grade-calibration-${c.verdict}`}>{VERDICT_TEXT[c.verdict]}</span>
+                    <span>{c.reading} · 이 크기에서 유의하려면 {c.neededHits}장 이상, 실제 70% 눈을 잡아낼 확률 {Math.round(c.powerIfEyeIs70Pct * 100)}%</span>
+                    <small className="ui-num">{c.measured} · 실행 {c.run}{c.source === "migrated" ? " · 기존 기록에서 이전" : ""}</small>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
           <ul className="ct-playbook">
             {shown.map((e) => (
               <li key={e.id}>
@@ -508,6 +580,8 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
     [budget, setBudget] = useState(8),
     [capital, setCapital] = useState(""),
     [days, setDays] = useState(""),
+    [repeat, setRepeat] = useState<{ message: string; previous: Array<{ id: string; at: string; status: string; endReason: string | null }> } | null>(null),
+    [repeatReason, setRepeatReason] = useState(""),
     [ready, setReady] = useState(false),
     [streamed, setStreamed] = useState<ResearchMeter | null>(null),
     [clock, setClock] = useState(() => Date.now());
@@ -627,11 +701,20 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
         body: JSON.stringify({ action, id: job?.id, ...extra }),
       });
       if (!r.ok) {
-        const p = (await r.json()) as { error?: string };
+        const p = (await r.json()) as { error?: string; boardRepeat?: { previous: Array<{ id: string; at: string; status: string; endReason: string | null }> } };
+        // Same board as an earlier run: show why, and offer "run anyway" only with a reason (nothing was paid for).
+        if (p.boardRepeat) {
+          setRepeat({ message: p.error ?? "같은 판입니다", previous: p.boardRepeat.previous });
+          return;
+        }
         throw new Error(p.error);
       }
       const p = (await r.json()) as { job?: { id: string } };
-      if (p.job) setSelected(p.job.id);
+      if (p.job) {
+        setSelected(p.job.id);
+        setRepeat(null);
+        setRepeatReason("");
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "CT 요청 실패");
     } finally {
@@ -696,9 +779,10 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
       clearInterval(timer);
     };
   }, [job?.id, job?.status, load, ready]);
-  const generate = () =>
+  const generate = (reason?: string) =>
     act("research", {
       requestId: crypto.randomUUID(),
+      ...(reason ? { repeatReason: reason } : {}),
       market,
       brief,
       budgetUsd: budget,
@@ -790,13 +874,35 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
             ) : null}
             <p className="ui-sub">기본 설정으로 시작할 수 있습니다. 생성 완료와 매매 시작은 별도입니다.</p>
           </div>
-          <button className="ui-btn primary lg" disabled={startBlocked} onClick={() => void generate()}>
+          <button className="ui-btn primary lg" disabled={startBlocked} onClick={() => { setRepeat(null); void generate(); }}>
             {busy ? <RefreshCw size={15} className="spin" aria-hidden="true" /> : <ChartCandlestick size={15} aria-hidden="true" />}
             전략 생성
           </button>
         </div>
         {job?.status === "running" ? (
           <p className="ui-sub">진행 중인 연구가 끝나거나 취소되면 새 연구를 시작할 수 있습니다.</p>
+        ) : null}
+        {repeat ? (
+          <div className="ui-alert ct-blocking" role="alert" data-testid="ct-board-repeat">
+            <TriangleAlert size={16} aria-hidden="true" />
+            <div>
+              <strong>같은 판을 다시 돌리려고 합니다 · 아직 아무것도 시작하지 않았고 비용은 0입니다</strong>
+              <p>{repeat.message}</p>
+              <ul>
+                {repeat.previous.map((p) => (
+                  <li key={p.id}><code>{p.id.slice(0, 8)}</code> {p.at.slice(0, 10)} · {p.status === "running" || p.status === "paused" ? "진행 중" : "완료"}{p.endReason ? ` · ${p.endReason}` : ""}</li>
+                ))}
+              </ul>
+              <label className="ui-field">
+                <span>그래도 실행하는 이유 (10자 이상)</span>
+                <textarea value={repeatReason} onChange={(e) => setRepeatReason(e.target.value)} maxLength={500} placeholder="예: 새 정책의 대조군 모드를 같은 데이터에서 확인한다" />
+              </label>
+              <div className="ct-blocking-actions">
+                <button className="ui-btn sm" disabled={startBlocked || repeatReason.trim().length < 10} onClick={() => void generate(repeatReason.trim())}>그래도 실행</button>
+                <button className="ui-btn sm" onClick={() => setRepeat(null)}>닫기</button>
+              </div>
+            </div>
+          </div>
         ) : null}
         {blocking ? (
           <div className="ui-alert ct-blocking" data-tone={blockingStale ? undefined : "info"} role="alert">

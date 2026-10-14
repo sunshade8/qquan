@@ -15,6 +15,7 @@ import {
   createCTResearch,
   prepareCTContract,
   assertFinalWindowFree,
+  assertBoardFree,
   ctPackages,
   ensureCTSchema,
   registerCT,
@@ -24,6 +25,8 @@ import { ctRunnerOnline } from "@/lib/ct-trading";
 import { generationAvailability } from "@/lib/strategy-generation-llm";
 import { ctCostPreview } from "@/lib/ct-costs";
 import { ctPlaybookList } from "@/lib/ct-playbook";
+import { ctCalibrationList } from "@/lib/ct-calibration";
+import { sessionThinking } from "@/lib/ct-activity";
 export const dynamic = "force-dynamic";
 const headers = (owner: string, request: Request) => ({
   "set-cookie": researchOwnerCookie(owner, request),
@@ -74,7 +77,17 @@ export async function GET(request: Request) {
     }
     if (url.searchParams.has("playbook")) {
       // Read-only list of what earlier runs on this market tried; windows reaching today count as overlapping, so no run's numbers leak.
-      return Response.json(await ctPlaybookList(owner, market), { headers: headers(owner, request) });
+      // Calibration records (the designer's eye) are shown beside, not inside, the list of trading ideas.
+      return Response.json({ ...(await ctPlaybookList(owner, market)), calibration: await ctCalibrationList(owner, market) }, { headers: headers(owner, request) });
+    }
+    if (url.searchParams.has("thinking")) {
+      // The designer's summarized thinking per turn of one session, straight from the stored session messages (owner-only).
+      const job = await getGenerationJob(url.searchParams.get("id") ?? "");
+      const session = Number(url.searchParams.get("session") ?? 0);
+      if (!job?.ct || job.ownerId !== owner || !Number.isInteger(session) || session < 0)
+        return Response.json({ error: "연구 없음" }, { status: 404 });
+      const rows = await ctDb().prepare("SELECT payload FROM ct_session_messages WHERE run_id=? AND session=? ORDER BY seq").bind(job.id, session).all<{ payload: string }>();
+      return Response.json({ turns: sessionThinking(rows.results.map((r) => JSON.parse(r.payload))) }, { headers: headers(owner, request) });
     }
     if (url.searchParams.has("chartImage")) {
       // A chart the designer was shown (stored PNG). Owner-only, like every other research artifact.
@@ -189,9 +202,11 @@ export async function POST(request: Request) {
       const contract = await prepareCTContract(input);
       // Same refusal a real start gives, shown before anything is paid for.
       await assertFinalWindowFree(contract);
+      // ... and the same-board refusal (unless a repeatReason was given), so the screen can explain it first.
+      const repeated = await assertBoardFree(owner, contract, typeof input.repeatReason === "string" ? input.repeatReason : undefined);
       const sample = await ctDataPage(contract, contract.symbols[0], contract.toMs);
       const aggregated = aggregateCT(sample, contract.minutes, contract.market, contract.toMs);
-      return Response.json({contract, sampleBars: sample.length, aggregatedBars: aggregated.length}, {headers:headers(owner, request)});
+      return Response.json({contract: repeated, sampleBars: sample.length, aggregatedBars: aggregated.length}, {headers:headers(owner, request)});
     }
     if (body.action === "research") {
       // The client sends the run it is showing as `id`; a new research request has none.
@@ -289,7 +304,11 @@ export async function POST(request: Request) {
     return Response.json({ ok: true }, { headers: headers(owner, request) });
   } catch (error) {
     return Response.json(
-      { error: error instanceof Error ? error.message : "CT 실패" },
+      {
+        error: error instanceof Error ? error.message : "CT 실패",
+        // Structured reason for the screen (board repeat: previous runs and the signature).
+        ...((error as { detail?: unknown }).detail ? { boardRepeat: (error as { detail?: unknown }).detail } : {}),
+      },
       { status: 409 },
     );
   }
