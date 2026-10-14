@@ -4,8 +4,20 @@
     {
       "name": "qquant-dev",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
       "port": 3000
+    },
+    {
+      "name": "qquant-dev-v1policy",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "QQUAN_CT_POLICY_VERSION=1 WRANGLER_LOG_PATH=.wrangler/wrangler.log npx vinext dev --port 3001"
+      ],
+      "port": 3001
     }
   ]
 }

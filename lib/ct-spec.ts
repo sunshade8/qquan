@@ -273,6 +273,17 @@ export const CT_POLICY = Object.freeze({
    */
   traderTools: 2,
 });
+/**
+ * The policy a NEW contract is frozen with. Always CT_POLICY — except for verification: QQUAN_CT_POLICY_VERSION=1 freezes it with the
+ * stage-3 policy (tool version 1, 32 images) so the same-board refusal against runs made under that policy can be exercised on real
+ * data without paying for anything (docs/ct.md「판 서명」). Not set in normal use.
+ */
+export function ctPolicyForNewContract(): CTPolicyShape {
+  const override = typeof process !== "undefined" ? process.env?.QQUAN_CT_POLICY_VERSION : undefined;
+  return override === "1" ? { ...CT_POLICY, traderTools: 1, sessionMaxCharts: 32 } : CT_POLICY;
+}
+/** The policy fields as stored on a contract (numbers: a stage-3 contract carries tool version 1 and 32 images, not today's literals). */
+export type CTPolicyShape = { readonly [K in keyof typeof CT_POLICY]: number };
 /** Fields added after contracts were first frozen; older contracts lack them. */
 type CTPolicyLater =
   | "minMeanDailyReturnPct"
@@ -342,7 +353,7 @@ export type CTContract = {
     quantityDecimals: number;
   };
   // Contracts frozen before a policy field existed simply lack it.
-  policy: Omit<typeof CT_POLICY, CTPolicyLater> & Partial<Pick<typeof CT_POLICY, CTPolicyLater>>;
+  policy: Omit<CTPolicyShape, CTPolicyLater> & Partial<Pick<CTPolicyShape, CTPolicyLater>>;
   engine: CTEngineId;
   createdAt: string;
   selection: string;

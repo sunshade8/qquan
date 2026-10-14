@@ -303,3 +303,16 @@ test("a coin contract no longer says 'NVDA'; contracts stored before the fix are
   assert.equal(ctSelectionLabel({ market: "crypto", selection: "사용자 지정" }), "사용자 지정");
   assert.equal(CT_POLICY.traderTools, 2);
 });
+
+test("a run frozen before signatures existed still counts: its signature is computed from the contract and brief it carries", async () => {
+  sqlite.exec("DELETE FROM ct_exposure; DELETE FROM strategy_generation_runs");
+  const input = { ...request({ symbols: ["BTCUSDT"], brief: "서명 이전 계약" }) };
+  const old = await research.createCTResearch("owner-old", input);
+  sqlite.prepare("UPDATE strategy_generation_runs SET status='completed', payload=json_remove(json_set(payload,'$.ct.phase','done','$.ct.passed',json('false'),'$.ct.endReason','통과 전략 없음'),'$.ct.contract.boardSignature') WHERE id=?").run(old.id);
+  const stored = JSON.parse(sqlite.prepare("SELECT payload FROM strategy_generation_runs WHERE id=?").get(old.id).payload);
+  assert.equal(stored.ct.contract.boardSignature, undefined);
+  const fresh = await research.prepareCTContract({ ...input, requestId: crypto.randomUUID() });
+  await assert.rejects(() => research.assertBoardFree("owner-old", fresh), (error) => error instanceof CTBoardRepeatError && error.detail.previous[0].id === old.id);
+  // A different research direction on the same data is a new board.
+  await research.assertBoardFree("owner-old", await research.prepareCTContract({ ...input, requestId: crypto.randomUUID(), brief: "다른 방향" }));
+});

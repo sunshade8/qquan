@@ -28,6 +28,7 @@ import { researchFailure } from "./research-recovery.ts";
 import {
   CT_ENGINE,
   CT_POLICY,
+  ctPolicyForNewContract,
   ctFreedom,
   ctHash,
   ctIsManagedExit,
@@ -196,7 +197,7 @@ export async function prepareCTContract(input: unknown): Promise<CTContract> {
     capital,
     costs: priced.costs,
     costProfile: priced.costProfile,
-    policy: CT_POLICY,
+    policy: ctPolicyForNewContract(),
     engine: CT_ENGINE,
     createdAt: new Date().toISOString(),
     // Market-specific wording: a default coin run used to be labelled "NVDA 단일 종목 / Binance BTCUSDT".
@@ -229,21 +230,24 @@ export async function prepareCTContract(input: unknown): Promise<CTContract> {
 export async function assertBoardFree(ownerId: string, contract: CTContract, repeatReason?: string, runId?: string): Promise<CTContract> {
   await ensureCTSchema();
   if (!contract.boardSignature) return contract;
+  // Only the fields the decision needs (a run's payload can be megabytes). Contracts frozen before the signature existed
+  // have none stored: theirs is computed from the contract and brief they carry, so an earlier run on the same board counts.
   const rows = await ctDb()
     .prepare(
-      "SELECT id,created_at,status,payload FROM strategy_generation_runs WHERE owner_id=? AND id<>? AND json_extract(payload,'$.ct.contract.boardSignature')=? ORDER BY created_at DESC",
+      "SELECT id,created_at,status,json_extract(payload,'$.brief') AS brief,json_extract(payload,'$.ct.contract') AS contract,json_extract(payload,'$.ct.passed') AS passed,json_extract(payload,'$.ct.endReason') AS end_reason,json_extract(payload,'$.ct.phase') AS phase FROM strategy_generation_runs WHERE owner_id=? AND id<>? AND json_extract(payload,'$.ct.contract.market')=? ORDER BY created_at DESC",
     )
-    .bind(ownerId, runId ?? "", contract.boardSignature)
-    .all<{ id: string; created_at: number; status: string; payload: string }>();
-  const previous: CTBoardPrior[] = rows.results.flatMap((r) => {
-    const ct = (JSON.parse(r.payload) as GenerationJob).ct;
-    if (!ct) return [];
+    .bind(ownerId, runId ?? "", contract.market)
+    .all<{ id: string; created_at: number; status: string; brief: string | null; contract: string; passed: number | null; end_reason: string | null; phase: string }>();
+  const previous: CTBoardPrior[] = [];
+  for (const r of rows.results) {
     const active = r.status === "running" || r.status === "paused";
-    const failedToPass = r.status === "completed" && !ct.passed;
-    return active || failedToPass
-      ? [{ id: r.id, at: new Date(Number(r.created_at)).toISOString(), status: r.status, endReason: ct.endReason ?? null, phase: ct.phase }]
-      : [];
-  });
+    const failedToPass = r.status === "completed" && !r.passed;
+    if (!active && !failedToPass) continue;
+    const old = JSON.parse(r.contract) as CTContract;
+    const signature = old.boardSignature ?? (await ctBoardSignature(old, r.brief));
+    if (signature === contract.boardSignature)
+      previous.push({ id: r.id, at: new Date(Number(r.created_at)).toISOString(), status: r.status, endReason: r.end_reason, phase: r.phase });
+  }
   if (!previous.length) return contract;
   if (!repeatReason) throw new CTBoardRepeatError(contract.boardSignature, previous);
   return { ...contract, repeat: { n: previous.length + 1, reason: repeatReason, previousRuns: previous.map((p) => p.id) } };
