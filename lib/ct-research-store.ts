@@ -101,7 +101,7 @@ import {
 } from "./ct-trader-tools.ts";
 import { ctBase64, ctRenderChart } from "./ct-chart-image.ts";
 import { CT_PLAYBOOK_SCHEMA, ctPlaybookSnapshot, ctDistinctPriorTests, recordCTPlaybook } from "./ct-playbook.ts";
-import { CT_CALIBRATION_SCHEMA, ctCalibrationRow, ctCalibrationSnapshot, ctIsCalibrationHypothesis, ctRecordCalibration } from "./ct-calibration.ts";
+import { CT_CALIBRATION_SCHEMA, CT_CHART_FORMAT, CT_CHART_FORMAT_BLIND, ctCalibrationRow, ctCalibrationSnapshot, ctIsCalibrationHypothesis, ctRecordCalibration } from "./ct-calibration.ts";
 import {
   ctCheckpointResult,
   ctGate,
@@ -650,7 +650,7 @@ export const CT_SESSION_TOOLS: Anthropic.Tool[] = [
   {
     name: "view_charts",
     description:
-      "See moments as candle charts (PNG): left 5 days of 1-hour bars with the previous day's high/low; middle today's 5-minute bars with VWAP, the opening range (first 30 minutes) and the previous day's high/low/close; right the 90 minutes before the decision in 1-minute bars with volume. Axes are percent of the decision bar's close (no price levels), there are no dates, only bars completed by the decision time are drawn. Anchors must be times the server issued (event/control times and blindReserve from label_moves, query anchors, screen_rule trade times); an ordinary call takes up to 8 anchors within the per-session image limit. blind: true takes 16–32 anchors (default 24) with EQUAL numbers of event and control times, shows them in random order with the group hidden, and refuses any time you already looked at in an ordinary view: decide each chart, then submit all calls with grade_blind. The result's text names each chart's number and (when not blind) its group.",
+      "See moments as candle charts (PNG): left 5 days of 1-hour bars with the previous day's high/low; middle today's 5-minute bars with VWAP, the opening range (first 30 minutes) and the previous day's high/low/close; right the 90 minutes before the decision in 1-minute bars with volume. Axes are percent of the decision bar's close (no price levels), there are no dates, only bars completed by the decision time are drawn. Anchors must be times the server issued (event/control times and blindReserve from label_moves, query anchors, screen_rule trade times); an ordinary call takes up to 8 anchors within the per-session image limit. blind: true takes 16–32 anchors (default 24) with EQUAL numbers of event and control times, shows them in random order with the group hidden (the decision time and clock ticks are hidden too — relative minutes only — so a chart cannot be matched to the times you chose), and refuses any time you already looked at in an ordinary view: decide each chart, then submit all calls with grade_blind. The result's text names each chart's number and (when not blind) its group.",
     input_schema: jsonSchema(ctViewChartsSchema),
   },
   {
@@ -1347,7 +1347,8 @@ export async function advanceCTResearch(
               try {
                 for (const [k, item] of items.entries()) {
                   const n = k + 1;
-                  const image = await ctRenderChart(data[item.symbol], item.at, c, item.symbol, n);
+                  // Stage 4 blind sets hide the decision time (the designer picks the times, so a printed clock would identify the group).
+                  const image = await ctRenderChart(data[item.symbol], item.at, c, item.symbol, n, { blind: policy.toolsVersion >= 2 && Boolean(request.blind) });
                   const chartId = (await ctHash({ run: job.id, symbol: item.symbol, at: item.at, n, blind: blindId })).slice(0, 16);
                   await ctDb()
                     .prepare("INSERT OR REPLACE INTO ct_chart_images (run_id,chart_id,png,meta,created_at) VALUES (?,?,?,?,?)")
@@ -1395,7 +1396,7 @@ export async function advanceCTResearch(
             set.gradedKey = key;
             ctRecordTest(ct, `blind|${set.blindId}`);
             // The server files the result as a calibration record (never as a rejected trading idea). Idempotent per run and set.
-            await ctRecordCalibration(ctCalibrationRow(job, ct, set.blindId, { correct: out.correct, total: out.total }, "research"));
+            await ctRecordCalibration(ctCalibrationRow(job, ct, set.blindId, { correct: out.correct, total: out.total }, "research", policy.toolsVersion >= 2 ? CT_CHART_FORMAT_BLIND : CT_CHART_FORMAT));
             answer({ ...out, multipleTesting: ctTestLedger(ct) });
           } else if (use.name === "diagnose_trades") {
             if (!policy.traderTools) throw new Error("이 연구 계약에는 diagnose_trades가 없습니다");

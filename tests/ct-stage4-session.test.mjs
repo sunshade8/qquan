@@ -113,6 +113,9 @@ test("pinned bytes: stage-2 and stage-3 briefs and the stage-3 tool definitions 
   assert.equal(sha(CT_DESIGNER_SYSTEM_STAGE3), "08e7ef36f0ec5d9a8a4731aa37ae6d47216ae3be4e4e7520217b4058e32cacba");
   assert.equal(sha(research.CT_SESSION_TOOLS_STAGE2), "8b81e696a38a070c1aecbe18fd94bdb579f214deae803ca69393596f86d229fb");
   assert.equal(sha(research.CT_SESSION_TOOLS_STAGE3), "0b76e033089573b92fe2958d474659e37dbebd3782028d42336529948c8723f6");
+  // Stage 4 is fixed within a contract as well (a byte change invalidates every cached prefix of a running contract): change these pins together with a policy bump.
+  assert.equal(sha(CT_DESIGNER_SYSTEM), "bc6b18e14505fdc67827872c1f6d57f21fdb558a65736bffe04cdda9ab015ad3");
+  assert.equal(sha(research.CT_SESSION_TOOLS), "38763047f3977d83fa767e1033f8a4c97629d5ade4d98d7be52a69ea20b34848");
   assert.notEqual(sha(research.CT_SESSION_TOOLS), sha(research.CT_SESSION_TOOLS_STAGE3));
   assert.equal(research.ctSessionTools({ policy: STAGE3_POLICY }), research.CT_SESSION_TOOLS_STAGE3);
   assert.equal(research.ctSessionTools({ policy: CT_POLICY }), research.CT_SESSION_TOOLS);
@@ -150,7 +153,8 @@ test("a full stage-4 session: reserve anchors, a 16-chart blind set, the seen-an
   assert.equal(created.ct.measured.runs.length, 1);
   assert.equal(created.ct.calibration.records.length, 1);
   assert.equal(created.ct.calibration.records[0].verdict, "inconclusive");
-  assert.equal(created.ct.calibration.pooled.n, 8);
+  assert.equal(created.ct.calibration.pooled, null, "a set whose charts printed the decision time is listed but never pooled");
+  assert.match(created.ct.calibration.records[0].chartFormat, /시각 표시/);
 
   const issued = ctLabelMovesReport(params, ctRunLabels(params, { BTCUSDT: bars }, contract), contract, label, { blindReserve: true });
   assert.ok(issued.blindReserve.anchors.length >= 8 && issued.blindReserve.controlAnchors.length >= 8);

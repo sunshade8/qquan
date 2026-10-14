@@ -181,3 +181,21 @@ test("nothing past the training end leaks into any control group", () => {
   for (let i = run.rows.length - 29; i < run.rows.length; i++) assert.equal(run.labels.label[i], -1);
   for (const i of ctLoserEvents(run)) assert.ok(run.rows[run.labels.exitIndex[i]].endMs <= contract.trainingToMs);
 });
+
+import { ctRenderChart } from "../lib/ct-chart-image.ts";
+test("blind charts (stage 4) do not print the decision time or any clock tick; ordinary charts still do", async () => {
+  const { bars } = plantedMarket();
+  const contract = plantedContract();
+  const at = bars[3 * 1440 + 14 * 60 + 37].endMs; // 14:38 UTC
+  const ordinary = await ctRenderChart(bars, at, contract, "BTCUSDT", 3);
+  const blind = await ctRenderChart(bars, at, contract, "BTCUSDT", 3, { blind: true });
+  assert.ok(ordinary.labels.some((l) => /decision at 14:38 UTC/.test(l)));
+  assert.ok(ordinary.labels.some((l) => /^\d\d:\d\d$/.test(l)), "ordinary charts keep clock ticks");
+  assert.ok(!blind.labels.some((l) => /\d\d:\d\d/.test(l) || /decision at/.test(l)), JSON.stringify(blind.labels.filter((l) => /\d\d:\d\d|decision/.test(l))));
+  assert.ok(blind.labels.some((l) => /^-\d+m$/.test(l)), "relative minutes before the decision");
+  assert.ok(blind.labels.some((l) => /decision time hidden/.test(l)));
+  assert.notDeepEqual(ordinary.png, blind.png);
+  // Blind ticks sit at fixed offsets from the decision, not on clock multiples: the same market picture shifted by a minute draws the same tick positions.
+  const shifted = await ctRenderChart(bars, bars[3 * 1440 + 14 * 60 + 38].endMs, contract, "BTCUSDT", 3, { blind: true });
+  assert.deepEqual(blind.labels.filter((l) => /^-\d+m$/.test(l)), shifted.labels.filter((l) => /^-\d+m$/.test(l)));
+});

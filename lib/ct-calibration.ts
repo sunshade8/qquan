@@ -16,8 +16,10 @@ import type { CTContract } from "./ct-spec.ts";
 import type { CTResearch } from "./ct-research.ts";
 import type { GenerationJob } from "./strategy-generation-types.ts";
 
-/** Chart rendering format a blind set was drawn with (lib/ct-chart-image.ts: three panels, 1,420 × 456). */
+/** Chart rendering format of blind sets drawn until 2026-10-14: three panels, 1,420 × 456, the decision time printed in the header and on the clock ticks. */
 export const CT_CHART_FORMAT = "ct-chart-1";
+/** Stage-4 blind sets: the same panels with the decision time and clock ticks hidden (relative minutes), so the designer cannot match a chart to the times it chose. */
+export const CT_CHART_FORMAT_BLIND = "ct-chart-2-blind";
 
 export const CT_CALIBRATION_SCHEMA = [
   "CREATE TABLE IF NOT EXISTS ct_calibration (id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,run_id TEXT NOT NULL,market TEXT NOT NULL,symbols TEXT NOT NULL,blind_id TEXT NOT NULL,n INTEGER NOT NULL,k INTEGER NOT NULL,p_value REAL NOT NULL,verdict TEXT NOT NULL,power70 REAL NOT NULL,power75 REAL NOT NULL,needed_hits INTEGER NOT NULL,measured_from INTEGER NOT NULL,measured_to INTEGER NOT NULL,chart_format TEXT NOT NULL,source TEXT NOT NULL,recorded_at INTEGER NOT NULL)",
@@ -46,7 +48,7 @@ export type CalibrationRow = {
 };
 
 /** The record of one graded blind set. Deterministic id, so recording twice changes nothing. */
-export function ctCalibrationRow(job: Pick<GenerationJob, "id" | "ownerId">, ct: Pick<CTResearch, "contract">, blindId: string, graded: { correct: number; total: number; pValue?: number }, source: "research" | "migrated", now = Date.now()): CalibrationRow {
+export function ctCalibrationRow(job: Pick<GenerationJob, "id" | "ownerId">, ct: Pick<CTResearch, "contract">, blindId: string, graded: { correct: number; total: number; pValue?: number }, source: "research" | "migrated", chartFormat: string = CT_CHART_FORMAT, now = Date.now()): CalibrationRow {
   const c = ct.contract;
   const facts = ctCalibrationFacts(graded.total, graded.correct);
   return {
@@ -65,7 +67,7 @@ export function ctCalibrationRow(job: Pick<GenerationJob, "id" | "ownerId">, ct:
     needed_hits: facts.neededHitsForSignificance,
     measured_from: c.fromMs,
     measured_to: c.trainingToMs,
-    chart_format: CT_CHART_FORMAT,
+    chart_format: chartFormat,
     source,
     recorded_at: now,
   };
@@ -123,6 +125,8 @@ const overlaps = (row: { measured_from: number; measured_to: number }, contract:
 
 export type CTCalibrationView = {
   run: string;
+  /** "시각 표시" = the charts printed the decision time (the designer could have matched them to its own list); "시각 숨김" = stage-4 blind charts. */
+  chartFormat: string;
   symbols: string[];
   n: number;
   verdict: CTCalibrationVerdict;
@@ -151,19 +155,21 @@ const READING: Record<CTCalibrationVerdict, string> = {
 /** Calibration records the designer starts a stage-4 run with (frozen in the run, like the playbook). */
 export async function ctCalibrationSnapshot(ownerId: string, contract: Pick<CTContract, "market" | "trainingToMs" | "toMs">, runId: string): Promise<CTCalibrationSnapshot> {
   const rows = await ctDb()
-    .prepare("SELECT * FROM ct_calibration WHERE market=? AND owner_id=? AND run_id<>? AND chart_format=? ORDER BY recorded_at DESC, id LIMIT 40")
-    .bind(contract.market, ownerId, runId, CT_CHART_FORMAT)
+    .prepare("SELECT * FROM ct_calibration WHERE market=? AND owner_id=? AND run_id<>? ORDER BY recorded_at DESC, id LIMIT 40")
+    .bind(contract.market, ownerId, runId)
     .all<CalibrationRow>();
-  const open = rows.results.filter((r) => !overlaps(r, contract));
+  // Only sets drawn with the decision time hidden are pooled: a set whose charts printed the time could be matched to the designer's own list of times.
+  const open = rows.results.filter((r) => !overlaps(r, contract) && r.chart_format === CT_CHART_FORMAT_BLIND);
   const n = open.reduce((s, r) => s + r.n, 0),
     hits = open.reduce((s, r) => s + r.k, 0);
   const facts = n ? ctCalibrationFacts(n, hits) : null;
   return {
-    note: "설계자의 '눈'(차트 판독)을 블라인드 세트로 잰 보정 기록. 거래 아이디어의 기각이 아니라 도구 보정이다. 검정력이 낮은 작은 세트의 p가 큰 것은 '판별력 없음'이 아니라 '알 수 없음'이다. 수치는 이 연구의 개발·최종 구간과 겹치지 않는 측정에만 있다.",
+    note: "설계자의 '눈'(차트 판독)을 블라인드 세트로 잰 보정 기록(합산은 결정 시각을 숨긴 세트만). 거래 아이디어의 기각이 아니라 도구 보정이다. 검정력이 낮은 작은 세트의 p가 큰 것은 '판별력 없음'이 아니라 '알 수 없음'이다. 수치는 이 연구의 개발·최종 구간과 겹치지 않는 측정에만 있다.",
     records: rows.results.slice(0, 12).map((r) => {
       const hide = overlaps(r, contract);
       return {
         run: r.run_id.slice(0, 8),
+        chartFormat: r.chart_format === CT_CHART_FORMAT_BLIND ? "시각 숨김" : "시각 표시(식별 누출 가능성 · 합산하지 않음)",
         symbols: JSON.parse(r.symbols) as string[],
         n: r.n,
         verdict: r.verdict,

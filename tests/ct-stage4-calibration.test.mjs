@@ -130,21 +130,25 @@ test("the 'eye' rows stage 3 filed as rejected trading ideas move to calibration
 
 test("the calibration section shown to a new run: verdict and size always, hits and p only where the window cannot leak, pooled over sets", async () => {
   sqlite.exec("DELETE FROM ct_calibration;");
-  const mk = (id, run, k, n, over = {}) => calibration.ctRecordCalibration({ ...calibration.ctCalibrationRow({ id: run, ownerId: "owner" }, { contract: { ...contract, ...over } }, id, { correct: k, total: n }, "research"), id: `${run}:blind:${id}` });
-  await mk("b1", "older-1", 6, 8);
+  const mk = (id, run, k, n, over = {}, format = calibration.CT_CHART_FORMAT_BLIND) => calibration.ctRecordCalibration({ ...calibration.ctCalibrationRow({ id: run, ownerId: "owner" }, { contract: { ...contract, ...over } }, id, { correct: k, total: n }, "research", format), id: `${run}:blind:${id}` });
+  await mk("b1", "older-1", 6, 8, {}, calibration.CT_CHART_FORMAT_BLIND);
   await mk("b2", "older-2", 18, 24);
+  await mk("b0", "format-1", 7, 8, {}, calibration.CT_CHART_FORMAT);
   // A set measured on a window that reaches into the new run's development/final window.
   await mk("b3", "overlap-1", 30, 32, { fromMs: contract.trainingToMs - 2 * DAY, trainingToMs: contract.developmentToMs });
   const snap = await calibration.ctCalibrationSnapshot("owner", { ...contract, market: "crypto" }, "new-run");
   const byRun = Object.fromEntries(snap.records.map((r) => [r.run, r]));
-  assert.deepEqual(Object.keys(byRun).sort(), ["older-1", "older-2", "overlap-"], JSON.stringify(snap.records.map((r) => r.run)));
+  assert.deepEqual(Object.keys(byRun).sort(), ["format-1", "older-1", "older-2", "overlap-"], JSON.stringify(snap.records.map((r) => r.run)));
+  assert.match(byRun["format-1"].chartFormat, /시각 표시/);
+  assert.equal(byRun["format-1"].verdict, "skill", "listed with its verdict (7 of 8)");
+  assert.equal(byRun["older-2"].chartFormat, "시각 숨김");
   assert.equal(byRun["older-1"].hits, 6);
   assert.equal(byRun["older-2"].verdict, "skill");
   assert.equal(byRun["overlap-"].hits, undefined, "hits are withheld");
   assert.equal(byRun["overlap-"].pValue, undefined);
   assert.equal(byRun["overlap-"].verdict, "skill", "the grade stays");
   assert.match(byRun["overlap-"].measured, /수치 비공개/);
-  assert.equal(snap.pooled.sets, 2, "pooling uses only the sets whose numbers may be shown");
+  assert.equal(snap.pooled.sets, 2, "pooling uses only the time-hidden sets whose numbers may be shown (not the overlapping one, not the format with printed times)");
   assert.deepEqual([snap.pooled.n, snap.pooled.hits], [32, 24]);
   assert.equal(snap.pooled.verdict, "skill", "24 of 32 pooled: p < 0.05");
   // Another owner sees nothing; the run itself is excluded.

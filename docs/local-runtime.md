@@ -67,11 +67,34 @@ OS 로그인 서비스는 설치하지 않는다.
 | `parquet/btc/YYYY-MM/<sha256>.parquet` | Binance Spot BTCUSDT 1분봉 |
 | `parquet/eth/…`, `parquet/sol/…` | Binance Spot ETHUSDT, SOLUSDT 1분봉(같은 파이프라인, 2026-10-14) |
 | `state/research.sqlite`의 `ct_orderbook_samples` | 비용 프로필용 공개 호가 스냅샷(아래 「호가 측정」) |
+| `state/research.sqlite`의 `ct_calibration` | 설계자의 눈(블라인드 차트) 보정 기록(4단계, `docs/ct.md`「판과 눈」) |
+| `parquet/binance-derivs/<종목>/{premium_1m,funding,metrics_5m}.parquet`, `manifest.json`, `raw/` | Binance USDⓈ-M 파생 공개 데이터(프리미엄 1분봉, 펀딩비, 5분 지표) — 천장 측정 전용, 연구·설계 도구에는 연결되지 않음 |
+| `parquet/upbit/<시장>/minute.parquet`, `manifest.json`, `raw/*.jsonl` | Upbit KRW 1분봉(KRW-BTC/ETH/SOL/USDT, 최근 1년, 거래 없는 분은 봉이 없음) — 천장 측정 전용 |
+| `cache/ceiling-field/` | 천장 측정용 평평한 float64 열, `results.jsonl`(조합별 결과, 재개용), `timing.json` |
 | `research/out`, `research/journals` | CLI 연구 산출물과 연구 장부 mirror |
 | `logs/data-worker.log` | detached 다운로드 worker 오류 |
 | `backups/*.sqlite` | SQLite online backup 및 이전 전 사본 |
 
 SQLite WAL, 30초 busy timeout, `BEGIN IMMEDIATE` batch로 프로세스 간 접근을 직렬화한다. 기존 D1의 parameterized prepare/bind/all/raw/first/run/batch 계약을 Node SQLite 어댑터로 유지한다. 연구·장부 lease는 같은 DB를 사용한다. 다운로드는 별도 dataset 활성 unique index와 token lease, heartbeat, worker 파일 잠금을 사용한다. 프로세스가 죽은 lease는 약 2분 뒤 재획득 가능하다. 취소된 이전 worker는 새 소유자의 작업을 갱신할 수 없다.
+
+## 파생·Upbit 공개 데이터와 천장 측정(4단계 2부)
+
+모두 공개 시세·아카이브만 쓰며 인증이나 계좌 API를 부르지 않는다. 다운로드는 재개할 수 있고(받은 zip·페이지는 건너뜀) 파일마다 SHA-256을 기록한다.
+
+```sh
+# Binance USDⓈ-M 파생(최근 36개월, BTC/ETH/SOL): 월 프리미엄 1분봉·펀딩비 + 일 5분 지표. 체크섬 파일로 검증. 약 10분, 원본 zip 139MB.
+.venv/bin/python scripts/data/download-binance-derivs.py [--symbols BTCUSDT,ETHUSDT,SOLUSDT] [--months 36] [--end 2026-10-13]
+# Upbit KRW 1분봉(공개 시세 API, 요청 200개 단위, 초당 8회 이하). 시장 하나당 약 21–34분, 시장별로 병렬 실행 가능.
+.venv/bin/python scripts/data/download-upbit-minute.py --markets KRW-BTC,KRW-USDT,KRW-ETH,KRW-SOL --from 2025-10-13 --to 2026-10-14
+# 측정용 열 내보내기 → 측정 → 보고서
+.venv/bin/python scripts/data/export-ceiling-cache.py
+node --experimental-strip-types --no-warnings scripts/research/ct-ceiling-field.ts [--only=btc,1y] [--skip-binance|--skip-upbit]
+node --experimental-strip-types --no-warnings scripts/research/ct-ceiling-field.ts --report --out=docs/research/ct-ceiling-2026-10-14-field.md
+```
+
+제공 범위와 시각 의미는 [천장 측정 확장 보고서](research/ct-ceiling-2026-10-14-field.md) 2절 표에 있다(강제청산 이력은 제공되지 않음). 이 데이터는 **설계 도구·규칙 언어에 연결되지 않는다**. Upbit 거래가 없던 분은 측정에서만 직전 종가의 평평한 봉으로 채우고(채운 수를 보고서에 적음) 저장된 parquet에는 채우지 않는다.
+
+실데이터 점검용 스크립트: `scripts/research/ct-contrast-modes.ts`(세 대조군 비교, 모델 비용 0), `scripts/research/ct-board-check.mjs`(판 서명 거부 확인, DB 읽기 전용). `QQUAN_CT_POLICY_VERSION=1`은 **검증 전용**으로 새 계약을 이전 정책(도구 버전 1)으로 동결한다 — 일반 사용에서는 설정하지 않는다.
 
 ## 소유자 ID (브라우저 간 연구 기록 공유)
 

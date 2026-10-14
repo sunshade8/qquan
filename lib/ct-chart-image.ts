@@ -362,7 +362,22 @@ function timeTicks(from: number, to: number, timezone: string) {
   return out;
 }
 
-export function ctChartSvg(data: CTChartData, font: Font, number: number, contract: Pick<CTContract, "market" | "timezone">) {
+/** Ticks at fixed offsets BEFORE the decision (−15m, −30m, ...), labelled relatively: a blind chart must not show where the decision stood on the clock. */
+function relativeTicks(from: number, to: number) {
+  const span = to - from;
+  const step = [15, 30, 60, 120, 240, 360].map((m) => m * MINUTE).find((st) => span / st <= 6) ?? 360 * MINUTE;
+  const out: Array<{ ms: number; label: string }> = [];
+  for (let t = to - step; t >= from; t -= step) out.push({ ms: t, label: `-${Math.round((to - t) / MINUTE)}m` });
+  return out.reverse();
+}
+
+/**
+ * `blind: true` (calibration sets, stage 4): no decision time in the header and no clock-time ticks (relative minutes instead).
+ * Run 42bd28a2 showed why: the designer chose the event and control times itself, so a chart that prints "decision at 14:37" can be
+ * matched to its own list. What remains is the 5-minute panel's length (how far into the day), which controls share by construction
+ * (they are drawn from the same hour of the day as their event).
+ */
+export function ctChartSvg(data: CTChartData, font: Font, number: number, contract: Pick<CTContract, "market" | "timezone">, options: { blind?: boolean } = {}) {
   const p = painter(font);
   const tz = contract.timezone === "UTC" ? "UTC" : contract.timezone;
   const zone = tz === "UTC" ? "UTC" : "ET";
@@ -374,7 +389,15 @@ export function ctChartSvg(data: CTChartData, font: Font, number: number, contra
   const panels = [0, 1, 2].map((k) => ({ x: 56 + k * (pw + gap), y: top, w: pw, h: plotH }));
   let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${CT_CHART_WIDTH}" height="${CT_CHART_HEIGHT}" viewBox="0 0 ${CT_CHART_WIDTH} ${CT_CHART_HEIGHT}"><rect width="100%" height="100%" fill="${C.bg}"/>`;
   svg += p.text(`#${number}`, 14, 26, 20, C.text);
-  svg += p.text(`${data.symbol}   decision at ${clock(data.at, tz)} ${zone}   (axes: % vs the decision bar's close, no dates)`, 70, 26, 13, C.axis);
+  svg += p.text(
+    options.blind
+      ? `${data.symbol}   decision time hidden (blind set)   (axes: % vs the decision bar's close, no dates, no clock)`
+      : `${data.symbol}   decision at ${clock(data.at, tz)} ${zone}   (axes: % vs the decision bar's close, no dates)`,
+    70,
+    26,
+    13,
+    C.axis,
+  );
   const lg = [`VWAP`, `OR first 30m`, `PDH / PDL / PDC = previous day high / low / close`];
   svg += `<line x1="${CT_CHART_WIDTH - 560}" x2="${CT_CHART_WIDTH - 540}" y1="22" y2="22" stroke="${C.vwap}" stroke-width="2"/>` + p.text(lg[0], CT_CHART_WIDTH - 535, 26, 11, C.axis);
   svg += `<rect x="${CT_CHART_WIDTH - 480}" y="16" width="16" height="10" fill="${C.or}" fill-opacity="0.15" stroke="${C.or}"/>` + p.text(lg[1], CT_CHART_WIDTH - 460, 26, 11, C.axis);
@@ -412,7 +435,7 @@ export function ctChartSvg(data: CTChartData, font: Font, number: number, contra
     data.at,
     lines5,
     { vwap: data.vwap5, band: data.openingRange ? { ...data.openingRange, fromMs: data.dayStart, toMs: data.openingRange.endMs, color: C.or } : null },
-    timeTicks(data.dayStart, data.at, tz),
+    options.blind ? relativeTicks(data.dayStart, data.at) : timeTicks(data.dayStart, data.at, tz),
     null,
   );
   // 1 minute panel with volume.
@@ -427,7 +450,7 @@ export function ctChartSvg(data: CTChartData, font: Font, number: number, contra
     data.at,
     [],
     { vwap: data.vwap1 },
-    timeTicks(m1From, data.at, tz),
+    options.blind ? relativeTicks(m1From, data.at) : timeTicks(m1From, data.at, tz),
     { x: panels[2].x, y: panels[2].y + 298, w: pw, h: 62 },
   );
   svg += `</svg>`;
@@ -456,10 +479,10 @@ async function resvg() {
 
 export type CTChartImage = { png: Uint8Array; width: number; height: number; labels: string[]; data: CTChartData };
 /** The picture for one anchor: training bars in, PNG bytes out. */
-export async function ctRenderChart(rows: ChartBar[], at: number, contract: Pick<CTContract, "market" | "timezone" | "trainingToMs" | "fromMs">, symbol: string, number: number): Promise<CTChartImage> {
+export async function ctRenderChart(rows: ChartBar[], at: number, contract: Pick<CTContract, "market" | "timezone" | "trainingToMs" | "fromMs">, symbol: string, number: number, options: { blind?: boolean } = {}): Promise<CTChartImage> {
   const data = ctChartData(rows, at, contract, symbol);
   const font = await loadFont();
-  const { svg, labels } = ctChartSvg(data, font, number, contract);
+  const { svg, labels } = ctChartSvg(data, font, number, contract, options);
   const { Resvg } = await resvg();
   const image = new Resvg(svg, { fitTo: { mode: "original" }, background: "#ffffff" }).render();
   return { png: image.asPng(), width: image.width, height: image.height, labels, data };

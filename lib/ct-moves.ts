@@ -473,6 +473,8 @@ export type WalkForward = {
   bestTrainLeafNetPct: number;
   candidateSplits: number;
   validationDays: number;
+  /** Per validation day: the day's summed trade net and the same trades under doubled costs (no-trade days are 0). */
+  daily: Array<{ key: number; net: number; net2: number }>;
 };
 
 export type WalkForwardInput = {
@@ -598,6 +600,7 @@ export function walkForward(input: WalkForwardInput): WalkForward {
     bestTrainLeafNetPct: Math.max(...report.map((r) => r.bestTrainLeafNetPct).filter(Number.isFinite), -Infinity),
     candidateSplits,
     validationDays,
+    daily: [...dayTotals.entries()].map(([key, d]) => ({ key, net: d.net, net2: d.net2 })).sort((a, b) => a.key - b.key),
   };
 }
 
