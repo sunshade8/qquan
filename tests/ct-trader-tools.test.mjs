@@ -1,7 +1,7 @@
 // Stage 3 trader tools: label_moves, contrast_moves, diagnose_trades, blind grading.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { plantedMarket, plantedContract, MINUTE, DAY } from "./helpers/ct-trader-fixture.mjs";
+import { plantedMarket, plantedContract, MINUTE } from "./helpers/ct-trader-fixture.mjs";
 import {
   ctRunLabels, ctLabelMovesReport, ctLabelMovesSchema, ctContrastMoves, ctContrastMovesSchema,
   ctBinomialUpperP, ctGradeBlind,
@@ -111,7 +111,7 @@ test("blind grading: exact one-sided binomial test, balanced set, no duplicate o
 /* ------------------------------------------------------------------ charts */
 import { ctChartData, ctRenderChart } from "../lib/ct-chart-image.ts";
 import { ctDiagnoseTrades, ctDiagnoseTradesSchema } from "../lib/ct-trader-tools.ts";
-import { replayCT, ctExitStep, ctOpenPosition, ctForcedExit, ctImpactPct, ctNetTradePct } from "../lib/ct-engine.ts";
+import { replayCT } from "../lib/ct-engine.ts";
 import { CT_ENGINE } from "../lib/ct-spec.ts";
 
 const at = bars[3 * 1440 + 9 * 60 + 65].endMs;

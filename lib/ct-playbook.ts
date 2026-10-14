@@ -100,7 +100,11 @@ export function ctPlaybookRows(job: Pick<GenerationJob, "id" | "ownerId"> & { ct
   const rows: PlaybookRow[] = [];
   const queryFeatures = (ids: string[]) => {
     const names = new Set<string>();
-    for (const id of ids) for (const q of ct.queries ?? []) if (q.queryId === id) for (const f of q.features) names.add(`${f.feature}(${f.timeframe}m)`);
+    for (const id of ids) {
+      for (const q of ct.queries ?? []) if (q.queryId === id) for (const f of q.features) names.add(`${f.feature}(${f.timeframe}m)`);
+      for (const x of ct.contrasts ?? []) if (x.contrastId === id) for (const f of x.features) names.add(`${f.feature}(${f.timeframe}m)`);
+      for (const x of ct.diagnoses ?? []) if (x.diagnosisId === id) for (const f of x.features) names.add(`${f.feature}(${f.timeframe}m)`);
+    }
     return [...names].join(" · ") || "(구조 미기록)";
   };
   // 1) Hypotheses the designer rejected on training evidence.

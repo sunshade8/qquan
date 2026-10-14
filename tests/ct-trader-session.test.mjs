@@ -9,7 +9,7 @@ import { ctState } from "./helpers/ct-fixture.mjs";
 import { plantedMarket, plantedContract, MINUTE } from "./helpers/ct-trader-fixture.mjs";
 import { ctHash, executableCT, CT_ENGINE, CT_POLICY, ctSessionPolicy } from "../lib/ct-spec.ts";
 import { ctRunLabels, ctLabelMovesReport, ctLabelMovesSchema } from "../lib/ct-trader-tools.ts";
-import { CT_DESIGNER_SYSTEM, CT_DESIGNER_SYSTEM_STAGE2, ctDesignerSystem, ctSessionContext } from "../lib/ct-research.ts";
+import { CT_DESIGNER_SYSTEM, CT_DESIGNER_SYSTEM_STAGE2, ctDesignerSystem } from "../lib/ct-research.ts";
 import { assertCTTool } from "../lib/ct-tools.ts";
 import { designerRequestChars } from "../lib/designer-request-size.ts";
 register("./helpers/slot-test-loader.mjs", import.meta.url);
@@ -37,7 +37,6 @@ await research.ensureCTSchema();
 const { bars } = plantedMarket();
 const contract = plantedContract();
 const params = ctLabelMovesSchema.parse({ k: 3, m: 1, horizon: 30 });
-const report = ctLabelMovesReport(params, ctRunLabels(params, { BTCUSDT: bars }, contract), contract, "x");
 let sequence = 0;
 async function job(over = {}) {
   sqlite.exec("UPDATE strategy_generation_runs SET status='cancelled' WHERE status='running'");
@@ -233,9 +232,12 @@ test("playbook: recorded once, final numbers never stored, overlapping windows s
       final: { netReturnPct: 99.9 },
     },
   };
-  assert.equal(await playbook.recordCTPlaybook(old), 2);
-  assert.equal(await playbook.recordCTPlaybook(old), 2, "idempotent");
-  assert.equal(sqlite.prepare("SELECT count(*) n FROM ct_playbook").get().n, 2);
+  old.ct.contrasts = [{ contrastId: "c9", features: [{ feature: "range_pct", timeframe: 1 }] }];
+  old.ct.sessions[0].submission.rejectedHypotheses.push({ hypothesis: "대칭 lift", mechanism: "변동성 효과", evidence: ["c9"], result: "방향 효과 없음" });
+  assert.equal(await playbook.recordCTPlaybook(old), 3);
+  assert.equal(await playbook.recordCTPlaybook(old), 3, "idempotent");
+  assert.equal(sqlite.prepare("SELECT count(*) n FROM ct_playbook").get().n, 3);
+  assert.match(sqlite.prepare("SELECT structure FROM ct_playbook WHERE evidence_ref='c9'").get().structure, /range_pct\(1m\)/, "a contrastId's features name the structure");
   const stored = sqlite.prepare("SELECT * FROM ct_playbook ORDER BY id").all();
   assert.ok(stored.every((r) => !r.detail.includes("99.9")), "the final split's numbers are never stored");
   assert.equal(stored.find((r) => r.grade === "failed_final").measured_to, contract.toMs);
