@@ -323,13 +323,33 @@ if (args.report) {
   L();
   L(`기준별 통과 조합 수(판정 대상 ${judged.length}개): ① ${meet(judged, (r) => r.criteria.daily1x)}개 · ② ${meet(judged, (r) => r.criteria.folds)}개 · ③ ${meet(judged, (r) => r.criteria.tradesPerDay)}개 · ④ ${meet(judged, (r) => r.criteria.daily2x)}개. 거래가 선택되지 않은 조합 ${meet(judged, (r) => r.trades === 0)}개, 선택됐지만 일평균 음수 ${meet(judged, (r) => r.trades > 0 && r.dailyMeanPct < 0)}개, 일평균 양수 ${meet(judged, (r) => r.dailyMeanPct > 0)}개.`);
   L(`**우연 통과 기댓값(널 실행):** 같은 ${judged.length}개 조합을 일 단위 블록 순열 피처로 한 번씩 다시 돌렸을 때 기준 ①~④를 통과한 조합 ${nullPass}개 → 신호가 없는 판에서도 이 격자에서 ①~④ 통과가 약 ${nullPass}개 나온다고 본다. 순열 기준선(20회 중 ≤1회)까지 우연히 통과할 기댓값은 ${nullPass} × 2/21 ≈ ${(nullPass * 2 / 21).toFixed(2)}개 이하.`);
+  L(`(널 통과 0/${judged.length}이면 조합당 널 통과율의 95% 상한은 약 3/${judged.length}, 즉 우연 통과 기댓값 상한 약 3개다.)`);
   L();
 
   // Scenario-level summaries for the reading.
   const byScen = (sc: ScenarioId, dir: Dir) => rows.filter((r) => r.scenario === sc && r.dir === dir);
   const avg = (rs: Row[], fn: (r: Row) => number) => mean(rs.map(fn).filter(Number.isFinite));
+  const pairDiff = (sc: ScenarioId, vs: ScenarioId, dir: Dir = "L") => {
+    const pairs = rows.filter((r) => r.scenario === sc && r.dir === dir).flatMap((r) => { const o = find(r, vs, dir); return o ? [{ r, o, d: r.dailyMeanPct - o.dailyMeanPct }] : []; });
+    const ds = pairs.map((p) => p.d);
+    const up = pairs.filter((p) => p.d > 1e-9);
+    // Of the improvements: how many came with fewer trades per day (less exposure), how many with a better mean net per trade.
+    return { mean: mean(ds), better: up.length, worse: ds.filter((x) => x < -1e-9).length, n: ds.length, fewer: up.filter((p) => p.r.tradesPerDay < p.o.tradesPerDay).length, perTrade: up.filter((p) => p.r.tradesPerDay >= p.o.tradesPerDay && p.r.meanNetPct > p.o.meanNetPct + 1e-3).length, bestPerTrade: up.filter((p) => p.r.tradesPerDay >= p.o.tradesPerDay).sort((x, y) => y.d - x.d)[0] };
+  };
+  const dSM = pairDiff("SM", "ST"), dUM = pairDiff("UM", "UT"), dFM = pairDiff("FM", "FT"), dFT = pairDiff("FT", "ST");
+  const makers = judged.filter((r) => r.exec === "maker" && r.signals > 0);
+  const lsDiff = (sc: ScenarioId) => pairDiff(sc, sc, "LS");
+  void lsDiff;
+  const baseAdv = base.map((b: { markout: { adverse: number }[] }) => b.markout[1].adverse);
+  const baseFill = base.map((b: { fillRate: number }) => b.fillRate * 100);
+  const missed = base.map((b: { markout: { unfilled: number }[] }) => b.markout[1].unfilled);
   L("**읽는 법(해석).**");
   L();
+  L(`- **지정가로 바꿔도 우위가 생기지 않는다.** 같은 수수료표에서 메이커 − 테이커 일평균 차이(같은 종목·기간·보유): 현물 SM−ST 평균 ${f(dSM.mean, 4)}%p(나아짐 ${dSM.better}/${dSM.n}, 나빠짐 ${dSM.worse}/${dSM.n}), Upbit UM−UT ${f(dUM.mean, 4)}%p(${dUM.better}/${dUM.n} · ${dUM.worse}/${dUM.n}), 선물 FM−FT(롱) ${f(dFM.mean, 4)}%p(${dFM.better}/${dFM.n} · ${dFM.worse}/${dFM.n}). 선물 수수료로 바꾸면(FT−ST) ${f(dFT.mean, 4)}%p(${dFT.better}/${dFT.n} · ${dFT.worse}/${dFT.n}). SM−ST는 같은 거래를 거의 같은 값에 산 것이라 차이가 0에 가깝다. 나아진 조합 중 거래가 덜 골라져서(노출 감소) 나아진 것: UM ${dUM.fewer}/${dUM.better}, FT ${dFT.fewer}/${dFT.better}, FM ${dFM.fewer}/${dFM.better}. 거래 수가 같거나 늘면서 거래당 순수익이 나아진 것은 FM ${dFM.perTrade}개${dFM.bestPerTrade ? `(가장 큰 예 ${dFM.bestPerTrade.r.symbol} ${PERIODS[dFM.bestPerTrade.r.period].label} ${dFM.bestPerTrade.r.hold}: 거래당 ${f(dFM.bestPerTrade.o.meanNetPct, 3)}% → ${f(dFM.bestPerTrade.r.meanNetPct, 3)}%)` : ""}·FT ${dFT.perTrade}개인데 **여전히 음수**다. 일평균이 양수가 된 메이커 조합은 ${meet(judged, (r) => r.exec === "maker" && r.dailyMeanPct > 0)}개다.`);
+  L(`- **체결 모델은 관대하다.** 결정 봉 종가에 낸 지정가가 다음 봉에 '닿기만 하면' 체결로 쳤더니 기저 체결률이 ${f(Math.min(...baseFill), 1)}~${f(Math.max(...baseFill), 1)}%다(선택된 신호 ${makers.length}개 조합 평균 ${f(mean(makers.map((r) => (r.fillRate ?? NaN) * 100)), 0)}%). 그래서 메이커 실행은 사실상 '스프레드 없이 직전 종가에 산 테이커 + 메이커 수수료'가 되고, 큐 위치·체결 우선순위를 무시한 **상한**이다. 이 상한에서도 후보가 없다.`);
+  L(`- **역선택은 작지만 항상 불리하다.** 기저 5분 역선택(체결 − 전체 마크아웃)은 ${f(Math.min(...baseAdv), 2)}~${f(Math.max(...baseAdv), 2)}bp로 18개 (종목·기간·경로·방향) 모두 음수다. 놓친 ${f(100 - Math.max(...baseFill), 1)}~${f(100 - Math.min(...baseFill), 1)}%의 신호는 5분 뒤 평균 +${f(Math.min(...missed), 1)}~+${f(Math.max(...missed), 1)}bp 유리하게 달아난 경우다 — 체결은 가격이 신호 반대로 갈 때 몰린다. 체결률이 높아 평균에 미치는 크기는 0.1~0.35bp뿐이라 결론을 바꾸지 않지만, 관통 체결이나 실제 큐에서는 체결률이 낮아지고 이 비대칭은 커진다.`);
+  L("- **라벨이 비용에 비례해 줄어든다.** 이 방법은 목표 +3c·손절 −1c를 비용 c에 맞춘다. 선물 메이커 c ≈ 0.07%면 손절이 BTC 7bp로 1분 잡음 안에 들어가, 학습 구간에서도 비용 후 양수 잎이 드물고(거래 0 조합 증가) 골라진 잎은 표본 밖에서 음수다. 비용을 낮추는 것만으로는 '차트 모양에서 비용을 넘는 움직임을 미리 고르는' 문제가 풀리지 않는다는 뜻이다.");
+
   L("| 시나리오 | 조합 | 일평균 > 0 | 거래 0 | 평균 일평균(%) | 평균 거래/일 | 양수 폴드 최대 | 평균 체결률 | 선택 신호 5분 역선택(bp) | 같은 신호 테이커 반사실 평균 일평균(%) |");
   L("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
   for (const sc of Object.keys(SCENARIOS) as ScenarioId[])
@@ -395,7 +415,7 @@ if (args.report) {
   L();
   L("| 종목 | 기간 | 보유 | 실행 | L | S | LS | LS − L | LS 롱/숏 | L 국면 위 / 아래 | S 국면 위 / 아래 | LS 국면 위 / 아래 | 평균 펀딩(%/거래, LS) |");
   L("| --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- | --- | ---: |");
-  const lsRows = rows.filter((r) => r.dir === "LS").sort((a, b) => a.id.localeCompare(b.id));
+  const lsRows = rows.filter((r) => r.dir === "LS").sort((a, b) => a.symbol.localeCompare(b.symbol) || a.period.localeCompare(b.period) || holdOrder.indexOf(a.hold) - holdOrder.indexOf(b.hold) || a.scenario.localeCompare(b.scenario));
   const diffs: Array<{ exec: string; diff: number }> = [];
   for (const r of lsRows) {
     const l = find(r, r.scenario, "L"),
@@ -409,6 +429,8 @@ if (args.report) {
     const ds = diffs.filter((d) => d.exec === sc).map((d) => d.diff);
     if (ds.length) L(`- ${sc === "FT" ? "선물 테이커" : "선물 메이커"}: LS − L 평균 ${f(mean(ds), 4)}%p (양수 ${ds.filter((x) => x > 0).length}/${ds.length}, 음수 ${ds.filter((x) => x < 0).length}/${ds.length}).`);
   }
+  const sPos = rows.filter((r) => r.dir === "S" && r.dailyMeanPct > 0);
+  L(`- 숏만(S) 일평균이 양수인 조합 ${sPos.length}개${sPos.length ? `(${sPos.map((r) => `${label(r)}: 거래 ${r.trades}건, 양수 폴드 ${r.positiveFolds}/4, 비용 2배 ${f(r.dailyMean2xPct, 4)}%`).join("; ")})` : ""} — 거래 수가 기준(0.27건/일)의 한참 아래이고 비용 2배에서 음수라 우위로 읽을 수 없다. 숏을 더하면(LS) 롱만(L)보다 일평균이 나아진 조합은 거의 없고, 대부분 같거나(숏 잎이 안 골라짐) 나빠진다(숏 잎이 골라졌지만 표본 밖 음수).`);
   const regCount = (dir: Dir, which: "up" | "down") => rows.filter((r) => !r.reference && r.dir === dir && r.regime[which].mean > 0).length;
   L(`- 국면별 일평균이 양수인 판정 대상 조합 수: L 위 ${regCount("L", "up")} · 아래 ${regCount("L", "down")} / S 위 ${regCount("S", "up")} · 아래 ${regCount("S", "down")} / LS 위 ${regCount("LS", "up")} · 아래 ${regCount("LS", "down")}.`);
   L();
