@@ -27,7 +27,6 @@ import type { GenerationJob } from "./strategy-generation-types.ts";
 import { researchFailure } from "./research-recovery.ts";
 import {
   CT_ENGINE,
-  CT_POLICY,
   ctPolicyForNewContract,
   ctFreedom,
   ctHash,
@@ -104,7 +103,7 @@ import {
 import { ctBase64, ctRenderChart } from "./ct-chart-image.ts";
 import { CT_PLAYBOOK_SCHEMA, ctEvidenceFeatures, ctPlaybookSnapshot, ctDistinctPriorTests, recordCTPlaybook } from "./ct-playbook.ts";
 import { CT_LESSONS_SCHEMA, ctDeadLesson, ctDistillRun, ctLessonsSnapshot } from "./ct-lessons.ts";
-import { ctCandidateFamilies, ctIdeaFamily, type CTFamily } from "./ct-families.ts";
+import { ctCandidateFamilies, ctIdeaFamily } from "./ct-families.ts";
 import { CT_CALIBRATION_SCHEMA, CT_CHART_FORMAT, CT_CHART_FORMAT_BLIND, ctCalibrationRow, ctCalibrationSnapshot, ctIsCalibrationHypothesis, ctRecordCalibration } from "./ct-calibration.ts";
 import {
   ctCheckpointResult,

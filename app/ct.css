@@ -466,3 +466,6 @@
 .ct-coverage p { margin: 0; }
 .ct-playbook li[data-focus="true"] { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-2, 8px); }
 .ct-lessons-line b { font-weight: 600; }
+.ct-table-wrap { overflow-x: auto; max-width: 100%; }
+.ct-coverage-table td:first-child, .ct-coverage-table th:first-child { white-space: normal; min-width: 12rem; }
+.ct-coverage-table td { color: var(--text); }

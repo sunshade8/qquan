@@ -27,7 +27,7 @@ export type LessonCardModel = {
   lesson: string;
   nextToTry: string | null;
   /** Playbook item ids with the anchor to scroll to, and whether the item is in the loaded list. */
-  evidence: Array<{ id: string; anchor: string; listed: boolean }>;
+  evidence: Array<{ id: string; anchor: string; listed: boolean; label: string }>;
   updated: string;
   lastRun: string;
 };
@@ -36,7 +36,7 @@ export type LessonsPanelModel = {
   empty: boolean;
   cards: LessonCardModel[];
   coverage: {
-    families: Array<{ family: CTFamily; familyText: string; ideas: number; tests: number; bestGrade: string | null; lastRun: string | null; hasLesson: boolean }>;
+    families: Array<{ family: CTFamily; familyText: string; ideas: number; tests: number | null; bestGrade: string | null; lastRun: string | null; hasLesson: boolean }>;
     untouched: string[];
     moreUntouched: number;
     touchedCells: number;
@@ -49,8 +49,9 @@ export type LessonsPanelModel = {
   note: string;
 };
 
-export function lessonsPanelModel(data: { lessons?: CTLessonView[]; coverage?: CTCoverage } | null | undefined, playbookIds: string[]): LessonsPanelModel {
-  const listed = new Set(playbookIds);
+const clipLabel = (text: string, n: number) => (text.length > n ? `${text.slice(0, n - 1)}…` : text);
+export function lessonsPanelModel(data: { lessons?: CTLessonView[]; coverage?: CTCoverage } | null | undefined, playbookItems: Array<{ id: string; mechanism?: string }>): LessonsPanelModel {
+  const listed = new Map(playbookItems.map((p) => [p.id, p.mechanism ?? ""]));
   const lessons = data?.lessons ?? [];
   const have = new Set(lessons.map((l) => l.family));
   const cov = data?.coverage;
@@ -67,13 +68,14 @@ export function lessonsPanelModel(data: { lessons?: CTLessonView[]; coverage?: C
         causeText: l.causeText,
         lesson: l.lesson,
         nextToTry: l.nextToTry,
-        evidence: l.evidence.map((id) => ({ id, anchor: playbookAnchor(id), listed: listed.has(id) })),
+        // A link reads as the idea it points at (its first words), not as an internal id.
+        evidence: l.evidence.map((id) => ({ id, anchor: playbookAnchor(id), listed: listed.has(id), label: clipLabel(listed.get(id) || id.split(":").slice(1).join(":") || id, 22) })),
         updated: l.updated,
         lastRun: l.lastRun,
       })),
     coverage: cov
       ? {
-          families: cov.families.filter((f) => f.ideas > 0 || f.tests > 0 || have.has(f.family)).map((f) => ({ ...f, familyText: CT_FAMILY_TEXT[f.family], bestGrade: f.bestGrade ? (GRADE_ORDER_TEXT[f.bestGrade] ?? f.bestGrade) : null, hasLesson: have.has(f.family) })),
+          families: cov.families.filter((f) => f.ideas > 0 || (f.tests ?? 0) > 0 || have.has(f.family)).map((f) => ({ ...f, familyText: CT_FAMILY_TEXT[f.family], bestGrade: f.bestGrade ? (GRADE_ORDER_TEXT[f.bestGrade] ?? f.bestGrade) : null, hasLesson: have.has(f.family) })),
           untouched: cov.vocabulary.featureCells.untouched,
           moreUntouched: cov.vocabulary.featureCells.moreUntouched,
           touchedCells: cov.vocabulary.featureCells.touched,

@@ -411,7 +411,7 @@ const PlaybookPanel = memo(function PlaybookPanel({ market }: { market: CTMarket
       live = false;
     };
   }, [market]);
-  const lessonsModel = lessonsPanelModel(data, (data?.entries ?? []).map((e) => e.id));
+  const lessonsModel = lessonsPanelModel(data, data?.entries ?? []);
   /** A lesson's evidence link: show every item, then scroll to the one the lesson rests on. */
   const openEvidence = (id: string) => {
     setView("items");
@@ -499,7 +499,7 @@ function LessonsTab({ model, onEvidence }: { model: ReturnType<typeof lessonsPan
                 {c.evidence.map((e, i) => (
                   <span key={e.id}>
                     {i ? ", " : ""}
-                    {e.listed ? <a href={`#${e.anchor}`} onClick={(ev) => { ev.preventDefault(); onEvidence(e.id); }}>{e.id.split(":").slice(1).join(":") || e.id}</a> : <span title="목록 밖의 오래된 항목">{e.id.split(":").slice(1).join(":") || e.id}</span>}
+                    {e.listed ? <a href={`#${e.anchor}`} title="플레이북 항목으로 이동" onClick={(ev) => { ev.preventDefault(); onEvidence(e.id); }}>{e.label}</a> : <span title="불러온 목록 밖의 항목">{e.label}</span>}
                   </span>
                 ))}
                 {" "}· {c.updated} 갱신 · 실행 {c.lastRun}
@@ -511,14 +511,16 @@ function LessonsTab({ model, onEvidence }: { model: ReturnType<typeof lessonsPan
       {cov ? (
         <div className="ct-coverage" aria-label="아직 안 건드린 영역">
           <p><b>아직 안 건드린 영역</b> <small>{model.note}</small></p>
-          <ul className="ct-playbook">
-            {cov.families.map((f) => (
-              <li key={f.family}>
-                <b>{f.familyText}</b>
-                <small className="ui-num">아이디어 {f.ideas}개 · 서로 다른 검정 {f.tests}회{f.bestGrade ? ` · 최고 등급 ${f.bestGrade}` : ""}{f.lastRun ? ` · 마지막 실행 ${f.lastRun}` : ""}{f.hasLesson ? "" : " · 교훈 없음"}</small>
-              </li>
-            ))}
-          </ul>
+          <div className="ct-table-wrap">
+            <table className="ui-table ct-coverage-table">
+              <thead><tr><th>계열</th><th>아이디어</th><th title="조건 서명으로 센 서로 다른 검정. 시간대·청산·다음 날 보유는 서명으로 표현되지 않아 센 값이 없습니다">검정</th><th>최고 등급</th><th>마지막 실행</th><th>교훈</th></tr></thead>
+              <tbody>
+                {cov.families.map((f) => (
+                  <tr key={f.family}><td>{f.familyText}</td><td>{f.ideas}</td><td>{f.tests ?? "—"}</td><td>{f.bestGrade ?? "—"}</td><td>{f.lastRun ?? "—"}</td><td>{f.hasLesson ? "있음" : "없음"}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
           <p className="ui-sub">피처×주기 칸 {cov.touchedCells}/{cov.totalCells}개 사용됨. 한 번도 안 쓰인 칸: {cov.untouched.length ? cov.untouched.join(", ") : "없음"}{cov.moreUntouched ? ` 외 ${cov.moreUntouched}개` : ""}</p>
           <p className="ui-sub">ATR 단위를 못 써 본 피처: {cov.atrUntouched.length ? cov.atrUntouched.join(", ") : "없음"} · 진입 시간 창 {cov.entryWindowUsed ? "사용됨" : "한 번도 안 씀"} · 안 쓴 관리형 청산 요소: {cov.exitUntouched.length ? cov.exitUntouched.join(", ") : "없음"}</p>
           {cov.emptyCells.length ? <p className="ui-sub">계열 × 청산 구조의 빈 칸: {cov.emptyCells.join(" · ")}</p> : null}

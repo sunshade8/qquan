@@ -114,6 +114,9 @@ export function ctStructuralFamily(uses: CTFeatureUse[]): CTFamily {
   return "other";
 }
 
+/** The families a ledger signature can belong to (no text, so no clock, liquidation or overnight reading): only these have a "tests" count. */
+export const CT_STRUCTURAL_FAMILIES: readonly CTFamily[] = ["mean_reversion", "breakout", "trend_following", "volatility_regime", "levels_gaps", "multi_timeframe_context", "other"];
+
 /** The conditions of a spec as feature uses. */
 export const ctSpecUses = (spec: Pick<CTSpec, "stages">): CTFeatureUse[] =>
   spec.stages.flatMap((s) => s.conditions.map((c) => ({ feature: c.feature, timeframe: c.timeframe, op: c.op, unit: c.unit ?? "pct" })));

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ctCandidateSchema, ctSubmissionSchema, type CTResearch } from "./ct-research.ts";
+import { ctCandidateSchema, ctSubmissionSchemaStage5, type CTResearch } from "./ct-research.ts";
 import { ctQuerySchema, ctReadBarsSchema } from "./ct-design-tools.ts";
 import {
   ctContrastMovesSchema,
@@ -143,7 +143,8 @@ export const CT_TOOLS = {
   },
   submit_candidates: {
     phases: ["design", "reflect"],
-    input: z.object({ session: z.number().int().nonnegative(), submission: ctSubmissionSchema }).strict(),
+    // Stage 5's schema is the stage-4 one plus two optional fields, so it also accepts every stage-4 submission unchanged.
+    input: z.object({ session: z.number().int().nonnegative(), submission: ctSubmissionSchemaStage5 }).strict(),
     output: z.object({
       accepted: z.array(z.string()),
       duplicates: z.number().int().nonnegative(),
