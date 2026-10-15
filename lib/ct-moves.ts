@@ -116,6 +116,14 @@ export type MoveLabels = {
   /** Index of the bar the trade exits on. */
   exitIndex: Int32Array;
   reason: Uint8Array;
+  /**
+   * Optional per-row outcomes for execution models whose cost depends on the exit (lib/ct-execution.ts): the realised net
+   * at 1× and 2× leg costs, and whether the order filled at all (0 = no position: net 0, not a trade). Absent, the
+   * walk-forward uses grossPct − costPct (and − 2 × costPct) and every valid row is a fill.
+   */
+  netPct?: Float32Array;
+  net2Pct?: Float32Array;
+  filled?: Uint8Array;
 };
 export function labelMoves(bars: CTBar[], day: DayInfo, o: MoveOptions): MoveLabels {
   const n = bars.length,
@@ -446,7 +454,7 @@ export function describeLeaf(root: TreeNode, path: string, names: string[]) {
 
 /* ------------------------------------------------------------- walk forward */
 
-export type Trade = { entry: number; exit: number; day: number; net: number; gross: number };
+export type Trade = { entry: number; exit: number; day: number; net: number; gross: number; side: number; filled: boolean; row: number };
 export type FoldReport = {
   fold: number;
   trainRows: number;
@@ -475,6 +483,8 @@ export type WalkForward = {
   validationDays: number;
   /** Per validation day: the day's summed trade net and the same trades under doubled costs (no-trade days are 0). */
   daily: Array<{ key: number; net: number; net2: number }>;
+  /** Every selected validation signal in order, including orders that did not fill (filled = false, net 0). */
+  signals: Trade[];
 };
 
 export type WalkForwardInput = {
@@ -487,6 +497,14 @@ export type WalkForwardInput = {
   depth?: number;
   /** Train on every Nth valid entry (adjacent minutes are nearly the same sample). */
   trainStride?: number;
+  /**
+   * One tree per side (e.g. [long, short]) on the same features and folds; `labels` is ignored when given. At a validation
+   * minute where several sides' leaves are selected, the side whose selected leaf had the higher TRAINING mean net wins
+   * (ties: the earlier side). Still one position at a time.
+   */
+  sides?: MoveLabels[];
+  /** Prefixes for selectedLeaves when there are several sides (default "s0:", "s1:" …). */
+  sideNames?: string[];
 };
 
 /**
@@ -496,25 +514,36 @@ export type WalkForwardInput = {
  * net outcome is positive; validation trades are then taken one at a time (no overlap).
  */
 export function walkForward(input: WalkForwardInput): WalkForward {
-  const { bars, day, labels, features, costPct } = input,
+  const { bars, day, features, costPct } = input,
     folds = input.folds ?? 4,
     depth = input.depth ?? 3,
     stride = input.trainStride ?? 1;
+  const sides = input.sides ?? [input.labels];
+  const prefix = (s: number) => (sides.length > 1 ? (input.sideNames?.[s] ?? `s${s}`) + ":" : "");
   const n = bars.length;
   const dayKeys = [...new Set(Array.from(day.key).filter((k) => k >= 0))].sort((a, b) => a - b);
   const blocks = folds + 1;
   const dayBlock = new Map<number, number>();
   dayKeys.forEach((k, i) => dayBlock.set(k, Math.min(blocks - 1, Math.floor((i * blocks) / dayKeys.length))));
-  const net = new Float32Array(n);
-  for (let i = 0; i < n; i++) net[i] = labels.label[i] < 0 ? NaN : labels.grossPct[i] - costPct;
+  const nets = sides.map((labels) => {
+    if (labels.netPct) return labels.netPct;
+    const net = new Float32Array(n);
+    for (let i = 0; i < n; i++) net[i] = labels.label[i] < 0 ? NaN : labels.grossPct[i] - costPct;
+    return net;
+  });
+  const net2Of = (s: number, i: number) => {
+    const labels = sides[s];
+    return labels.net2Pct ? labels.net2Pct[i] : labels.grossPct[i] - 2 * costPct;
+  };
+  const filledOf = (s: number, i: number) => !sides[s].filled || sides[s].filled![i] === 1;
   // A missing swing just means "no swing in the window" and stays a (top-bin) value; any other NaN drops the row.
   const required = features.cols.filter((_, c) => !features.names[c].includes("swing_"));
-  const complete = new Uint8Array(n);
+  const featureOk = new Uint8Array(n);
   for (let i = 0; i < n; i++) {
-    if (labels.label[i] < 0) continue;
+    if (!sides.some((labels) => labels.label[i] >= 0)) continue;
     let ok = 1;
     for (const c of required) if (c[i] !== c[i]) { ok = 0; break; }
-    complete[i] = ok;
+    featureOk[i] = ok;
   }
   const blockOf = new Int8Array(n).fill(-1);
   for (let i = 0; i < n; i++) if (day.key[i] >= 0) blockOf[i] = dayBlock.get(day.key[i])!;
@@ -531,68 +560,87 @@ export function walkForward(input: WalkForwardInput): WalkForward {
         validStart = i;
         break;
       }
-    const train: number[] = [],
-      valid: number[] = [];
-    let seen = 0;
-    for (let i = 0; i < n; i++) {
-      if (!complete[i] || day.key[i] < 0) continue;
-      const block = blockOf[i];
-      if (block <= f) {
-        // Purge: the trade must have closed before the validation block opens.
-        if (labels.exitIndex[i] < validStart && (seen++ % stride === 0)) train.push(i);
-      } else if (block === validBlock) valid.push(i);
-    }
-    const trainDays = new Set(train.map((i) => day.key[i])).size;
-    const minLeaf = Math.max(20, Math.ceil(trainDays / stride));
     const foldDays = dayKeys.filter((k) => dayBlock.get(k) === validBlock);
     validationDays += foldDays.length;
-    if (train.length < minLeaf * 4 || !valid.length) {
-      report.push({ fold: f, trainRows: train.length, validRows: valid.length, selectedLeaves: [], bestTrainLeafNetPct: NaN, trades: 0, meanNetPct: 0, dailyMeanPct: 0 });
+    const valid: number[] = [];
+    for (let i = 0; i < n; i++) if (featureOk[i] && day.key[i] >= 0 && blockOf[i] === validBlock) valid.push(i);
+    let trainRowsTotal = 0;
+    // Per side: its own training rows (purged on its own exits), tree, selected leaves.
+    const fitted = sides.map((labels, s) => {
+      const train: number[] = [];
+      let seen = 0;
+      for (let i = 0; i < n; i++) {
+        if (!featureOk[i] || labels.label[i] < 0 || day.key[i] < 0) continue;
+        // Purge: the trade must have closed before the validation block opens.
+        if (blockOf[i] <= f && labels.exitIndex[i] < validStart && seen++ % stride === 0) train.push(i);
+      }
+      trainRowsTotal += train.length;
+      const trainDays = new Set(train.map((i) => day.key[i])).size;
+      const minLeaf = Math.max(20, Math.ceil(trainDays / stride));
+      if (train.length < minLeaf * 4) return null;
+      const grown = growTree(features.cols, Int32Array.from(train), labels.label, nets[s], { depth, minLeaf });
+      candidateSplits += grown.candidateSplits;
+      const treeLeaves = leaves(grown.root);
+      const selected = new Map(treeLeaves.filter((l) => l.node.net > 0).map((l) => [l.path, l.node.net]));
+      return { root: grown.root, treeLeaves, selected };
+    });
+    const sideValid = (s: number, i: number) => sides[s].label[i] >= 0;
+    if (fitted.every((x) => x === null) || !valid.length) {
+      report.push({ fold: f, trainRows: trainRowsTotal, validRows: valid.length, selectedLeaves: [], bestTrainLeafNetPct: NaN, trades: 0, meanNetPct: 0, dailyMeanPct: 0 });
       for (const k of foldDays) if (!dayTotals.has(k)) dayTotals.set(k, { net: 0, net2: 0 });
       continue;
     }
-    const rows = Int32Array.from(train);
-    const grown = growTree(features.cols, rows, labels.label, net, { depth, minLeaf });
-    candidateSplits += grown.candidateSplits;
-    const treeLeaves = leaves(grown.root);
-    const selected = new Set(treeLeaves.filter((l) => l.node.net > 0).map((l) => l.path));
     const trades: Trade[] = [];
     let freeAt = -1;
     for (const i of valid) {
       if (i <= freeAt) continue;
-      if (!selected.has(leafPath(grown.root, features.cols, i))) continue;
-      trades.push({ entry: i + 1, exit: labels.exitIndex[i], day: day.key[i], net: net[i], gross: labels.grossPct[i] });
+      let pick = -1,
+        pickNet = -Infinity;
+      for (let s = 0; s < sides.length; s++) {
+        const fit = fitted[s];
+        if (!fit || !sideValid(s, i)) continue;
+        const leafNet = fit.selected.get(leafPath(fit.root, features.cols, i));
+        if (leafNet !== undefined && leafNet > pickNet) {
+          pick = s;
+          pickNet = leafNet;
+        }
+      }
+      if (pick < 0) continue;
+      const labels = sides[pick];
+      trades.push({ entry: i + 1, exit: labels.exitIndex[i], day: day.key[i], net: nets[pick][i], gross: labels.grossPct[i], side: pick, filled: filledOf(pick, i), row: i });
       freeAt = labels.exitIndex[i];
     }
     for (const k of foldDays) if (!dayTotals.has(k)) dayTotals.set(k, { net: 0, net2: 0 });
     for (const t of trades) {
       const d = dayTotals.get(t.day)!;
       d.net += t.net;
-      d.net2 += t.gross - 2 * costPct;
+      d.net2 += net2Of(t.side, t.row);
     }
     all.push(...trades);
+    const fills = trades.filter((t) => t.filled);
     const foldDaily = foldDays.map((k) => dayTotals.get(k)!.net);
     report.push({
       fold: f,
-      trainRows: train.length,
+      trainRows: trainRowsTotal,
       validRows: valid.length,
-      selectedLeaves: [...selected].map((p) => describeLeaf(grown.root, p, features.names)),
-      bestTrainLeafNetPct: Math.max(...treeLeaves.map((l) => l.node.net)),
-      trades: trades.length,
-      meanNetPct: trades.length ? trades.reduce((s, t) => s + t.net, 0) / trades.length : 0,
+      selectedLeaves: fitted.flatMap((fit, s) => (fit ? [...fit.selected.keys()].map((p) => prefix(s) + describeLeaf(fit.root, p, features.names)) : [])),
+      bestTrainLeafNetPct: Math.max(...fitted.flatMap((fit) => (fit ? fit.treeLeaves.map((l) => l.node.net) : []))),
+      trades: fills.length,
+      meanNetPct: fills.length ? fills.reduce((s, t) => s + t.net, 0) / fills.length : 0,
       dailyMeanPct: foldDaily.reduce((s, x) => s + x, 0) / Math.max(1, foldDaily.length),
     });
   }
   const daily = [...dayTotals.values()];
+  const fills = all.filter((t) => t.filled);
   const dailyMean = daily.reduce((s, d) => s + d.net, 0) / Math.max(1, daily.length),
     dailyMean2 = daily.reduce((s, d) => s + d.net2, 0) / Math.max(1, daily.length),
     variance = daily.reduce((s, d) => s + (d.net - dailyMean) ** 2, 0) / Math.max(1, daily.length - 1);
   return {
     folds: report,
-    trades: all.length,
-    tradesPerDay: all.length / Math.max(1, validationDays),
-    meanNetPct: all.length ? all.reduce((s, t) => s + t.net, 0) / all.length : 0,
-    meanNet2xPct: all.length ? all.reduce((s, t) => s + t.gross - 2 * costPct, 0) / all.length : 0,
+    trades: fills.length,
+    tradesPerDay: fills.length / Math.max(1, validationDays),
+    meanNetPct: fills.length ? fills.reduce((s, t) => s + t.net, 0) / fills.length : 0,
+    meanNet2xPct: fills.length ? fills.reduce((s, t) => s + net2Of(t.side, t.row), 0) / fills.length : 0,
     dailyMeanPct: dailyMean,
     dailyMean2xPct: dailyMean2,
     dailyT: variance > 0 ? dailyMean / Math.sqrt(variance / daily.length) : 0,
@@ -601,6 +649,7 @@ export function walkForward(input: WalkForwardInput): WalkForward {
     candidateSplits,
     validationDays,
     daily: [...dayTotals.entries()].map(([key, d]) => ({ key, net: d.net, net2: d.net2 })).sort((a, b) => a.key - b.key),
+    signals: all,
   };
 }
 
