@@ -66,10 +66,12 @@ const iso = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 export const ctStripNumbers = (text: string) => text.replace(/[+\-−]?\d[\d.,]*\s*(%p|%|배|건|봉|분|일)?/g, "#");
 
 /** "return_pct(1m) · volume_ratio(1m)" of a spec's conditions; thresholds excluded. */
-function structureOf(spec: CTSpec) {
+export function structureOf(spec: CTSpec) {
   const names = spec.stages.map((s) => [...new Set(s.conditions.map((c) => `${c.feature}(${c.timeframe}m${c.unit === "atr" ? ",ATR" : ""})`))].join(" + "));
   return clip(names.join(" → ") + (spec.entry.entryWindows?.length ? " · 시간 창" : "") + (spec.exit && "stop" in spec.exit ? " · 관리형 청산" : ""), 300);
 }
+/** The mechanism and structure text a candidate files in the playbook (the family classifier reads exactly these). */
+export const ctCandidateIdea = (name: string, mechanism: string, spec: CTSpec) => ({ mechanism: clip(`${name} — ${mechanism}`, 400), structure: structureOf(spec) });
 const costProfileOf = (c: CTContract) => (c.costProfile ? `${c.costProfile.id}@${c.costProfile.version}` : "");
 
 /** How many hypothesis tests a run's ledger holds (older runs: distinct query signatures). */
@@ -134,8 +136,7 @@ export function ctPlaybookRows(job: Pick<GenerationJob, "id" | "ownerId"> & { ct
     rows.push({
       ...base,
       id: `${job.id}:scr:${t.id}`,
-      mechanism: clip(`${t.candidate.spec.name} — ${t.candidate.hypothesis.mechanism}`, 400),
-      structure: structureOf(t.candidate.spec),
+      ...ctCandidateIdea(t.candidate.spec.name, t.candidate.hypothesis.mechanism, t.candidate.spec),
       evidence_kind: "candidate",
       evidence_ref: t.id,
       grade: "screen_failed",
@@ -160,8 +161,7 @@ export function ctPlaybookRows(job: Pick<GenerationJob, "id" | "ownerId"> & { ct
     rows.push({
       ...base,
       id: `${job.id}:trial:${t.id}`,
-      mechanism: clip(`${t.spec.name} — ${t.hypothesis.mechanism}`, 400),
-      structure: structureOf(t.spec),
+      ...ctCandidateIdea(t.spec.name, t.hypothesis.mechanism, t.spec),
       evidence_kind: "candidate",
       evidence_ref: t.id,
       grade,
