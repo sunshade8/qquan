@@ -20,6 +20,7 @@ import { ctRuleText, type CTSpec, type CTMarket } from "@/lib/ct-spec";
 import { CTEvidenceChart } from "./ct-evidence-chart";
 import { CT_EXIT_REASON_TEXT } from "@/lib/ct-trade-levels";
 import { TradingDashboards } from "./trading-dashboards";
+import { DataSyncCard, useStaleData } from "./ct-data-sync";
 import {
   ActivityFeed,
   CT_PHASES,
@@ -569,62 +570,6 @@ function TradeEvidence({
   );
 }
 
-type DataStatus = { dataset: string; instrument: string; missingRanges: number[][]; job?: { status?: string } | null };
-const DAY_MS = 86_400_000;
-/**
- * The research window ends at yesterday 00:00 UTC, so it moves forward every day and the local 1-minute store
- * is behind it every morning. Say so before the button is pressed (the server refuses a window with a missing day)
- * and let the owner top it up in one click.
- */
-function useStaleData(market: CTMarket, symbols: string, days: string) {
-  const [rows, setRows] = useState<DataStatus[] | null>(null),
-    [busy, setBusy] = useState(false),
-    [failure, setFailure] = useState<string | null>(null);
-  const refresh = useCallback(async () => {
-    try {
-      const r = await fetch("/api/local-data", { cache: "no-store" });
-      const body = await r.json();
-      if (r.ok && Array.isArray(body)) setRows(body as DataStatus[]);
-    } catch {
-      /* the research request reports its own connection error */
-    }
-  }, []);
-  useEffect(() => {
-    queueMicrotask(() => void refresh());
-    const timer = setInterval(() => void refresh(), 15_000);
-    return () => clearInterval(timer);
-  }, [refresh]);
-  const toMs = Math.floor((Date.now() - DAY_MS) / DAY_MS) * DAY_MS,
-    fromMs = toMs - (Number(days) || 365) * DAY_MS,
-    wanted = symbols.toUpperCase().split(/[,\s]+/).filter(Boolean),
-    stale = (rows ?? []).filter((d) => {
-      if (market === "stock" ? d.dataset !== "stock" : d.dataset === "stock") return false;
-      if (market === "crypto" && wanted.length && !wanted.some((w) => w.startsWith(d.dataset.toUpperCase()))) return false;
-      return d.missingRanges.some(([a, b]) => a < toMs && b > fromMs);
-    }),
-    running = stale.some((d) => d.job?.status === "running" || d.job?.status === "queued");
-  const topUp = async () => {
-    setBusy(true);
-    setFailure(null);
-    try {
-      for (const d of stale) {
-        const r = await fetch("/api/local-data", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ action: "enqueue", dataset: d.dataset }),
-        });
-        if (!r.ok) throw new Error(((await r.json().catch(() => null)) as { error?: string } | null)?.error ?? "다운로드 요청 실패");
-      }
-      await refresh();
-    } catch (e) {
-      setFailure(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-  return { stale, running, busy, failure, topUp };
-}
-
 export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
   const [market, setMarket] = useState<CTMarket>("stock"),
     [data, setData] = useState<CTResponse | null>(null),
@@ -1074,22 +1019,7 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
             </div>
           </div>
         </details>
-        {staleData.stale.length ? (
-          <div className="ui-alert" role="alert" data-testid="ct-data-stale">
-            <TriangleAlert size={16} aria-hidden="true" />
-            <div>
-              <strong>1분봉 데이터가 어제까지 채워져 있지 않아 전략 생성을 시작할 수 없습니다</strong>
-              <p>
-                연구 구간은 매일 하루씩 뒤로 이동합니다. 부족한 저장소: {staleData.stale.map((d) => d.instrument).join(", ")}
-                {staleData.running ? " · 다운로드 진행 중, 끝나면 버튼이 자동으로 풀립니다." : ""}
-              </p>
-              {staleData.failure ? <p>{staleData.failure}</p> : null}
-            </div>
-            <button className="ui-btn sm" disabled={staleData.busy || staleData.running} onClick={() => void staleData.topUp()}>
-              {staleData.running ? "다운로드 중…" : "지금 채우기"}
-            </button>
-          </div>
-        ) : null}
+        <DataSyncCard sync={staleData} />
         {data && !data.availability.ready ? (
           <div className="ui-alert" role="alert">
             <TriangleAlert size={16} aria-hidden="true" />

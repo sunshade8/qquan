@@ -200,6 +200,28 @@ class LocalData(unittest.TestCase):
         self.assertEqual(c.session_open("2024-03-11").hour, 13)
         self.assertEqual(c.session_open("2021-10-13").hour, 13)
 
+    def test_auto_topup_queues_only_the_missing_days_and_backs_off_after_errors(self):
+        _, end = store.target()
+        # Everything up to 10 days ago is present for btc; the last 10 days are the hole to fill.
+        have_to = end - 10 * 86400000
+        floor = end - store.AUTO_WINDOW_DAYS * 86400000
+        for name in store.DATASETS:
+            self.db.execute(
+                "INSERT INTO local_data_parts(id,dataset,start,end,path,sha256,rows,bytes,first,last,source,verified,quality,version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (name, name, floor, have_to, "x", "x", 1, 1, floor, have_to, "t", 1, "ok", "v"),
+            )
+        with patch.object(store, "valid_part", lambda p: True):
+            queued = store.auto_topup(self.db)
+            self.assertEqual(sorted(queued), sorted(store.DATASETS))
+            job = self.db.execute("SELECT start,end FROM local_data_jobs WHERE dataset='btc'").fetchone()
+            self.assertEqual((job["start"], job["end"]), (have_to, end))
+            # Already queued: a second pass adds nothing new and does not raise.
+            store.auto_topup(self.db)
+            self.assertEqual(self.db.execute("SELECT count(*) FROM local_data_jobs WHERE dataset='btc'").fetchone()[0], 1)
+            # A fresh failure is left alone instead of being retried every pass.
+            self.db.execute("UPDATE local_data_jobs SET status='error',updated=?", (int(store.time.time() * 1000),))
+            self.assertEqual(store.auto_topup(self.db), [])
+
 
 if __name__ == "__main__":
     unittest.main()

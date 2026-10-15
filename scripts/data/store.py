@@ -801,6 +801,40 @@ def query(db, q):
     )
 
 
+AUTO_WINDOW_DAYS = 400
+AUTO_CHECK_SECONDS = 600
+AUTO_RETRY_AFTER_ERROR_MS = 30 * 60 * 1000
+
+
+def auto_topup(db):
+    """Queue a catch-up job for every dataset that is behind the research window.
+
+    The window ends at yesterday 00:00 UTC and moves daily, so after a few days without the app the store is
+    several days short. Only the missing days are fetched (work() skips verified parts). A dataset whose last job
+    failed is left alone for a while so a provider refusal is not hammered; older holes outside the window (for
+    example a provider entitlement gap years back) are never retried here.
+    """
+    _, end = target()
+    floor = end - AUTO_WINDOW_DAYS * 86400000
+    queued = []
+    for name in DATASETS:
+        gaps = missing([p for p in parts(db, name, floor, end) if valid_part(p)], floor, end)
+        if not gaps:
+            continue
+        last = db.execute(
+            "SELECT status,updated FROM local_data_jobs WHERE dataset=? ORDER BY updated DESC LIMIT 1",
+            (name,),
+        ).fetchone()
+        if last and last["status"] == "error" and time.time() * 1000 - last["updated"] < AUTO_RETRY_AFTER_ERROR_MS:
+            continue
+        try:
+            enqueue(db, name, gaps[0][0], end)
+            queued.append(name)
+        except Exception as e:
+            print(f"auto top-up {name}: {type(e).__name__}: {e}", flush=True)
+    return queued
+
+
 def main():
     db = connect()
     command = sys.argv[1]
@@ -810,7 +844,16 @@ def main():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return
+        checked = 0.0
         while True:
+            if time.time() - checked >= AUTO_CHECK_SECONDS:
+                checked = time.time()
+                try:
+                    queued = auto_topup(db)
+                    if queued:
+                        print(f"auto top-up queued: {','.join(queued)}", flush=True)
+                except Exception as e:
+                    print(f"auto top-up failed: {type(e).__name__}: {e}", flush=True)
             if not work(db):
                 time.sleep(2)
     elif command in ("status", "cancel", "resume"):
