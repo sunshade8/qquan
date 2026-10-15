@@ -270,17 +270,30 @@ export const CT_POLICY = Object.freeze({
    * 1 = the designer has label_moves / contrast_moves / view_charts / grade_blind / diagnose_trades and the playbook.
    * 2 = stage 4: contrast control modes (time / vol_matched / losers), 16–32-chart blind sets with reserve anchors,
    *     calibration records and "already measured" in the stable block, summarized thinking, and the stage-4 brief.
+   * 3 = stage 5 (2026-10-15): family lessons and the coverage map in the stable block, lessonChecks on submit_candidates,
+   *     the lesson distillation at the end of a run (its own reserve), and the stage-5 brief.
    */
-  traderTools: 2,
+  traderTools: 3,
+  /** Stage 5: money withheld from the designer and the reviewers at the start of a run so the lesson distillation can always run (docs/ct.md「연구 교훈」). */
+  lessonReserveUsd: 0.05,
+  /** Stage 5: the distillation prompt may not exceed this many characters, and its answer this many output tokens. */
+  lessonMaxInputChars: 60_000,
+  lessonMaxOutputTokens: 8000,
 });
 /**
  * The policy a NEW contract is frozen with. Always CT_POLICY — except for verification: QQUAN_CT_POLICY_VERSION=1 freezes it with the
  * stage-3 policy (tool version 1, 32 images) so the same-board refusal against runs made under that policy can be exercised on real
  * data without paying for anything (docs/ct.md「판 서명」). Not set in normal use.
  */
-export function ctPolicyForNewContract(): CTPolicyShape {
+export function ctPolicyForNewContract(): CTContract["policy"] {
   const override = typeof process !== "undefined" ? process.env?.QQUAN_CT_POLICY_VERSION : undefined;
-  return override === "1" ? { ...CT_POLICY, traderTools: 1, sessionMaxCharts: 32 } : CT_POLICY;
+  if (override === "1" || override === "2") {
+    // An earlier-stage contract carries none of the stage-5 fields, exactly as it would have been frozen then.
+    const { lessonReserveUsd: _a, lessonMaxInputChars: _b, lessonMaxOutputTokens: _c, ...earlier } = CT_POLICY;
+    void _a; void _b; void _c;
+    return override === "1" ? { ...earlier, traderTools: 1, sessionMaxCharts: 32 } : { ...earlier, traderTools: 2 };
+  }
+  return CT_POLICY;
 }
 /** The policy fields as stored on a contract (numbers: a stage-3 contract carries tool version 1 and 32 images, not today's literals). */
 export type CTPolicyShape = { readonly [K in keyof typeof CT_POLICY]: number };
@@ -293,7 +306,10 @@ type CTPolicyLater =
   | "maxSessions"
   | "sessionMaxCharts"
   | "sessionMaxBlindSets"
-  | "traderTools";
+  | "traderTools"
+  | "lessonReserveUsd"
+  | "lessonMaxInputChars"
+  | "lessonMaxOutputTokens";
 /**
  * The session limits a contract runs under. A contract frozen before a limit existed gets the value
  * of the stage that introduced it (never today's higher one): sessions that started with 12 turns,
@@ -310,8 +326,13 @@ export function ctSessionPolicy(contract: Pick<CTContract, "policy">) {
     maxBlindSets: p.sessionMaxBlindSets ?? 0,
     /** Stage 3+: the trader tools, the playbook and the self-rebuttal exist only on contracts that carry the flag. */
     traderTools: (p.traderTools ?? 0) >= 1,
-    /** 0 = stage-2 tools, 1 = stage-3 trader tools (frozen bytes), 2 = stage-4 tools, brief and request options. */
-    toolsVersion: (p.traderTools ?? 0) as 0 | 1 | 2,
+    /** 0 = stage-2 tools, 1 = stage-3 trader tools (frozen bytes), 2 = stage-4 tools, brief and request options, 3 = stage 5 (lessons, coverage, lessonChecks). */
+    toolsVersion: (p.traderTools ?? 0) as 0 | 1 | 2 | 3,
+    /** Stage 5: the family lessons exist only on contracts that carry the flag; earlier contracts get 0 / false. */
+    lessons: (p.traderTools ?? 0) >= 3,
+    lessonReserveUsd: (p.traderTools ?? 0) >= 3 ? (p.lessonReserveUsd ?? 0) : 0,
+    lessonMaxInputChars: p.lessonMaxInputChars ?? 60_000,
+    lessonMaxOutputTokens: p.lessonMaxOutputTokens ?? 8000,
     /** Blind-set size for toolsVersion 2: min / default / max charts (stage 3 sets are 4–64 charts of any even size, per its own schema). */
     blindSize: (p.traderTools ?? 0) >= 2 ? { min: 16, default: 24, max: 32 } : null,
   };
