@@ -245,6 +245,21 @@ const runtimes = new WeakMap<GenerationJob, ResearchRuntime>();
 type PaidResult<T> = { data: T; costUsd: number; sources?: Array<{ url: string; title: string }>; searchCalls?: number; reasoningTokens?: number | null };
 type CallLimits = ReturnType<typeof researchCallLimits>;
 /**
+ * The most a call of `role` may bring the run's total to (reserve included). Design and strategy search keep a review reserve
+ * back (reserveFraction); the reviewers and the final phases may spend it. Stage 5: the lesson distillation's own money is
+ * withheld from every other CT call from the start and only the distillation may spend it (lessonReserveUsd).
+ */
+export function researchCeilingUsd(job: Pick<GenerationJob, "budgetUsd" | "search" | "ct">, role: GenerationRole) {
+  const lessonReserve = job.ct && role !== "ctLessons" ? job.ct.contract.policy.lessonReserveUsd ?? 0 : 0;
+  const base =
+    job.search && job.search.phase !== "final"
+      ? job.budgetUsd * (1 - job.search.config.reserveFraction)
+      : job.ct && role !== "ctLessons" && !["risk_review", "final", "evidence_review"].includes(job.ct.phase)
+        ? job.budgetUsd * (1 - job.ct.contract.policy.reserveFraction)
+        : job.budgetUsd;
+  return base - lessonReserve;
+}
+/**
  * The one paid-call ledger for research. Every model call — a structured ask or one turn of
  * the CT designer's session — goes through here, so each gets: reuse of a completed
  * response by key, interrupted calls budgeted at their reserve, changed limits after a
@@ -281,9 +296,7 @@ async function paidCall<T>(
   // A CT call already cut off at its output allowance is retried with changed limits, never identical ones.
   const limits = researchCallLimits(role, { ct: Boolean(job.ct), truncated: job.calls.some(call => call.key === key && call.incompleteReason === "max_output_tokens") });
   const reserve = reserveFor(limits);
-  // Stage 5: the lesson distillation's own money is withheld from every other CT call from the start, and only the distillation may spend it.
-  const lessonReserve = job.ct && role !== "ctLessons" ? job.ct.contract.policy.lessonReserveUsd ?? 0 : 0;
-  const ceiling = (job.search && job.search.phase !== "final" ? job.budgetUsd * (1 - job.search.config.reserveFraction) : job.ct && role !== "ctLessons" && !["risk_review","final","evidence_review"].includes(job.ct.phase) ? job.budgetUsd * (1-job.ct.contract.policy.reserveFraction) : job.budgetUsd) - lessonReserve;
+  const ceiling = researchCeilingUsd(job, role);
   if (job.costUsd + uncertainResearchCost(job.calls) + reserve > ceiling)
     throw new ResearchBudgetError(`연구 예산 $${job.budgetUsd} 내 추가 호출 여유가 없습니다. 미확인 호출 비용도 한도에 포함합니다.`);
   const now = new Date().toISOString();
