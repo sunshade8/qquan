@@ -301,7 +301,7 @@ test("a coin contract no longer says 'NVDA'; contracts stored before the fix are
   assert.doesNotMatch(ctSelectionLabel(old), /NVDA/);
   assert.equal(old.selection.startsWith("NVDA"), true, "the stored value is untouched");
   assert.equal(ctSelectionLabel({ market: "crypto", selection: "사용자 지정" }), "사용자 지정");
-  assert.equal(CT_POLICY.traderTools, 2);
+  assert.equal(CT_POLICY.traderTools, 3);
 });
 
 test("a run frozen before signatures existed still counts: its signature is computed from the contract and brief it carries", async () => {

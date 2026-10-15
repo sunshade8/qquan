@@ -7,6 +7,8 @@ import { ctRoundTripCostPct, ctStability, ctSummary, type CTResult } from "./ct-
 import { ctCostProfileText } from "./ct-costs.ts";
 import type { GenerationReview } from "./strategy-generation-spec.ts";
 import type { CTCostHurdle } from "./ct-design-tools.ts";
+import { CT_FAMILIES } from "./ct-families.ts";
+import type { CTLessonsRecorded, CTLessonsSnapshot } from "./ct-lessons.ts";
 export const ctRequestSchema = z
   .object({
     requestId: z.string().uuid(),
@@ -93,9 +95,24 @@ export const ctCandidateDraftSchema = z
       .optional(),
   })
   .strict();
+/**
+ * Stage 5: what the server keeps of a candidate's lessonChecks entry. `family` is the one the SERVER computed from the
+ * candidate (the model's declaration is kept beside it when it differed); the reviewers read it.
+ */
+export const ctLessonCheckStoredSchema = z
+  .object({
+    family: z.enum(CT_FAMILIES),
+    structuralFamily: z.enum(CT_FAMILIES).optional(),
+    declaredFamily: z.enum(CT_FAMILIES).optional(),
+    lessonId: z.string().nullable(),
+    differsBecause: z.string(),
+  })
+  .strict();
+export type CTLessonCheck = z.infer<typeof ctLessonCheckStoredSchema>;
 /** Stored candidates: version 1 (web sources only) or 2 (evidence ids, see CT_EVIDENCE_VERSION). */
 export const ctCandidateSchema = ctCandidateDraftSchema.extend({
   evidenceVersion: z.literal(2).optional(),
+  lessonCheck: ctLessonCheckStoredSchema.optional(),
 });
 /**
  * Evidence version 2 (2026-10-13): spec.sourceIds and mapping[].sourceId name EVIDENCE —
@@ -105,26 +122,48 @@ export const ctCandidateSchema = ctCandidateDraftSchema.extend({
  */
 export const CT_EVIDENCE_VERSION = 2;
 export type CTCandidate = z.infer<typeof ctCandidateSchema>;
+const ctRejectedHypothesisSchema = z
+  .object({
+    hypothesis: z.string().max(600),
+    mechanism: z.string().max(600),
+    evidence: z.array(z.string()).max(8),
+    result: z.string().max(800),
+  })
+  .strict();
 /** What the designer submits to end a research session: 0–3 candidates, or none with reasons. */
 export const ctSubmissionSchema = z
   .object({
     candidates: z.array(ctCandidateDraftSchema).max(3),
     noEdgeReason: z.string().max(2000).nullable(),
-    rejectedHypotheses: z
+    rejectedHypotheses: z.array(ctRejectedHypothesisSchema).max(12),
+  })
+  .strict();
+/**
+ * Stage 5 (traderTools = 3): the same submission plus lessonChecks (per candidate: the idea family, the lesson it answers, and why
+ * the lesson's cause does not apply this time) and an optional family on each rejected hypothesis. A separate schema: the stage-4
+ * tool definition's bytes are part of every cached prefix and never change.
+ */
+export const ctSubmissionSchemaStage5 = z
+  .object({
+    candidates: z.array(ctCandidateDraftSchema).max(3),
+    noEdgeReason: z.string().max(2000).nullable(),
+    rejectedHypotheses: z.array(ctRejectedHypothesisSchema.extend({ family: z.enum(CT_FAMILIES).optional() })).max(12),
+    lessonChecks: z
       .array(
         z
           .object({
-            hypothesis: z.string().max(600),
-            mechanism: z.string().max(600),
-            evidence: z.array(z.string()).max(8),
-            result: z.string().max(800),
+            candidateIndex: z.number().int().min(0).max(2),
+            family: z.enum(CT_FAMILIES),
+            lessonId: z.string().nullable(),
+            differsBecause: z.string().max(800),
           })
           .strict(),
       )
-      .max(12),
+      .max(3)
+      .optional(),
   })
   .strict();
-export type CTSubmission = z.infer<typeof ctSubmissionSchema>;
+export type CTSubmission = z.infer<typeof ctSubmissionSchemaStage5>;
 export type CTSource = {
   id: string;
   url: string;
@@ -195,6 +234,8 @@ export type CTSession = {
     duplicates: number;
     noEdgeReason: string | null;
     rejectedHypotheses: CTSubmission["rejectedHypotheses"];
+    /** Stage 5: per candidate, the family the server computed and the explanation for a dead family (an entry for every candidate that had one). */
+    lessonChecks?: Array<CTLessonCheck & { candidateIndex: number }>;
     /** Stage 4: hypotheses whose only evidence was a blind set; the server moved them out of rejectedHypotheses (they are calibration records). */
     calibrationRefs?: Array<{ blindId: string; hypothesis: string; result: string }>;
   };
@@ -334,8 +375,12 @@ export type CTResearch = {
   /** Stage 4: calibration records and what earlier runs measured on this very training data, frozen at the start like the playbook. */
   calibration?: CTCalibrationSnapshot;
   measured?: CTMeasuredBefore;
+  /** Stage 5: the family lessons and the coverage map as of this run's start; frozen like the playbook. */
+  lessons?: CTLessonsSnapshot;
   /** Set once the finished run was written to the playbook. */
   playbookRecorded?: { at: string; entries: number };
+  /** Stage 5: the end-of-run lesson distillation (recorded, skipped for want of its reserve, or failed); written once. */
+  lessonsRecorded?: CTLessonsRecorded;
   /** Set when research continued without web sources (search optional). */
   sourceNote?: string;
   tools: CTToolTrace[];
@@ -491,11 +536,23 @@ const SYS4_WORKFLOW = `How an intraday trader works, and why (a default order, n
 7. Learn from the losses. diagnose_trades takes a screened rule (screenId) or a submitted candidate and splits its training trades by time of day, volatility, the 1-hour trend, weekday, holding time and exit reason. It measures how many losers were once in profit (an exit problem: breakeven, trailing, an earlier exit) against how many never went in the money (an entry problem: the condition does not select), and replays the same entries under other exit structures. A filter it suggests was found on these very trades, so it is a new hypothesis that must earn its way: record it as a change from the rule you diagnosed, re-measure it, and count the cells you looked at.
 8. Before you submit, argue against yourself. For each candidate give selfRebuttal: the three likeliest reasons this rule is chance (few events, one or two months, a regime that will not return, a threshold tuned to the sample, a filter chosen after seeing the losses, a cost assumption) and for each what in the data rules it out (excluded: yes, partly or no). Be honest: "no" and "partly" are information for the reviewers, and a rule you cannot defend is better left out.`;
 const SYS4_TOOLS = `Tools and their limits: every tool sees the training split only; the server rejects anything past it and drops any moment whose look-ahead would cross it. Evidence ids a candidate's mapping may cite: a queryId (query_conditional_returns), a contrastId (contrast_moves) or a diagnosisId (diagnose_trades), each only for the features and timeframes it actually measured (a diagnosis measured range_pct on 1-minute bars and sma_distance_pct on 60-minute bars), or a web source id; spec.sourceIds lists the ids the rule uses. read_bars and view_charts only open times the server issued (event and control times from label_moves — its blindReserve holds extra times for large blind sets — query anchors, screen_rule trade times); an ordinary view_charts call takes up to 8 times within the per-session image limit stated in the context; a blind set takes 16–32 times with equal numbers of event and control times, none of them seen in an ordinary view, and is graded once. screen_rule has a per-session limit. submit_candidates ends the session: 1–3 candidates, or zero candidates with noEdgeReason when nothing survived — record every trading hypothesis you rejected and why (blind-set results are calibration records, not rejected hypotheses). A revision of an earlier measured candidate names it as parentId and states the measured problem, the exact changes and the expected effect; a new idea has parentId null. A candidate that uses a diagnose_trades filter says so in observedProblem and changes.`;
-export const CT_DESIGNER_SYSTEM = [SYS3_INTRO, SYS_SUCCESS, SYS_COSTS, SYS_EXIT_STRUCTURE, SYS4_WORKFLOW, SYS3_GUARD, SYS_LANGUAGE, SYS_LEVELS, SYS_EXITS, SYS4_TOOLS, SYS_DATA].join("\n\n");
-/** The brief a contract runs under: stage 4 / stage 3 trader briefs by tools version, the stage-2 brief otherwise (all frozen byte for byte, so cached prefixes of older runs survive). */
+/** The stage-4 brief, byte for byte: traderTools = 2 contracts keep it (SHA-256 pinned in tests/ct-stage4-session.test.mjs). */
+export const CT_DESIGNER_SYSTEM_STAGE4 = [SYS3_INTRO, SYS_SUCCESS, SYS_COSTS, SYS_EXIT_STRUCTURE, SYS4_WORKFLOW, SYS3_GUARD, SYS_LANGUAGE, SYS_LEVELS, SYS_EXITS, SYS4_TOOLS, SYS_DATA].join("\n\n");
+
+/* ------------------------------------------------------------------------------------------
+ * Stage 5 (2026-10-15): the same rule language and gates. The context now also holds the lessons earlier
+ * runs distilled (one sentence per idea family: why it did not work on this board) and a count-only coverage
+ * map; the server checks that a candidate in a family the lessons call dead says why the lesson does not apply.
+ * ------------------------------------------------------------------------------------------ */
+const SYS5_STEP1 = `1. Read the board. The context holds the cost hurdle; the playbook of what earlier runs on this market tried and how each ended (mechanism and outcome grade; numbers appear only where they cannot leak this run's development or final data) and the cumulative number of distinct hypothesis tests made on this market; lessons — one sentence per idea family on why that family did not work on this board (verdict dead, weak or unresolved, the cause, and the playbook ids it rests on; the playbook shows only the most recent entries, the lesson covers all of them); coverage — a count-only map of which families, feature cells, ATR units, time windows and exit pieces earlier runs touched; alreadyMeasured — the label definitions and contrast requests earlier runs made on exactly this training data, with the conclusion each run drew (asking the same question again teaches nothing new, so ask a different one); and eyeCalibration — how your own reading of charts did in blind sets before. Do not re-run a mechanism the playbook shows as failed unless you can say what is different now, and remember that every test you add makes the next positive result cheaper to find by luck.`;
+const SYS5_WORKFLOW = [SYS4_WORKFLOW.split("\n")[0], SYS5_STEP1, ...SYS4_WORKFLOW.split("\n").slice(2)].join("\n");
+const SYS5_LESSONS = `Lessons and coverage: a lesson is a memory of why an idea family did not work on this board, not a goal and not evidence of performance. An empty cell in the coverage map is a possibility, never evidence that something is there. A candidate whose idea family the lessons mark dead must say, in lessonChecks (candidateIndex, family, lessonId, differsBecause of at least 20 characters), why that lesson's cause does not apply this time; the server works out each candidate's family itself and sends back an error you can fix inside this session when the explanation is missing. A lesson's nextToTry is a suggestion, not an instruction: following it enters that test in the ledger too, which makes the next positive result cheaper to find by luck. With this run's ledger and the cumulative count in view, "no edge" remains a normal result: do not add a test that brings no new information, and do not add one merely to fill an empty cell.`;
+const SYS5_TOOLS = `${SYS4_TOOLS} In submit_candidates, lessonChecks gives for each candidate the family you believe it belongs to, the lessonId it answers (or null) and differsBecause; each rejected hypothesis may name its family.`;
+export const CT_DESIGNER_SYSTEM = [SYS3_INTRO, SYS_SUCCESS, SYS_COSTS, SYS_EXIT_STRUCTURE, SYS5_WORKFLOW, SYS3_GUARD, SYS5_LESSONS, SYS_LANGUAGE, SYS_LEVELS, SYS_EXITS, SYS5_TOOLS, SYS_DATA].join("\n\n");
+/** The brief a contract runs under: stage 5 / 4 / 3 trader briefs by tools version, the stage-2 brief otherwise (all frozen byte for byte, so cached prefixes of older runs survive). */
 export const ctDesignerSystem = (contract: Pick<CTContract, "policy">) => {
   const v = ctSessionPolicy(contract).toolsVersion;
-  return v >= 2 ? CT_DESIGNER_SYSTEM : v === 1 ? CT_DESIGNER_SYSTEM_STAGE3 : CT_DESIGNER_SYSTEM_STAGE2;
+  return v >= 3 ? CT_DESIGNER_SYSTEM : v === 2 ? CT_DESIGNER_SYSTEM_STAGE4 : v === 1 ? CT_DESIGNER_SYSTEM_STAGE3 : CT_DESIGNER_SYSTEM_STAGE2;
 };
 
 /** The contract as the designer needs it: boundaries, costs and gates. Stable across sessions. */
@@ -619,6 +676,8 @@ export function ctSessionContext(ct: CTResearch, brief: string, hurdle: CTCostHu
           },
         }
       : {}),
+    // Stage 5: one sentence per idea family on why it did not work here, and the count-only map of what no earlier run touched.
+    ...(ct.lessons ? { lessons: { note: ct.lessons.note, deadFamilies: ct.lessons.deadFamilies, entries: ct.lessons.entries }, coverage: ct.lessons.coverage } : {}),
   });
   const entries = [
     ...ct.trials.map((t) => ({ kind: "trial" as const, t })),

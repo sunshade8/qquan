@@ -281,7 +281,9 @@ async function paidCall<T>(
   // A CT call already cut off at its output allowance is retried with changed limits, never identical ones.
   const limits = researchCallLimits(role, { ct: Boolean(job.ct), truncated: job.calls.some(call => call.key === key && call.incompleteReason === "max_output_tokens") });
   const reserve = reserveFor(limits);
-  const ceiling = job.search && job.search.phase !== "final" ? job.budgetUsd * (1 - job.search.config.reserveFraction) : job.ct && !["risk_review","final","evidence_review"].includes(job.ct.phase) ? job.budgetUsd * (1-job.ct.contract.policy.reserveFraction) : job.budgetUsd;
+  // Stage 5: the lesson distillation's own money is withheld from every other CT call from the start, and only the distillation may spend it.
+  const lessonReserve = job.ct && role !== "ctLessons" ? job.ct.contract.policy.lessonReserveUsd ?? 0 : 0;
+  const ceiling = (job.search && job.search.phase !== "final" ? job.budgetUsd * (1 - job.search.config.reserveFraction) : job.ct && role !== "ctLessons" && !["risk_review","final","evidence_review"].includes(job.ct.phase) ? job.budgetUsd * (1-job.ct.contract.policy.reserveFraction) : job.budgetUsd) - lessonReserve;
   if (job.costUsd + uncertainResearchCost(job.calls) + reserve > ceiling)
     throw new ResearchBudgetError(`연구 예산 $${job.budgetUsd} 내 추가 호출 여유가 없습니다. 미확인 호출 비용도 한도에 포함합니다.`);
   const now = new Date().toISOString();

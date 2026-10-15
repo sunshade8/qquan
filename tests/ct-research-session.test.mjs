@@ -499,7 +499,8 @@ test("submitted candidates are de-duplicated, training failures skip development
   } finally {
     globalThis.__strategyTestHooks.call = () => { throw new Error("unexpected structured call"); };
   }
-  assert.deepEqual(reviewed, ["ctRiskReviewer", "ctEvidenceReviewer"], `${job.status} ${job.ct.phase} ${job.ct.endReason} ${job.error}`);
+  // Stage 5: the end-of-run lesson distillation is the third (cheap) call; its answer here is not a lessons object, so it records a failure and the run is unaffected.
+  assert.deepEqual(reviewed, ["ctRiskReviewer", "ctEvidenceReviewer", "ctLessons"], `${job.status} ${job.ct.phase} ${job.ct.endReason} ${job.error}`);
   assert.equal(job.ct.passed, true, job.ct.endReason);
   assert.ok(job.calls.some((c) => c.role === "ctRiskReviewer" && c.provider === "OpenAI"));
   assert.ok(job.calls.some((c) => c.role === "ctDesigner" && c.provider === "Anthropic"));

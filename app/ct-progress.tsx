@@ -10,6 +10,7 @@
  */
 import "./ct.css";
 import { memo, useEffect, useRef, useState, type ComponentType } from "react";
+import BookMarked from "lucide-react/dist/esm/icons/book-marked";
 import BookOpenText from "lucide-react/dist/esm/icons/book-open-text";
 import Check from "lucide-react/dist/esm/icons/check";
 import ChevronDown from "lucide-react/dist/esm/icons/chevron-down";
@@ -188,6 +189,8 @@ export function describeTool(t: CTToolTrace) {
     case "diagnose_trades": return "손실 거래 복기";
     case "playbook_summary": return "플레이북 조회";
     case "playbook_record": return "플레이북 기록 실패";
+    case "lessons_summary": return "교훈·커버리지 조회";
+    case "lessons_record": return t.status === "failed" ? "교훈 증류 실패" : "교훈 증류";
     case "submit_candidates": {
       const n = ((i.submission as { candidates?: unknown[] } | undefined)?.candidates?.length) ?? 0;
       return n ? `후보 제출 · ${n}개` : "후보 0개 제출 · 우위 없음 보고";
@@ -517,6 +520,7 @@ const AGENT_ICON: Record<CTAgentId, Icon> = {
   ctOrchestrator: ScanSearch,
   ctAnalyst: BookOpenText,
   ctDesigner: PencilRuler,
+  ctLessons: BookMarked,
   ctRiskReviewer: ShieldCheck,
   ctEvidenceReviewer: FileCheck,
 };

@@ -14,7 +14,8 @@
  * finished run with its hypothesis-test ledger, the cumulative count's source).
  */
 import { ctDb } from "./ct-data.ts";
-import { ctRuleText, ctTestSignature, ctFreedom, type CTContract, type CTSpec } from "./ct-spec.ts";
+import { ctRuleText, ctTestSignature, ctFreedom, type CTContract } from "./ct-spec.ts";
+import { ctCandidateIdea } from "./ct-families.ts";
 import type { CTCandidate, CTPlaybookSnapshot, CTResearch } from "./ct-research.ts";
 import type { GenerationJob } from "./strategy-generation-types.ts";
 import { ctIsCalibrationHypothesis, ctMigrateCalibration } from "./ct-calibration.ts";
@@ -65,14 +66,18 @@ const iso = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 /** Digits (and signs/percent) in a free-text result replaced, for entries that must show no numbers. */
 export const ctStripNumbers = (text: string) => text.replace(/[+\-−]?\d[\d.,]*\s*(%p|%|배|건|봉|분|일)?/g, "#");
 
-/** "return_pct(1m) · volume_ratio(1m)" of a spec's conditions; thresholds excluded. */
-export function structureOf(spec: CTSpec) {
-  const names = spec.stages.map((s) => [...new Set(s.conditions.map((c) => `${c.feature}(${c.timeframe}m${c.unit === "atr" ? ",ATR" : ""})`))].join(" + "));
-  return clip(names.join(" → ") + (spec.entry.entryWindows?.length ? " · 시간 창" : "") + (spec.exit && "stop" in spec.exit ? " · 관리형 청산" : ""), 300);
-}
-/** The mechanism and structure text a candidate files in the playbook (the family classifier reads exactly these). */
-export const ctCandidateIdea = (name: string, mechanism: string, spec: CTSpec) => ({ mechanism: clip(`${name} — ${mechanism}`, 400), structure: structureOf(spec) });
 const costProfileOf = (c: CTContract) => (c.costProfile ? `${c.costProfile.id}@${c.costProfile.version}` : "");
+
+/** The feature list of a rejected hypothesis, from the measurements it cites ("return_pct(1m) · volume_ratio(1m)"). */
+export function ctEvidenceFeatures(ct: Pick<CTResearch, "queries" | "contrasts" | "diagnoses">, ids: string[]) {
+  const names = new Set<string>();
+  for (const id of ids) {
+    for (const q of ct.queries ?? []) if (q.queryId === id) for (const f of q.features) names.add(`${f.feature}(${f.timeframe}m)`);
+    for (const x of ct.contrasts ?? []) if (x.contrastId === id) for (const f of x.features) names.add(`${f.feature}(${f.timeframe}m)`);
+    for (const x of ct.diagnoses ?? []) if (x.diagnosisId === id) for (const f of x.features) names.add(`${f.feature}(${f.timeframe}m)`);
+  }
+  return [...names].join(" · ") || "(구조 미기록)";
+}
 
 /** How many hypothesis tests a run's ledger holds (older runs: distinct query signatures). */
 export function ctRunTests(ct: CTResearch) {
@@ -101,15 +106,7 @@ export function ctPlaybookRows(job: Pick<GenerationJob, "id" | "ownerId"> & { ct
     recorded_at: now,
   };
   const rows: PlaybookRow[] = [];
-  const queryFeatures = (ids: string[]) => {
-    const names = new Set<string>();
-    for (const id of ids) {
-      for (const q of ct.queries ?? []) if (q.queryId === id) for (const f of q.features) names.add(`${f.feature}(${f.timeframe}m)`);
-      for (const x of ct.contrasts ?? []) if (x.contrastId === id) for (const f of x.features) names.add(`${f.feature}(${f.timeframe}m)`);
-      for (const x of ct.diagnoses ?? []) if (x.diagnosisId === id) for (const f of x.features) names.add(`${f.feature}(${f.timeframe}m)`);
-    }
-    return [...names].join(" · ") || "(구조 미기록)";
-  };
+  const queryFeatures = (ids: string[]) => ctEvidenceFeatures(ct, ids);
   // 1) Hypotheses the designer rejected on training evidence.
   for (const s of ct.sessions ?? []) {
     (s.submission?.rejectedHypotheses ?? []).forEach((h, k) => {

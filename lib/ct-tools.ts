@@ -229,6 +229,12 @@ export const CT_TOOLS = {
     input: z.object({ market: z.enum(["stock", "crypto"]), symbols: z.array(z.string()), fromMs: time, trainingToMs: time, dataHash: z.string(), ownerScope: z.literal(true) }).strict(),
     output: z.object({ note: z.string(), runs: z.array(z.unknown()) }).passthrough(),
   },
+  // Stage 5: the family lessons and the coverage map, frozen at the start of a run like playbook_summary.
+  lessons_summary: {
+    phases: ["data"],
+    input: z.object({ market: z.enum(["stock", "crypto"]), trainingToMs: time, toMs: time, ownerScope: z.literal(true) }).strict(),
+    output: z.object({ note: z.string(), entries: z.array(z.unknown()), deadFamilies: z.array(z.string()), coverage: z.unknown() }).passthrough(),
+  },
   playbook_summary: {
     phases: ["data"],
     input: z.object({ market: z.enum(["stock", "crypto"]), symbols: z.array(z.string()), trainingToMs: time, toMs: time, ownerScope: z.literal(true) }).strict(),

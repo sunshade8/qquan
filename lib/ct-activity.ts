@@ -56,6 +56,7 @@ export const CT_AGENTS: ReadonlyArray<{ id: CTAgentId; name: string; duty: strin
   { id: "ctOrchestrator", name: "총괄", duty: "웹 검색으로 공개 접근법 탐색(선택)", phases: ["sources"] },
   { id: "ctAnalyst", name: "자료 분석", duty: "원문에서 원리 · 구현 가정 추출", phases: ["approaches"] },
   { id: "ctDesigner", name: "연구 · 설계", duty: "학습 구간 측정으로 가설 검증 · 규칙 설계와 수정", phases: ["design", "reflect"] },
+  { id: "ctLessons", name: "교훈 증류", duty: "끝난 연구를 계열 단위 교훈으로 정리(모든 수치를 가린 입력 · 판정권 없음)", phases: ["done"] },
   { id: "ctRiskReviewer", name: "독립 위험 검토", duty: "누출 · 과최적화 · 데이터 스누핑 검토", phases: ["risk_review"] },
   { id: "ctEvidenceReviewer", name: "독립 최종 검토", duty: "최종 평가 증거 · 수치 게이트 확인", phases: ["evidence_review"] },
 ];
@@ -159,6 +160,7 @@ export function callDoing(role: GenerationRole | string, ct: CTResearch, call?: 
       return ct.trials.length || ct.phase === "reflect"
         ? "측정된 실패를 보고 후보 규칙을 수정하고 있습니다"
         : "첫 가설과 매매 규칙을 설계하고 있습니다";
+    case "ctLessons": return "끝난 연구의 아이디어를 계열 단위 교훈 한 문장씩으로 정리하고 있습니다(수치 없이)";
     case "ctRiskReviewer": return "동결한 규칙의 누출 · 체결 · 과최적화 · 데이터 스누핑 위험을 독립 검토하고 있습니다";
     case "ctEvidenceReviewer": return "최종 평가 증거와 수치 게이트를 독립 검토하고 있습니다";
     default: return `${(RESEARCH_MODELS as Record<string, { label: string }>)[role]?.label ?? role} 모델이 응답하고 있습니다`;

@@ -78,6 +78,16 @@ export const CT_MODELS = {
     output: 20,
     effort: "high",
   },
+  // Stage 5 (2026-10-15): end-of-run lesson distillation. The same cheap model class as the principle extraction: it only
+  // condenses a short, number-masked list of ideas into one sentence per family, and has no say in any verdict.
+  ctLessons: {
+    provider: "OpenAI",
+    model: "gpt-6-luna",
+    label: "CT 교훈 증류",
+    input: 0.1,
+    output: 0.5,
+    effort: "low",
+  },
   ctRiskReviewer: {
     provider: "OpenAI",
     model: "gpt-6.1-sol",
@@ -114,6 +124,7 @@ export function researchModel(role: GenerationRole, failures = 0) {
 export const CT_DESIGNER_TURN_MAX_TOKENS = 32000;
 export function researchMaxTokens(role: GenerationRole) {
   if (role === "ctDesigner") return CT_DESIGNER_TURN_MAX_TOKENS;
+  if (role === "ctLessons") return 8000;
   return role === "dataAnalyst" || role === "ctAnalyst" ? 4000 : role === "reporter" ? 3000 : RESEARCH_MODELS[role].provider === "OpenAI" ? 16000 : 12000;
 }
 export type ResearchEffort = "low" | "medium" | "high" | "xhigh";

@@ -8,8 +8,9 @@ import { register } from "node:module";
 import { ctState } from "./helpers/ct-fixture.mjs";
 import { plantedMarket, plantedContract, MINUTE } from "./helpers/ct-trader-fixture.mjs";
 import { ctHash, CT_POLICY } from "../lib/ct-spec.ts";
+import { STAGE3_POLICY, STAGE4_POLICY } from "./helpers/ct-policies.mjs";
 import { ctRunLabels, ctLabelMovesReport, ctLabelMovesSchema, ctContrastMovesSchema } from "../lib/ct-trader-tools.ts";
-import { CT_DESIGNER_SYSTEM, CT_DESIGNER_SYSTEM_STAGE3 } from "../lib/ct-research.ts";
+import { CT_DESIGNER_SYSTEM, CT_DESIGNER_SYSTEM_STAGE3, CT_DESIGNER_SYSTEM_STAGE4 } from "../lib/ct-research.ts";
 import { sessionThinking } from "../lib/ct-activity.ts";
 register("./helpers/slot-test-loader.mjs", import.meta.url);
 
@@ -36,9 +37,9 @@ const measured = await import("../lib/ct-measured.ts");
 await research.ensureCTSchema();
 
 const sha = (x) => createHash("sha256").update(typeof x === "string" ? x : JSON.stringify(x)).digest("hex");
-const STAGE3_POLICY = { ...CT_POLICY, traderTools: 1, sessionMaxCharts: 32 };
 const { bars } = plantedMarket();
-const contract = plantedContract();
+// This file is the stage-4 session: its contracts carry the stage-4 policy (the default policy has moved on to stage 5).
+const contract = { ...plantedContract(), policy: STAGE4_POLICY };
 const DATA_HASH = await ctHash({ BTCUSDT: bars });
 const params = ctLabelMovesSchema.parse({ k: 3, m: 1, horizon: 30 });
 let sequence = 0;
@@ -114,19 +115,20 @@ test("pinned bytes: stage-2 and stage-3 briefs and the stage-3 tool definitions 
   assert.equal(sha(research.CT_SESSION_TOOLS_STAGE2), "8b81e696a38a070c1aecbe18fd94bdb579f214deae803ca69393596f86d229fb");
   assert.equal(sha(research.CT_SESSION_TOOLS_STAGE3), "0b76e033089573b92fe2958d474659e37dbebd3782028d42336529948c8723f6");
   // Stage 4 is fixed within a contract as well (a byte change invalidates every cached prefix of a running contract): change these pins together with a policy bump.
-  assert.equal(sha(CT_DESIGNER_SYSTEM), "bc6b18e14505fdc67827872c1f6d57f21fdb558a65736bffe04cdda9ab015ad3");
-  assert.equal(sha(research.CT_SESSION_TOOLS), "38763047f3977d83fa767e1033f8a4c97629d5ade4d98d7be52a69ea20b34848");
-  assert.notEqual(sha(research.CT_SESSION_TOOLS), sha(research.CT_SESSION_TOOLS_STAGE3));
+  assert.equal(sha(CT_DESIGNER_SYSTEM_STAGE4), "bc6b18e14505fdc67827872c1f6d57f21fdb558a65736bffe04cdda9ab015ad3");
+  assert.equal(sha(research.CT_SESSION_TOOLS_STAGE4), "38763047f3977d83fa767e1033f8a4c97629d5ade4d98d7be52a69ea20b34848");
+  assert.notEqual(sha(research.CT_SESSION_TOOLS_STAGE4), sha(research.CT_SESSION_TOOLS_STAGE3));
   assert.equal(research.ctSessionTools({ policy: STAGE3_POLICY }), research.CT_SESSION_TOOLS_STAGE3);
+  assert.equal(research.ctSessionTools({ policy: STAGE4_POLICY }), research.CT_SESSION_TOOLS_STAGE4);
   assert.equal(research.ctSessionTools({ policy: CT_POLICY }), research.CT_SESSION_TOOLS);
   // Stage-4 tool names and order are the stage-3 ones; control groups and the blind-set size are in the definitions.
-  assert.deepEqual(research.CT_SESSION_TOOLS.map((t) => t.name), research.CT_SESSION_TOOLS_STAGE3.map((t) => t.name));
-  const contrast = research.CT_SESSION_TOOLS.find((t) => t.name === "contrast_moves");
+  assert.deepEqual(research.CT_SESSION_TOOLS_STAGE4.map((t) => t.name), research.CT_SESSION_TOOLS_STAGE3.map((t) => t.name));
+  const contrast = research.CT_SESSION_TOOLS_STAGE4.find((t) => t.name === "contrast_moves");
   assert.ok(contrast.input_schema.properties.controls, "controls is in the stage-4 input schema");
   assert.ok(!research.CT_SESSION_TOOLS_STAGE3.find((t) => t.name === "contrast_moves").input_schema.properties.controls);
-  assert.match(CT_DESIGNER_SYSTEM, /vol_matched[\s\S]*losers/);
-  assert.match(CT_DESIGNER_SYSTEM, /calibration record/);
-  assert.match(CT_DESIGNER_SYSTEM, /16–32 charts/);
+  assert.match(CT_DESIGNER_SYSTEM_STAGE4, /vol_matched[\s\S]*losers/);
+  assert.match(CT_DESIGNER_SYSTEM_STAGE4, /calibration record/);
+  assert.match(CT_DESIGNER_SYSTEM_STAGE4, /16–32 charts/);
 });
 
 test("a full stage-4 session: reserve anchors, a 16-chart blind set, the seen-anchor rule, calibration record, losers control, summarized thinking, eye hypothesis moved out of the playbook", async () => {
@@ -186,8 +188,8 @@ test("a full stage-4 session: reserve anchors, a 16-chart blind set, the seen-an
   assert.equal(requests.length, 8);
   // Request layer: stage-4 brief and tools, summarized thinking asked for explicitly, tool_choice auto, no budget_tokens.
   for (const { body } of requests) {
-    assert.equal(body.system[0].text, CT_DESIGNER_SYSTEM);
-    assert.equal(sha(body.tools), sha(research.CT_SESSION_TOOLS));
+    assert.equal(body.system[0].text, CT_DESIGNER_SYSTEM_STAGE4);
+    assert.equal(sha(body.tools), sha(research.CT_SESSION_TOOLS_STAGE4));
     assert.deepEqual(body.thinking, { type: "adaptive", display: "summarized" });
     assert.ok(!body.tool_choice || body.tool_choice.type === "auto");
     assert.equal("budget_tokens" in body.thinking, false);
@@ -286,7 +288,7 @@ test("a stage-3 contract keeps its request exactly: stage-3 brief and tools, thi
 });
 
 test("the session image limit counts blind sets too (stage 4 default is 48 per session)", async () => {
-  const policy = { ...CT_POLICY, sessionMaxCharts: 10 };
+  const policy = { ...STAGE4_POLICY, sessionMaxCharts: 10 };
   const created = await job({ contract: { policy } });
   const label = (await ctHash({ run: created.id, params })).slice(0, 16);
   const issued = ctLabelMovesReport(params, ctRunLabels(params, { BTCUSDT: bars }, contract), contract, label, { blindReserve: true });

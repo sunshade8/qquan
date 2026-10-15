@@ -16,6 +16,8 @@ import type { ActiveGeneration } from "@/lib/strategy-generation-store";
 import type { CTPackage } from "@/lib/ct-research-store";
 import type { CTBar, CTResult } from "@/lib/ct-engine";
 import type { CTResearch, CTSource, CTTrial } from "@/lib/ct-research";
+import type { CTLessonView, CTCoverage, CTLessonsRecorded } from "@/lib/ct-lessons";
+import { lessonsPanelModel, playbookAnchor } from "@/lib/ct-lessons-view";
 import { ctRuleText, type CTSpec, type CTMarket } from "@/lib/ct-spec";
 import { CTEvidenceChart } from "./ct-evidence-chart";
 import { CT_EXIT_REASON_TEXT } from "@/lib/ct-trade-levels";
@@ -278,6 +280,12 @@ const ResearchSessions = memo(
             <small className="ui-num"> 이전 실행 {ct.contract.repeat.previousRuns.map((id) => id.slice(0, 8)).join(", ")}</small>
           </p>
         ) : null}
+        {ct.lessons ? (
+          <p className="ui-sub ct-lessons-line" role="note">
+            시작 때 받은 교훈 <b className="ui-num">{ct.lessons.entries.length}</b>개 · dead 계열 <b className="ui-num">{ct.lessons.deadFamilies.length}</b>개
+            {ct.lessonsRecorded ? <> · 교훈 증류 <b>{lessonsStatus(ct.lessonsRecorded)}</b></> : ct.phase === "done" ? " · 교훈 증류 대기" : ""}
+          </p>
+        ) : null}
         {trader ? (
           <div className="ct-trader" aria-label="단타 고수 도구 요약">
             <ul className="ct-trader-stats">
@@ -359,8 +367,15 @@ const ResearchSessions = memo(
     a.ct.queries?.length === b.ct.queries?.length &&
     a.ct.screened?.length === b.ct.screened?.length &&
     JSON.stringify(traderSummary(a.ct)) === JSON.stringify(traderSummary(b.ct)) &&
+    JSON.stringify(a.ct.lessonsRecorded) === JSON.stringify(b.ct.lessonsRecorded) &&
+    a.ct.lessons?.entries.length === b.ct.lessons?.entries.length &&
+    a.ct.phase === b.ct.phase &&
     a.ct.charts?.length === b.ct.charts?.length,
 );
+
+/** 교훈 증류의 결과 한 줄: 기록됨 / 건너뜀(예비 부족) / 실패. */
+const lessonsStatus = (r: CTLessonsRecorded) =>
+  r.failed ? `실패 (${r.failed.slice(0, 60)})` : r.skipped === "reserve" ? "건너뜀(예비 부족)" : r.skipped === "no_ideas" ? "건너뜀(기록할 아이디어 없음)" : `기록됨 · 교훈 ${r.lessons ?? 0}개`;
 
 type CalibrationItem = { run: string; symbols: string[]; blindId: string; n: number; hits: number; pValue: number; verdict: "skill" | "no_skill" | "inconclusive"; reading: string; neededHits: number; powerIfEyeIs70Pct: number; measured: string; source: string };
 const VERDICT_TEXT: Record<CalibrationItem["verdict"], string> = { skill: "신호 있음", no_skill: "신호 없음", inconclusive: "판정 불가" };
@@ -375,8 +390,10 @@ const GRADE_TEXT: Record<string, string> = {
 };
 /** Read-only playbook of one market: what earlier runs tried and how each ended, with filters. Numbers follow the same leak rule the designer gets. */
 const PlaybookPanel = memo(function PlaybookPanel({ market }: { market: CTMarket }) {
-  const [data, setData] = useState<{ entries: PlaybookItem[]; runs: Array<{ runId: string; tests: number; timeframe: string; note: string; at: string }>; cumulativeTests: number; calibration?: CalibrationItem[] } | null>(null);
+  const [data, setData] = useState<{ entries: PlaybookItem[]; runs: Array<{ runId: string; tests: number; timeframe: string; note: string; at: string }>; cumulativeTests: number; calibration?: CalibrationItem[]; lessons?: CTLessonView[]; coverage?: CTCoverage } | null>(null);
   const [error, setError] = useState("");
+  const [view, setView] = useState<"items" | "lessons">("items");
+  const [focusId, setFocusId] = useState("");
   const [grade, setGrade] = useState("all");
   const [timeframe, setTimeframe] = useState("all");
   const [query, setQuery] = useState("");
@@ -394,6 +411,16 @@ const PlaybookPanel = memo(function PlaybookPanel({ market }: { market: CTMarket
       live = false;
     };
   }, [market]);
+  const lessonsModel = lessonsPanelModel(data, (data?.entries ?? []).map((e) => e.id));
+  /** A lesson's evidence link: show every item, then scroll to the one the lesson rests on. */
+  const openEvidence = (id: string) => {
+    setView("items");
+    setGrade("all");
+    setTimeframe("all");
+    setQuery("");
+    setFocusId(id);
+    requestAnimationFrame(() => document.getElementById(playbookAnchor(id))?.scrollIntoView({ block: "center" }));
+  };
   const shown = (data?.entries ?? []).filter((e) => e.market === market && (grade === "all" || e.grade === grade) && (timeframe === "all" || e.timeframe === timeframe) && (!query.trim() || `${e.mechanism} ${e.structure} ${e.reason}`.toLowerCase().includes(query.trim().toLowerCase())));
   return (
     <section className="ct-section" aria-labelledby="ct-playbook-h">
@@ -405,12 +432,17 @@ const PlaybookPanel = memo(function PlaybookPanel({ market }: { market: CTMarket
         <div className="ui-disclosure-body ui-korean">
           <p className="ui-sub">연구가 끝날 때마다 기각·탈락·통과한 아이디어를 시장별로 쌓습니다. 설계자는 이 목록(메커니즘과 결과 등급)을 보고 시작하고, 최종 구간 성과 수치는 어디에도 저장되지 않습니다. 일봉 항목은 단타(1분봉)와 직접 비교할 수 없습니다.</p>
           {error ? <p role="alert" className="ct-error">{error}</p> : null}
-          <div className="ct-playbook-filters">
+          <div className="ui-segmented" role="tablist" aria-label="플레이북 보기">
+            <button role="tab" aria-selected={view === "items"} onClick={() => setView("items")}>항목 <span className="ui-num">{data?.entries.length ?? 0}</span></button>
+            <button role="tab" aria-selected={view === "lessons"} onClick={() => setView("lessons")}>교훈 <span className="ui-num">{lessonsModel.cards.length}</span></button>
+          </div>
+          {view === "lessons" ? <LessonsTab model={lessonsModel} onEvidence={openEvidence} /> : null}
+          <div className="ct-playbook-filters" hidden={view !== "items"}>
             <label>등급 <select value={grade} onChange={(e) => setGrade(e.target.value)}><option value="all">전체</option>{Object.entries(GRADE_TEXT).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label>
             <label>주기 <select value={timeframe} onChange={(e) => setTimeframe(e.target.value)}><option value="all">전체</option><option value="1m">1분봉(단타)</option><option value="daily">일봉(직접 비교 불가)</option></select></label>
             <label>검색 <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="메커니즘·구조·사유" /></label>
           </div>
-          {data?.calibration?.length ? (
+          {view === "items" && data?.calibration?.length ? (
             <div className="ct-calibration" aria-label="설계자의 눈 보정 기록">
               <p><b>보정 기록 · 설계자의 눈</b> <small>거래 아이디어의 기각이 아니라 도구 측정입니다. 작은 세트의 p가 큰 것은 &lsquo;판별력 없음&rsquo;이 아니라 &lsquo;알 수 없음&rsquo;입니다.</small></p>
               <ul className="ct-playbook">
@@ -425,9 +457,9 @@ const PlaybookPanel = memo(function PlaybookPanel({ market }: { market: CTMarket
               </ul>
             </div>
           ) : null}
-          <ul className="ct-playbook">
+          <ul className="ct-playbook" hidden={view !== "items"}>
             {shown.map((e) => (
-              <li key={e.id}>
+              <li key={e.id} id={playbookAnchor(e.id)} data-focus={focusId === e.id ? "true" : undefined}>
                 <b>{e.mechanism}</b>
                 <span className={`ct-grade ct-grade-${e.grade}`}>{GRADE_TEXT[e.grade] ?? e.grade}</span>
                 {!e.comparable ? <span className="ct-grade">단타와 직접 비교 불가</span> : null}
@@ -443,6 +475,58 @@ const PlaybookPanel = memo(function PlaybookPanel({ market }: { market: CTMarket
     </section>
   );
 });
+
+/** 교훈 탭: 계열 단위 한 문장 교훈(수치 없음)과 아직 안 건드린 영역(개수만). 읽기 전용 · 빈 칸은 목표가 아니다. */
+function LessonsTab({ model, onEvidence }: { model: ReturnType<typeof lessonsPanelModel>; onEvidence: (id: string) => void }) {
+  const cov = model.coverage;
+  return (
+    <div className="ct-lessons" aria-label="계열별 교훈">
+      <p className="ui-sub">연구가 끝날 때마다 아이디어를 계열 단위로 정리한 한 문장 교훈입니다. 모든 수치를 가린 기록에서 만들었고 숫자가 없습니다. 이 판에서 그 계열이 왜 안 됐는지에 대한 기억이지, 성과의 증거도 채워야 할 목표도 아닙니다.</p>
+      {model.empty ? (
+        <p className="ui-empty" role="status">아직 교훈이 없습니다. 5단계 정책으로 연구가 끝나면 쌓입니다. 이전 연구는 소유자가 소급 증류 스크립트를 돌릴 때 채워집니다.</p>
+      ) : (
+        <ul className="ct-lesson-cards">
+          {model.cards.map((c) => (
+            <li key={c.id} className="ui-card pad ct-lesson-card" data-verdict={c.verdict}>
+              <div className="ui-card-head">
+                <b>{c.familyText}</b>
+                <span className="ui-badge" data-tone={c.verdict === "dead" ? "danger" : c.verdict === "weak" ? "warn" : undefined}>{c.verdictText}</span>
+              </div>
+              <p className="ui-korean">{c.lesson}</p>
+              <small className="ui-sub">원인 · {c.causeText}{c.nextToTry ? ` · 아직 안 본 변형(제안) · ${c.nextToTry}` : ""}</small>
+              <small className="ui-num">
+                근거{" "}
+                {c.evidence.map((e, i) => (
+                  <span key={e.id}>
+                    {i ? ", " : ""}
+                    {e.listed ? <a href={`#${e.anchor}`} onClick={(ev) => { ev.preventDefault(); onEvidence(e.id); }}>{e.id.split(":").slice(1).join(":") || e.id}</a> : <span title="목록 밖의 오래된 항목">{e.id.split(":").slice(1).join(":") || e.id}</span>}
+                  </span>
+                ))}
+                {" "}· {c.updated} 갱신 · 실행 {c.lastRun}
+              </small>
+            </li>
+          ))}
+        </ul>
+      )}
+      {cov ? (
+        <div className="ct-coverage" aria-label="아직 안 건드린 영역">
+          <p><b>아직 안 건드린 영역</b> <small>{model.note}</small></p>
+          <ul className="ct-playbook">
+            {cov.families.map((f) => (
+              <li key={f.family}>
+                <b>{f.familyText}</b>
+                <small className="ui-num">아이디어 {f.ideas}개 · 서로 다른 검정 {f.tests}회{f.bestGrade ? ` · 최고 등급 ${f.bestGrade}` : ""}{f.lastRun ? ` · 마지막 실행 ${f.lastRun}` : ""}{f.hasLesson ? "" : " · 교훈 없음"}</small>
+              </li>
+            ))}
+          </ul>
+          <p className="ui-sub">피처×주기 칸 {cov.touchedCells}/{cov.totalCells}개 사용됨. 한 번도 안 쓰인 칸: {cov.untouched.length ? cov.untouched.join(", ") : "없음"}{cov.moreUntouched ? ` 외 ${cov.moreUntouched}개` : ""}</p>
+          <p className="ui-sub">ATR 단위를 못 써 본 피처: {cov.atrUntouched.length ? cov.atrUntouched.join(", ") : "없음"} · 진입 시간 창 {cov.entryWindowUsed ? "사용됨" : "한 번도 안 씀"} · 안 쓴 관리형 청산 요소: {cov.exitUntouched.length ? cov.exitUntouched.join(", ") : "없음"}</p>
+          {cov.emptyCells.length ? <p className="ui-sub">계열 × 청산 구조의 빈 칸: {cov.emptyCells.join(" · ")}</p> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 /** Chart evidence for any candidate (the latest by default); the frozen final result only belongs to the latest. */
 function TradeEvidencePanel({

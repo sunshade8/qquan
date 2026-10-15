@@ -455,3 +455,14 @@
   .ct-sync, .ct-sync-icon svg { animation: none !important; }
   .ct-sync-rail > i[data-indeterminate] { animation: none; width: 100%; opacity: .4; }
 }
+
+/* ---- Stage 5: lessons tab and coverage map (read-only) ------------------------------------------ */
+.ct-lessons { display: grid; gap: var(--sp-3); margin: var(--sp-3) 0; }
+.ct-lesson-cards { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp-3); grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.ct-lesson-card { display: grid; gap: var(--sp-2); }
+.ct-lesson-card p { margin: 0; }
+.ct-lesson-card a { color: var(--accent-text); }
+.ct-coverage { display: grid; gap: var(--sp-2); padding-top: var(--sp-2); border-top: 1px solid var(--line); }
+.ct-coverage p { margin: 0; }
+.ct-playbook li[data-focus="true"] { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-2, 8px); }
+.ct-lessons-line b { font-weight: 600; }

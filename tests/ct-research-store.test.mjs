@@ -229,6 +229,7 @@ test("CT measured passing fixture freezes, independently reviews, consumes final
   const reviewed = [];
   const review = async (role, _schema, prompt) => {
     reviewed.push(role);
+    if (role === "ctLessons") return { lessons: [] }; // stage 5: the end-of-run distillation (cheap model), nothing to learn here
     assert.ok(prompt.includes(hash) || role === "riskReviewer");
     // Both reviewers weigh the result against the number of tests and the candidate's free numbers.
     assert.match(prompt, /"multipleTesting":\{"hypothesisTests":\d+,"toolCalls":\d+,"note":"[^"]*","candidateFreedom":\{"conditions":\d+,"exit":\d+,"other":\d+,"total":\d+\}\}/);
@@ -242,7 +243,7 @@ test("CT measured passing fixture freezes, independently reviews, consumes final
   assert.equal(j.ct.phase, "evidence_review");
   await research.advanceCTResearch(j, "fixture", review);
   assert.equal(j.ct.passed, true);
-  assert.deepEqual(reviewed, ["riskReviewer", "evidenceReviewer"]);
+  assert.deepEqual(reviewed, ["riskReviewer", "evidenceReviewer", "ctLessons"]);
   j.calls = [
     { role: "designer", status: "completed", provider: "OpenAI" },
     { role: "riskReviewer", status: "completed", provider: "Anthropic" },

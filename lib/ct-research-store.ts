@@ -55,8 +55,10 @@ import {
   ctApproachSchema,
   ctSessionContext,
   ctSubmissionSchema,
+  ctSubmissionSchemaStage5,
   validateCTCandidate,
   type CTCandidate,
+  type CTLessonCheck,
   type CTChartRecord,
   type CTQueryRecord,
   type CTResearch,
@@ -100,7 +102,9 @@ import {
   CT_BLIND_MAX,
 } from "./ct-trader-tools.ts";
 import { ctBase64, ctRenderChart } from "./ct-chart-image.ts";
-import { CT_PLAYBOOK_SCHEMA, ctPlaybookSnapshot, ctDistinctPriorTests, recordCTPlaybook } from "./ct-playbook.ts";
+import { CT_PLAYBOOK_SCHEMA, ctEvidenceFeatures, ctPlaybookSnapshot, ctDistinctPriorTests, recordCTPlaybook } from "./ct-playbook.ts";
+import { CT_LESSONS_SCHEMA, ctDeadLesson, ctDistillRun, ctLessonsSnapshot } from "./ct-lessons.ts";
+import { ctCandidateFamilies, ctIdeaFamily, type CTFamily } from "./ct-families.ts";
 import { CT_CALIBRATION_SCHEMA, CT_CHART_FORMAT, CT_CHART_FORMAT_BLIND, ctCalibrationRow, ctCalibrationSnapshot, ctIsCalibrationHypothesis, ctRecordCalibration } from "./ct-calibration.ts";
 import {
   ctCheckpointResult,
@@ -148,6 +152,8 @@ export async function ensureCTSchema() {
     ...CT_PLAYBOOK_SCHEMA.map((sql) => ctDb().prepare(sql)),
     // Stage 4: calibration records (the designer's eye, apart from trading ideas).
     ...CT_CALIBRATION_SCHEMA.map((sql) => ctDb().prepare(sql)),
+    // Stage 5: family lessons distilled at the end of a run (append-only).
+    ...CT_LESSONS_SCHEMA.map((sql) => ctDb().prepare(sql)),
   ]);
 }
 /** Shared by paid-run creation and the read-only data preflight. */
@@ -634,7 +640,8 @@ export const CT_SESSION_TOOLS_STAGE3: Anthropic.Tool[] = [
  * invalidates every cached prefix).
  */
 const stage3 = (name: string) => CT_SESSION_TOOLS_STAGE3.find((t) => t.name === name)!;
-export const CT_SESSION_TOOLS: Anthropic.Tool[] = [
+/** FROZEN: traderTools = 2 contracts keep these bytes (SHA-256 pinned in tests/ct-stage4-session.test.mjs). */
+export const CT_SESSION_TOOLS_STAGE4: Anthropic.Tool[] = [
   {
     name: "label_moves",
     description:
@@ -672,10 +679,27 @@ export const CT_SESSION_TOOLS: Anthropic.Tool[] = [
     input_schema: jsonSchema(ctSubmissionSchema),
   },
 ];
-/** The tool set a contract runs under (stage 2: four tools; stage 3: trader tools, frozen; stage 4: control groups, big blind sets). */
+/**
+ * Stage 5 (traderTools = 3): the stage-4 tools, byte for byte, except submit_candidates, whose description and input schema
+ * carry lessonChecks (per candidate: family, lessonId, differsBecause) and an optional family on each rejected hypothesis.
+ */
+const stage4 = (name: string) => CT_SESSION_TOOLS_STAGE4.find((t) => t.name === name)!;
+export const CT_SESSION_TOOLS: Anthropic.Tool[] = CT_SESSION_TOOLS_STAGE4.map((t) =>
+  t.name !== "submit_candidates"
+    ? stage4(t.name)
+    : {
+        name: "submit_candidates",
+        description:
+          "End this research session. Submit 1–3 candidates (each: spec, hypothesis, mapping of EVERY condition to evidence, parentId or null, observedProblem/changes/expectedEffect for revisions, memoryIds, and selfRebuttal: the three likeliest reasons the rule is chance, how you checked each in the data, and whether it is excluded yes/partly/no), or zero candidates with noEdgeReason when nothing survived. Always list rejectedHypotheses — TRADING hypotheses you rejected, each optionally with its idea family — with the evidence (queryIds, contrastIds) and the result that rejected them; a blind-set result is a calibration record, not a rejected hypothesis (the server moves a hypothesis whose only evidence is a blindId out of this list). lessonChecks: for each candidate give candidateIndex (its position in candidates, from 0), the idea family you believe it belongs to, the lessonId of the lesson it answers (or null) and differsBecause; the server computes the family itself, and when that family is dead in the lessons a differsBecause of at least 20 characters saying why the lesson's cause does not apply is required (an error comes back to fix in this session). Invalid submissions come back as an error to fix in this session.",
+        // Not `strict`: the API refuses this schema ("compiled grammar is too large", 400, measured
+        // 2026-10-13). The server re-validates every submission with zod and answers is_error instead.
+        input_schema: jsonSchema(ctSubmissionSchemaStage5),
+      },
+);
+/** The tool set a contract runs under (stage 2: four tools; stage 3: trader tools, frozen; stage 4: control groups, big blind sets, frozen; stage 5: lessonChecks). */
 export const ctSessionTools = (contract: Pick<CTContract, "policy">) => {
   const v = ctSessionPolicy(contract).toolsVersion;
-  return v >= 2 ? CT_SESSION_TOOLS : v === 1 ? CT_SESSION_TOOLS_STAGE3 : CT_SESSION_TOOLS_STAGE2;
+  return v >= 3 ? CT_SESSION_TOOLS : v === 2 ? CT_SESSION_TOOLS_STAGE4 : v === 1 ? CT_SESSION_TOOLS_STAGE3 : CT_SESSION_TOOLS_STAGE2;
 };
 
 type SessionMessage = Anthropic.MessageParam;
@@ -876,6 +900,15 @@ export async function advanceCTResearch(
           () => ctMeasuredBefore(job, c, ct.dataHash),
         );
       }
+      if (ctSessionPolicy(c).lessons)
+        // Stage 5, frozen at the start like the playbook (tool cache): the family lessons and the coverage map.
+        ct.lessons = await tool(
+          job,
+          token,
+          "lessons_summary",
+          { market: c.market, trainingToMs: c.trainingToMs, toMs: c.toMs, ownerScope: true },
+          () => ctLessonsSnapshot(job.ownerId, c, job.id, (ct.playbook?.entries ?? []).map((e) => e.id)),
+        );
       ct.phase = "sources";
       return;
     }
@@ -1060,7 +1093,7 @@ export async function advanceCTResearch(
         }
         if (!turn) throw new Error("설계 세션 실행기 없음");
         // A session needs room for several turns; starting one that cannot finish wastes money.
-        const headroom = job.budgetUsd * (1 - c.policy.reserveFraction) - job.costUsd;
+        const headroom = job.budgetUsd * (1 - c.policy.reserveFraction) - policy.lessonReserveUsd - job.costUsd;
         const turnReserve = job.calls?.findLast((x) => x.role === "ctDesigner")?.reserveUsd ?? 1;
         if (headroom < turnReserve * 3) {
           done("연구 예산 · 새 설계 세션 여유 없음 · 통과 전략 없음 · 최종 기간 미개봉");
@@ -1166,7 +1199,8 @@ export async function advanceCTResearch(
       }
       const results: Anthropic.ToolResultBlockParam[] = [];
       let accepted: string[] | null = null;
-      let submission: z.infer<typeof ctSubmissionSchema> | null = null;
+      let submission: z.infer<typeof ctSubmissionSchemaStage5> | null = null;
+      let lessonChecksOf: Array<CTLessonCheck & { candidateIndex: number }> = [];
       let duplicates = 0;
       for (const use of uses) {
         session.toolCalls++;
@@ -1484,7 +1518,7 @@ export async function advanceCTResearch(
             }
             answer({ ...out, ...(screenId ? { screenId } : {}), freedom: ctFreedom(spec), multipleTesting: ctTestLedger(ct) });
           } else if (use.name === "submit_candidates") {
-            const parsed = ctSubmissionSchema.parse(use.input);
+            const parsed = (policy.lessons ? ctSubmissionSchemaStage5 : ctSubmissionSchema).parse(use.input) as z.infer<typeof ctSubmissionSchemaStage5>;
             const left = c.policy.maxCandidates - submittedCount(ct);
             if (parsed.candidates.length > left)
               throw new Error(`남은 후보 제출 한도는 ${left}개입니다.`);
@@ -1495,7 +1529,8 @@ export async function advanceCTResearch(
               ...(ct.screened ?? []).map((t) => t.hash),
               ...(ct.queue ?? []).map((t) => t.hash),
             ]);
-            const fresh: Array<{ candidate: CTCandidate; hash: string }> = [];
+            const fresh: Array<{ candidate: CTCandidate; hash: string; index: number }> = [];
+            const duplicatesBefore = duplicates;
             for (const [i, draft] of parsed.candidates.entries()) {
               const candidate: CTCandidate = { ...draft, evidenceVersion: CT_EVIDENCE_VERSION };
               try {
@@ -1508,7 +1543,41 @@ export async function advanceCTResearch(
               if (seen.has(hash)) duplicates++;
               else {
                 seen.add(hash);
-                fresh.push({ candidate, hash });
+                fresh.push({ candidate, hash, index: i });
+              }
+            }
+            // Stage 5: a candidate in an idea family the lessons call dead must say why the lesson does not apply. The server works out the family itself.
+            const lessonChecks: Array<CTLessonCheck & { candidateIndex: number }> = [];
+            if (policy.lessons) {
+              const missing: string[] = [];
+              parsed.candidates.forEach((draft, i) => {
+                const families = ctCandidateFamilies(draft);
+                const declared = parsed.lessonChecks?.find((x) => x.candidateIndex === i);
+                const dead = families.all.map((f) => ctDeadLesson(ct.lessons, f)).find(Boolean);
+                const differs = declared?.differsBecause.trim() ?? "";
+                if (dead && differs.length < 20)
+                  missing.push(`후보 ${i + 1}: 이 후보의 계열(${families.all.join("/")})에 dead 교훈이 있습니다(${dead.family}: ${dead.lesson}). lessonChecks에 candidateIndex ${i}와 differsBecause(20자 이상: 교훈의 원인 ${dead.cause}가 이번에 왜 적용되지 않는지)를 적으세요.`);
+                if (dead || declared)
+                  lessonChecks.push({
+                    candidateIndex: i,
+                    family: dead?.family ?? families.primary,
+                    ...(families.structural !== (dead?.family ?? families.primary) ? { structuralFamily: families.structural } : {}),
+                    ...(declared && declared.family !== (dead?.family ?? families.primary) ? { declaredFamily: declared.family } : {}),
+                    lessonId: dead?.id ?? declared?.lessonId ?? null,
+                    differsBecause: differs,
+                  });
+              });
+              if (missing.length) {
+                duplicates = duplicatesBefore; // the submission is refused whole: the same candidates come back and must not be counted twice
+                throw new Error(missing.join(" "));
+              }
+              for (const f of fresh) {
+                const check = lessonChecks.find((x) => x.candidateIndex === f.index);
+                if (check) {
+                  const { candidateIndex: _index, ...stored } = check;
+                  void _index;
+                  f.candidate.lessonCheck = stored;
+                }
               }
             }
             await tool(job, token, "submit_candidates", { session: session.index, submission: parsed }, async () => ({
@@ -1525,6 +1594,7 @@ export async function advanceCTResearch(
             }
             accepted = fresh.map((f) => f.hash);
             submission = parsed;
+            lessonChecksOf = lessonChecks;
             answer({ accepted: fresh.length, duplicates, message: "제출을 받았습니다. 서버가 학습 게이트와 개발 실험을 실행합니다." });
           } else throw new Error(`알 수 없는 도구: ${use.name}`);
         } catch (error) {
@@ -1547,7 +1617,11 @@ export async function advanceCTResearch(
           accepted: accepted.length,
           duplicates,
           noEdgeReason: submission.noEdgeReason,
-          rejectedHypotheses: eye.length ? submission.rejectedHypotheses.filter((h) => !eye.includes(h)) : submission.rejectedHypotheses,
+          // Stage 5: the server fills each rejected hypothesis' family from the very text and structure its playbook row will carry.
+          rejectedHypotheses: (eye.length ? submission.rejectedHypotheses.filter((h) => !eye.includes(h)) : submission.rejectedHypotheses).map((h) =>
+            policy.lessons ? { ...h, family: h.family ?? ctIdeaFamily({ mechanism: `${h.hypothesis} — ${h.mechanism}`, structure: ctEvidenceFeatures(ct, h.evidence) }) } : h,
+          ),
+          ...(policy.lessons && lessonChecksOf.length ? { lessonChecks: lessonChecksOf } : {}),
           ...(eye.length ? { calibrationRefs: eye.flatMap((h) => h.evidence.map((blindId) => ({ blindId, hypothesis: h.hypothesis, result: h.result }))) } : {}),
         };
         ct.duplicateCount += duplicates;
@@ -1559,7 +1633,7 @@ export async function advanceCTResearch(
       }
       // Tell the designer before its last turn, not after: it can still submit.
       const nextTurn = session.turns + 1;
-      const headroom = job.budgetUsd * (1 - c.policy.reserveFraction) - job.costUsd;
+      const headroom = job.budgetUsd * (1 - c.policy.reserveFraction) - policy.lessonReserveUsd - job.costUsd;
       const lastReserve = job.calls?.findLast((x) => x.role === "ctDesigner")?.reserveUsd ?? 0;
       if (!session.finalNotice && (nextTurn >= policy.maxTurns || session.toolCalls >= policy.maxToolCalls || headroom < lastReserve * 2)) {
         session.finalNotice = true;
@@ -1736,6 +1810,9 @@ export async function advanceCTResearch(
     // What the reviewers must see to judge data snooping: every query, every hypothesis, every mapping.
     // Stage 4: cumulative tests count each distinct signature once across runs (a rerun's repeated signature is not a new test).
     const distinctTests = ctSessionPolicy(c).toolsVersion >= 2 && ct.playbook ? await ctDistinctPriorTests(job.ownerId, c.market, job.id, Object.keys(ct.tests?.signatures ?? {})) : null;
+    const lessonsOn = ctSessionPolicy(c).lessons;
+    const candidateFamilies = ctCandidateFamilies(selected);
+    const lessonForReview = (e: NonNullable<CTResearch["lessons"]>["entries"][number]) => ({ lessonId: e.id, family: e.family, verdict: e.verdict, cause: e.cause, lesson: e.lesson });
     const research = {
       ...(c.repeat ? { repeatedBoard: { n: c.repeat.n, reason: c.repeat.reason, previousRuns: c.repeat.previousRuns.map((id) => id.slice(0, 8)), note: `같은 판 ${c.repeat.n}번째 실행 · 사유: ${c.repeat.reason} — 같은 판의 반복은 새 정보를 더하지 않고 검정 수만 늘린다` } } : {}),
       queriesRun: ct.queries?.length ?? 0,
@@ -1759,6 +1836,17 @@ export async function advanceCTResearch(
             diagnoses: (ct.diagnoses ?? []).map((d) => ({ diagnosisId: d.diagnosisId, source: d.source, verdict: d.verdict })),
           }
         : {}),
+      // Stage 5: the lessons for this candidate's family, every family the lessons call dead, and what the designer wrote to differ from them.
+      ...(lessonsOn && ct.lessons
+        ? {
+            lessons: {
+              candidateFamilies: candidateFamilies.all,
+              forCandidate: ct.lessons.entries.filter((e) => candidateFamilies.all.includes(e.family)).map(lessonForReview),
+              deadFamilies: ct.lessons.entries.filter((e) => e.verdict === "dead").map(lessonForReview),
+            },
+            lessonChecks: selected.lessonCheck ? [selected.lessonCheck] : [],
+          }
+        : {}),
       rejectedAtTraining: (ct.screened ?? []).map((t) => ({ id: t.id, rule: ctRuleText(t.candidate.spec), training: ctBrief(t.training), reasons: t.reasons })),
       developmentTrials: ct.trials.map((t) => ({ id: t.id, rule: ctRuleText(t.spec), development: ctBrief(t.development), reasons: t.reasons })),
       mapping: selected.mapping,
@@ -1769,7 +1857,7 @@ export async function advanceCTResearch(
       ct.riskReview = await ask(
         roles.risk,
         reviewSchema,
-        `Independent critical CT review; reject source/rule mismatch, discretion falsely claimed implemented, leakage, unconfirmed pivots, incomplete higher bars, selection/survivorship bias, unrealistic costs/fills. OHLCV cannot prove orderbook liquidity; current sources may postdate history; require forward paper evidence before live. Check EVERY mapping against its actual evidence (web source text or the training-only query it cites: same feature and timeframe) and the rules. Judge data snooping and multiple testing explicitly: how many queries, hypotheses and candidates preceded this rule (research.multipleTesting.hypothesisTests counts the distinct condition combinations tested; threshold variants of one combination count once), whether the effect rests on few events or months, and whether the development pass could be luck given that search. The rule language now includes time windows, VWAP/previous-day/opening-range levels, ATR units and managed exits, so the search space is larger: weigh the development result against the number of tests, treat candidateFreedom (conditions + free exit/window numbers) as a cost of complexity, and prefer the simpler rule. If research.playbook is present: say whether this rule is a variant of a mechanism the playbook already shows as rejected, and whether the development result is still meaningful given the cumulative number of hypothesis tests (this run plus earlier runs on this market: multipleTesting.cumulativeHypothesisTests); read the candidate's selfRebuttal against the data (queries, contrast cells, charts, blind-set results, diagnoses) and flag any "excluded: yes" the data does not support. Numeric gates binding. No tuning on final. ${JSON.stringify({ contract: { ...c, selection: ctSelectionLabel(c) }, sources: ct.sources.filter((s) => cited.has(s.id)), approaches: ct.approaches, candidate: { ...selected, training: ctSummary(selected.training), development: ctSummary(selected.development), developmentStability: ctStability(selected.development), stress: ctSummary(selected.stress), delayed: ctSummary(selected.delayed) }, ruleText: ctRuleText(selected.spec), trials: ct.trials.length, research })}`,
+        `Independent critical CT review; reject source/rule mismatch, discretion falsely claimed implemented, leakage, unconfirmed pivots, incomplete higher bars, selection/survivorship bias, unrealistic costs/fills. OHLCV cannot prove orderbook liquidity; current sources may postdate history; require forward paper evidence before live. Check EVERY mapping against its actual evidence (web source text or the training-only query it cites: same feature and timeframe) and the rules. Judge data snooping and multiple testing explicitly: how many queries, hypotheses and candidates preceded this rule (research.multipleTesting.hypothesisTests counts the distinct condition combinations tested; threshold variants of one combination count once), whether the effect rests on few events or months, and whether the development pass could be luck given that search. The rule language now includes time windows, VWAP/previous-day/opening-range levels, ATR units and managed exits, so the search space is larger: weigh the development result against the number of tests, treat candidateFreedom (conditions + free exit/window numbers) as a cost of complexity, and prefer the simpler rule. If research.playbook is present: say whether this rule is a variant of a mechanism the playbook already shows as rejected, and whether the development result is still meaningful given the cumulative number of hypothesis tests (this run plus earlier runs on this market: multipleTesting.cumulativeHypothesisTests); read the candidate's selfRebuttal against the data (queries, contrast cells, charts, blind-set results, diagnoses) and flag any "excluded: yes" the data does not support.${lessonsOn ? " If research.lessons is present: say whether this rule is a variant of an idea family the lessons mark dead (research.lessons.deadFamilies; the candidate's own family and its lessons are in research.lessons.forCandidate), and whether the difference the designer wrote in research.lessonChecks[].differsBecause is a different mechanism rather than the same idea re-labelled; an untouched coverage cell is never a reason to approve." : ""} Numeric gates binding. No tuning on final. ${JSON.stringify({ contract: { ...c, selection: ctSelectionLabel(c) }, sources: ct.sources.filter((s) => cited.has(s.id)), approaches: ct.approaches, candidate: { ...selected, training: ctSummary(selected.training), development: ctSummary(selected.development), developmentStability: ctStability(selected.development), stress: ctSummary(selected.stress), delayed: ctSummary(selected.delayed) }, ruleText: ctRuleText(selected.spec), trials: ct.trials.length, research })}`,
       );
       if (!ct.riskReview.approved || ct.riskReview.blockers.length) {
         done("독립 위험 검토 반려 · 통과 전략 없음");
@@ -1867,7 +1955,7 @@ export async function advanceCTResearch(
       ct.finalReview = await ask(
         roles.evidence,
         reviewSchema,
-        `Independent frozen CT evidence review. No revisions permitted after final exposure. Server gates binding. Audit repeated selection, sample size, dependence, costs and execution limits. Judge data snooping and multiple testing: weigh the final result against the number of training queries, hypotheses and candidates searched before freezing (research.multipleTesting.hypothesisTests = distinct condition combinations and examined cells; the vocabulary is now large, so a single positive final is weaker evidence than before; when present, multipleTesting.cumulativeHypothesisTests adds the tests earlier runs on this market made) and against the candidate's free numbers (multipleTesting.candidateFreedom). If research.playbook is present, say whether this rule is a variant of an idea the playbook already shows as rejected, and whether the candidate's selfRebuttal holds against the final evidence. Do not claim unused historical data across training/LLM pretraining or original-source dates. Forward paper verification required for live. ${JSON.stringify({ contract: { ...c, selection: ctSelectionLabel(c) }, hash: ct.frozenHash, trials: ct.trials.length, candidate: { spec: selected.spec, hypothesis: selected.hypothesis, mapping: selected.mapping, training: ctSummary(selected.training), development: ctSummary(selected.development), sensitivity: selected.sensitivity, developmentStability: ctStability(selected.development) }, final: ctSummary(ct.final!), finalStability: ctStability(ct.final!), stress: ctSummary(ct.finalStress!), delay: ctSummary(ct.finalDelayed!), research })}`,
+        `Independent frozen CT evidence review. No revisions permitted after final exposure. Server gates binding. Audit repeated selection, sample size, dependence, costs and execution limits. Judge data snooping and multiple testing: weigh the final result against the number of training queries, hypotheses and candidates searched before freezing (research.multipleTesting.hypothesisTests = distinct condition combinations and examined cells; the vocabulary is now large, so a single positive final is weaker evidence than before; when present, multipleTesting.cumulativeHypothesisTests adds the tests earlier runs on this market made) and against the candidate's free numbers (multipleTesting.candidateFreedom). If research.playbook is present, say whether this rule is a variant of an idea the playbook already shows as rejected, and whether the candidate's selfRebuttal holds against the final evidence.${lessonsOn ? " If research.lessons is present: say whether the rule is a variant of a family the lessons mark dead and whether research.lessonChecks[].differsBecause names a real difference in mechanism." : ""} Do not claim unused historical data across training/LLM pretraining or original-source dates. Forward paper verification required for live. ${JSON.stringify({ contract: { ...c, selection: ctSelectionLabel(c) }, hash: ct.frozenHash, trials: ct.trials.length, candidate: { spec: selected.spec, hypothesis: selected.hypothesis, mapping: selected.mapping, training: ctSummary(selected.training), development: ctSummary(selected.development), sensitivity: selected.sensitivity, developmentStability: ctStability(selected.development) }, final: ctSummary(ct.final!), finalStability: ctStability(ct.final!), stress: ctSummary(ct.finalStress!), delay: ctSummary(ct.finalDelayed!), research })}`,
       );
       done(
         ct.finalReview.approved && !ct.finalReview.blockers.length
@@ -1886,6 +1974,21 @@ export async function advanceCTResearch(
       } catch (error) {
         ct.tools.push({ id: await ctHash({ playbook: String(error), at: Date.now() }), name: "playbook_record", input: {}, at: new Date().toISOString(), status: "failed", error: error instanceof Error ? error.message : String(error) });
       }
+    }
+    // Stage 5: one cheap, number-masked distillation of the run's ideas into family lessons, from its own reserve. Never throws;
+    // a skip or a failure leaves the run's result as it is. Written once, so a resume neither pays nor distils again.
+    if (ct.phase === "done" && ctSessionPolicy(ct.contract).lessons && !ct.lessonsRecorded) {
+      const policy = ctSessionPolicy(ct.contract);
+      ct.lessonsRecorded = await ctDistillRun(job, ask, { maxInputChars: policy.lessonMaxInputChars, model: researchModel("ctLessons").model });
+      const { at, ...outcome } = ct.lessonsRecorded;
+      ct.tools.push({
+        id: await ctHash({ lessons: job.id, outcome }),
+        name: "lessons_record",
+        input: { run: job.id },
+        at,
+        status: ct.lessonsRecorded.failed ? "failed" : "completed",
+        ...(ct.lessonsRecorded.failed ? { error: ct.lessonsRecorded.failed } : { output: outcome }),
+      });
     }
   }
 }

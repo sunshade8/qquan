@@ -26,6 +26,7 @@ import { generationAvailability } from "@/lib/strategy-generation-llm";
 import { ctCostPreview } from "@/lib/ct-costs";
 import { ctPlaybookList } from "@/lib/ct-playbook";
 import { ctCalibrationList } from "@/lib/ct-calibration";
+import { ctLessonsList } from "@/lib/ct-lessons";
 import { sessionThinking } from "@/lib/ct-activity";
 export const dynamic = "force-dynamic";
 const headers = (owner: string, request: Request) => ({
@@ -78,7 +79,8 @@ export async function GET(request: Request) {
     if (url.searchParams.has("playbook")) {
       // Read-only list of what earlier runs on this market tried; windows reaching today count as overlapping, so no run's numbers leak.
       // Calibration records (the designer's eye) are shown beside, not inside, the list of trading ideas.
-      return Response.json({ ...(await ctPlaybookList(owner, market)), calibration: await ctCalibrationList(owner, market) }, { headers: headers(owner, request) });
+      // Stage 5: the family lessons and the count-only coverage map ride along (no numbers, nothing paid).
+      return Response.json({ ...(await ctPlaybookList(owner, market)), calibration: await ctCalibrationList(owner, market), ...(await ctLessonsList(owner, market)) }, { headers: headers(owner, request) });
     }
     if (url.searchParams.has("thinking")) {
       // The designer's summarized thinking per turn of one session, straight from the stored session messages (owner-only).
