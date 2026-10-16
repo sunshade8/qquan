@@ -31,7 +31,7 @@ export function netPct(entry,exit,slip=.03){const side=.002+slip/200;return (exi
 export function finish(signal,session,{delay=0,targetScale=1,slip=.03}={}){
  const bs=session.bars,idx=signal.signalIndex+1+delay,b=bs[idx];
  if(!b||idx>=77||b.timestamp!==bs[signal.signalIndex].timestamp+(1+delay)*300)return null;
- const entry=b.open,stop=signal.stop,risk=pct(entry,stop); // enforce signal and actual fill admissibility
+ const entry=b.open,stop=signal.stop; // enforce signal and actual fill admissibility
  const distance=(entry-stop)/entry*100;if(distance<.6||distance>2.5)return null;
  // Target uses actual entry price, known when the order fills; stop was fixed at signal.
  const target=entry+(entry-stop)*signal.reward*targetScale;
@@ -86,4 +86,4 @@ export function account(trades,data,{from='2024-09-09',to='2026-09-04',slots=3,s
  const n=daily.length,rets=daily.map(d=>d.returnPct);
  return {startingUsd:capital,endingUsd:round(cash,2),totalPct:round(pct(cash,capital)),geometricDailyPct:n?round(((cash/capital)**(1/n)-1)*100):null,meanDailyPct:round(mean(rets)),medianDailyPct:round(median(rets)),sessions:n,trades:executed.length,activeDays:daily.filter(d=>d.trades).length,noTradeDays:daily.filter(d=>!d.trades).length,lossDays:daily.filter(d=>d.returnPct< -1e-9).length,hit1Days:daily.filter(d=>d.returnPct>=1).length,hit2Days:daily.filter(d=>d.returnPct>=2).length,hit1Pct:n?round(daily.filter(d=>d.returnPct>=1).length/n*100):null,hit2Pct:n?round(daily.filter(d=>d.returnPct>=2).length/n*100):null,worstDayPct:round(min(rets)),maxDrawdown5mPct:round(mdd*100),skipped,daily,executed};
 }
-export function compactAccount(x){const {daily,executed,...rest}=x;return rest;}
+export function compactAccount(x){const rest={...x};delete rest.daily;delete rest.executed;return rest;}

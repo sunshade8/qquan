@@ -20,17 +20,21 @@ const ACTIVE = new Set(["queued", "running"]);
 export function useStaleData(market: CTMarket, symbols: string, days: string) {
   const [rows, setRows] = useState<DataStatus[] | null>(null),
     [busy, setBusy] = useState(false),
-    [failure, setFailure] = useState<string | null>(null);
+    [failure, setFailure] = useState<string | null>(null),
+    [now, setNow] = useState(() => Date.now());
   const refresh = useCallback(async () => {
     try {
       const r = await fetch("/api/local-data", { cache: "no-store" });
       const body = await r.json();
-      if (r.ok && Array.isArray(body)) setRows(body as DataStatus[]);
+      if (r.ok && Array.isArray(body)) {
+        setRows(body as DataStatus[]);
+        setNow(Date.now());
+      }
     } catch {
       /* the research request reports its own connection error */
     }
   }, []);
-  const toMs = Math.floor((Date.now() - DAY_MS) / DAY_MS) * DAY_MS,
+  const toMs = Math.floor((now - DAY_MS) / DAY_MS) * DAY_MS,
     fromMs = toMs - (Number(days) || 365) * DAY_MS,
     wanted = symbols.toUpperCase().split(/[,\s]+/).filter(Boolean),
     stale: StaleDataset[] = (rows ?? [])

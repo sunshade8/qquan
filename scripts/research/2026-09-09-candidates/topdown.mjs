@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import {HERE,OOS,SYMBOLS,loadData,mean,median,min,max,pct,finish,tradeStats,account,compactAccount} from './core.mjs';
+import {HERE,OOS,SYMBOLS,loadData,median,min,max,pct,finish,tradeStats,account,compactAccount} from './core.mjs';
 export function signalsFor(data){
  const out=[];
  for(const symbol of SYMBOLS)for(const [date,s] of data[symbol]){

@@ -33,7 +33,7 @@ async function start() {
     try {
       const r = await fetch("http://127.0.0.1:3001/api/local-data");
       if (r.ok) return await r.json();
-    } catch {}
+    } catch { /* not ready yet; retry */ }
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
   throw Error("Local startup timeout: " + errors);

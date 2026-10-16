@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { loadEnvFile } from "node:process";
 try {
   loadEnvFile(".dev.vars");
-} catch {}
+} catch { /* .dev.vars is optional */ }
 if (process.env.VERCEL) throw Error("Local runtime cannot run on Vercel");
 const children = [
   spawn(
@@ -30,7 +30,7 @@ function stop() {
   for (const c of children) {
     try {
       process.kill(-c.pid, "SIGTERM");
-    } catch {}
+    } catch { /* already exited */ }
   }
 }
 for (const c of children) {

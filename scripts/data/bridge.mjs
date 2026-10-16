@@ -3,7 +3,7 @@ import { validateInput } from './bridge-input.mjs';
 import { loadEnvFile } from 'node:process';
 import { dataRPC } from '../../lib/market-data-rpc.ts';
 import { startDataWorker } from '../../lib/local-data-worker.ts';
-try { loadEnvFile('.dev.vars'); } catch {}
+try { loadEnvFile('.dev.vars'); } catch { /* .dev.vars is optional */ }
 const base = process.env.LOCAL_DATA_SITE_URL;
 const secret = process.env.LOCAL_DATA_BRIDGE_SECRET;
 const access = process.env.LOCAL_DATA_SITES_AUTHORIZATION;
