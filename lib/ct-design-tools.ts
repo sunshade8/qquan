@@ -145,19 +145,20 @@ function priorRangePct(rows: CTBar[], runEnd: number[], e: number) {
 
 /* ------------------------------------------------------------- cost hurdle */
 
-type HurdleRow = { n: number; mfe: number[]; mae: number[]; ret: number[] };
+export type HurdleRow = { n: number; mfe: number[]; mae: number[]; ret: number[] };
 const emptyRow = (): HurdleRow => ({ n: 0, mfe: [], mae: [], ret: [] });
+/** Hurdle sampling options: holding horizons in bars (0 = until the day's last tradable bar) and the entry stride in bars. */
+export type CTHurdleOptions = { horizons?: readonly number[]; stride?: number };
 
 /**
- * How often the training market moves far enough to pay for a round trip, by holding
- * time, time of day and recent volatility. Entries are every 5th training bar at its
- * open, the way the replay enters (next bar open). Gross moves; costs stated beside them.
+ * The raw samples behind the cost hurdle: every `stride`th training bar is a hypothetical entry at its open, and each
+ * horizon's forward window gives gross return, MFE and MAE — overall, by time-of-day bucket and by prior-60-bar range tercile.
+ * Shared by ctCostHurdle and the per-bar overview (lib/ct-bar-overview.ts), so both report the same numbers.
  */
-export function ctCostHurdle(data: Record<string, CTBar[]>, contract: CTContract) {
-  const cost = ctRoundTripCostPct(contract),
-    cost2 = ctRoundTripCostPct(contract, 2);
+export function ctHurdleSample(data: Record<string, CTBar[]>, contract: CTContract, options: CTHurdleOptions = {}) {
+  const H = options.horizons ?? ctHurdleHorizons(contract),
+    stride = options.stride ?? HURDLE_STRIDE;
   const ranges: number[] = [];
-  const H = ctHurdleHorizons(contract);
   const dayBounded = contract.engine !== CT_ENGINE_V1;
   const overall = H.map(() => emptyRow());
   const byTime = new Map<string, HurdleRow[]>();
@@ -166,7 +167,7 @@ export function ctCostHurdle(data: Record<string, CTBar[]>, contract: CTContract
     const { rows, runEnd } = trainingRows(data, symbol, contract);
     const dayLast = dayBounded ? dayLastIndex(rows, dayInfo(rows, contract.market)) : null;
     for (const b of rows) ranges.push((b.high / b.low - 1) * 100);
-    for (let e = 61; e < rows.length; e += HURDLE_STRIDE) {
+    for (let e = 61; e < rows.length; e += stride) {
       const per = H.map((h) => forward(rows, runEnd, e, h, dayLast ? dayLast[e] : undefined));
       if (!per[0]) continue;
       const bucket = ctTimeBucket(rows[e].startMs, contract);
@@ -186,7 +187,7 @@ export function ctCostHurdle(data: Record<string, CTBar[]>, contract: CTContract
   }
   const sortedRanges = sortNum(vol.map((v) => v.range));
   const cut = [quantile(sortedRanges, 1 / 3), quantile(sortedRanges, 2 / 3)];
-  const regimes = ["저변동", "중변동", "고변동"].map(() => H.map(() => emptyRow()));
+  const regimes = CT_VOL_REGIMES.map(() => H.map(() => emptyRow()));
   for (const v of vol) {
     const r = v.range <= cut[0] ? 0 : v.range <= cut[1] ? 1 : 2;
     v.per.forEach((f, i) => {
@@ -198,7 +199,26 @@ export function ctCostHurdle(data: Record<string, CTBar[]>, contract: CTContract
       row.ret.push(f.ret);
     });
   }
-  const hits = (row: HurdleRow, k: number) => share(row.mfe.filter((m) => m >= cost * k).length, row.n);
+  const timeBuckets = TIME_BUCKETS[contract.market] as readonly string[];
+  return { H, stride, dayBounded, ranges, overall, byTime: timeBuckets.map((bucket) => ({ bucket, rows: byTime.get(bucket) ?? H.map(() => emptyRow()) })), regimes, cut };
+}
+export const CT_VOL_REGIMES = ["저변동", "중변동", "고변동"] as const;
+/** Share of a sample whose favourable move (MFE) reaches k × the round-trip cost, percent. */
+export const ctHurdleHits = (row: HurdleRow, cost: number, k: number) => share(row.mfe.filter((m) => m >= cost * k).length, row.n);
+export const ctHurdleQuantiles = quantiles;
+export const ctHurdleMedian = (xs: number[]) => round(quantile(sortNum(xs), 0.5));
+export const ctHurdleMean = (xs: number[]) => round(mean(xs));
+
+/**
+ * How often the training market moves far enough to pay for a round trip, by holding
+ * time, time of day and recent volatility. Entries are every 5th training bar at its
+ * open, the way the replay enters (next bar open). Gross moves; costs stated beside them.
+ */
+export function ctCostHurdle(data: Record<string, CTBar[]>, contract: CTContract, options: CTHurdleOptions = {}) {
+  const cost = ctRoundTripCostPct(contract),
+    cost2 = ctRoundTripCostPct(contract, 2);
+  const { H, stride, dayBounded, ranges, overall, byTime, regimes, cut } = ctHurdleSample(data, contract, options);
+  const hits = (row: HurdleRow, k: number) => ctHurdleHits(row, cost, k);
   const brief = (row: HurdleRow) => ({
     n: row.n,
     mfeP50: round(quantile(sortNum(row.mfe), 0.5)),
@@ -218,7 +238,7 @@ export function ctCostHurdle(data: Record<string, CTBar[]>, contract: CTContract
     hit3xPct: hits(overall[i], 3),
   }));
   const meanRange = mean(ranges),
-    at60 = horizons.find((h) => h.bars === 60)!;
+    at60 = horizons.find((h) => h.bars === 60) ?? horizons[0];
   return {
     roundTripCostPct: round(cost),
     roundTripCost2xPct: round(cost2),
@@ -226,18 +246,14 @@ export function ctCostHurdle(data: Record<string, CTBar[]>, contract: CTContract
     medianBarRangePct: round(quantile(sortNum(ranges), 0.5)),
     costToMeanBarRange: round(cost / Math.max(meanRange, 1e-9), 2),
     sampledEntries: overall[0].n,
-    entryRule: `학습 구간 ${HURDLE_STRIDE}봉마다 다음 봉 시가 진입 가정 · MFE/MAE는 시가 대비 총 이동(비용 전)` + (dayBounded ? " · 보유는 당일 경계(코인 UTC 00:00, 주식 정규장 종료)에서 잘라 계산(bars 0 = 당일 경계까지)" : ""),
+    entryRule: `학습 구간 ${stride}봉마다 다음 봉 시가 진입 가정 · MFE/MAE는 시가 대비 총 이동(비용 전)` + (dayBounded ? " · 보유는 당일 경계(코인 UTC 00:00, 주식 정규장 종료)에서 잘라 계산(bars 0 = 당일 경계까지)" : ""),
     horizons,
-    byTime: (TIME_BUCKETS[contract.market] as readonly string[]).flatMap((bucket) =>
-      H.map((bars, i) => ({ bucket, bars, ...brief(byTime.get(bucket)?.[i] ?? emptyRow()) })),
-    ),
-    byVolatility: ["저변동", "중변동", "고변동"].flatMap((regime, r) =>
-      H.map((bars, i) => ({ regime, bars, ...brief(regimes[r][i]) })),
-    ),
+    byTime: byTime.flatMap(({ bucket, rows }) => H.map((bars, i) => ({ bucket, bars, ...brief(rows[i]) }))),
+    byVolatility: CT_VOL_REGIMES.flatMap((regime, r) => H.map((bars, i) => ({ regime, bars, ...brief(regimes[r][i]) }))),
     volatilityCutoffsPct: { prior60BarRangeP33: round(cut[0]), prior60BarRangeP67: round(cut[1]) },
     conclusion:
       `평균 1분 범위 ${round(meanRange, 3)}%, 왕복 비용 ${round(cost, 3)}%(평균 봉의 ${round(cost / Math.max(meanRange, 1e-9), 1)}배) → ` +
-      `비용의 2배를 넘는 유리한 움직임(MFE)은 60분 보유 기준 진입의 ${at60.hit2xPct}%에서만 나타남`,
+      `비용의 2배를 넘는 유리한 움직임(MFE)은 ${at60.bars}분 보유 기준 진입의 ${at60.hit2xPct}%에서만 나타남`,
   };
 }
 export type CTCostHurdle = ReturnType<typeof ctCostHurdle>;

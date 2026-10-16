@@ -225,10 +225,11 @@ test("designer brief and tools: free bars get their own; stage 5 stays as it was
   const free = { policy: contract(1).policy },
     five = { policy: contract(1, "crypto", 3).policy };
   assert.equal(research.ctDesignerSystem(five), research.CT_DESIGNER_SYSTEM_STAGE5);
-  assert.equal(research.ctDesignerSystem(free), research.CT_DESIGNER_SYSTEM);
-  assert.match(research.CT_DESIGNER_SYSTEM, /nobody told you which chart that trader reads/);
-  assert.match(research.CT_DESIGNER_SYSTEM, /never sweep them/);
-  assert.equal(research.CT_DESIGNER_SYSTEM.startsWith(research.CT_DESIGNER_SYSTEM_STAGE5.slice(0, 2000)), true);
+  // traderTools 4 keeps the free-bar brief (frozen when the bar overview arrived as 5; tests/ct-bar-overview.test.mjs).
+  assert.equal(research.ctDesignerSystem(free), research.CT_DESIGNER_SYSTEM_STAGE6);
+  assert.match(research.CT_DESIGNER_SYSTEM_STAGE6, /nobody told you which chart that trader reads/);
+  assert.match(research.CT_DESIGNER_SYSTEM_STAGE6, /never sweep them/);
+  assert.equal(research.CT_DESIGNER_SYSTEM_STAGE6.startsWith(research.CT_DESIGNER_SYSTEM_STAGE5.slice(0, 2000)), true);
   assert.equal(store.ctSessionTools(five), store.CT_SESSION_TOOLS_STAGE5);
   assert.equal(store.ctSessionTools(free), store.CT_SESSION_TOOLS);
   const tool = (set, name) => set.find((t) => t.name === name);

@@ -179,6 +179,7 @@ export function describeTool(t: CTToolTrace) {
     case "analyze_training": return "학습 구간 통계 분석";
     case "read_training_bars": return `학습 구간 1분봉 열람 · ${(i.windows as unknown[] | undefined)?.length ?? 0}구간`;
     case "cost_hurdle": return "비용 장벽 표 계산 · 학습 구간";
+    case "bar_overview": return "봉별 개요 계산 · 학습 구간 · 검정 아님";
     case "query_conditional_returns": return `조건부 수익 조회 · ${queryFeatures(i)}`;
     case "read_bars": return `학습 1분봉 열람 · ${((i.request as { anchors?: unknown[] } | undefined)?.anchors?.length ?? 0)}개 시각`;
     case "screen_rule": return `학습 구간 사전 검사 · ${((i.spec as { name?: string } | undefined)?.name) ?? "후보"}`;

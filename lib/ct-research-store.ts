@@ -81,6 +81,7 @@ import {
 } from "./ct-design-tools.ts";
 import { ctDataPage, ctDb, ctResearchPageStart, loadCTData } from "./ct-data.ts";
 import { ctBoardSignature, CTBoardRepeatError, type CTBoardPrior } from "./ct-board.ts";
+import { ctBarOverview, type CTBarOverview } from "./ct-bar-overview.ts";
 import { ctLabelKey, ctMeasuredBefore } from "./ct-measured.ts";
 import {
   CT_DIAGNOSIS_FEATURES,
@@ -1154,6 +1155,14 @@ export async function advanceCTResearch(
             return computed(() => ctCostHurdle(data, c));
           },
         );
+        // traderTools 5: the cost hurdle and label base rate on every allowed bar. Server measured once, never a ledger test.
+        // Only where free bars apply (one-minute data); a contract frozen on 5/15/60-minute data has one bar and no choice.
+        const barOverview = policy.barOverview && ctBarAllowed(c, 1)
+          ? await tool(job, token, "bar_overview", { from: c.fromMs, to: c.trainingToMs, dataHash: ct.dataHash }, async () => {
+              const data = await bars();
+              return computed(() => ctBarOverview(data, c));
+            })
+          : undefined;
         session = {
           index: sessions.length,
           kind: sessions.length ? "reflect" : "design",
@@ -1166,7 +1175,7 @@ export async function advanceCTResearch(
         };
         // A revision may inspect its parent's actual training trades.
         for (const t of ct.trials) anchor(...t.training.trades.filter((x) => x.entryAt < c.trainingToMs).map((x) => x.entryAt));
-        const context = ctSessionContext(ct, job.brief, hurdle as CTCostHurdle, session);
+        const context = ctSessionContext(ct, job.brief, hurdle as CTCostHurdle, session, barOverview as CTBarOverview | undefined);
         sessions.push(session);
         await appendSession(job, token, session, [
           {

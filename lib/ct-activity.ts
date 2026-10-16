@@ -125,6 +125,7 @@ export function toolDoing(t: Pick<CTToolTrace, "name" | "input">) {
     case "analyze_training": return "학습 구간 통계를 계산하고 있습니다";
     case "read_training_bars": return "무작위 학습 구간의 1분봉을 읽고 있습니다";
     case "cost_hurdle": return "학습 구간에서 비용 장벽 표(보유 시간 · 시간대 · 변동성별 MFE/MAE)를 계산하고 있습니다";
+    case "bar_overview": return "학습 구간에서 봉별 개요(고를 수 있는 봉마다 비용 장벽 표와 라벨 기저율, 검정 아님)를 계산하고 있습니다";
     case "query_conditional_returns": return `조건부 수익을 조회하고 있습니다 · ${queryFeatures(i)}`;
     case "read_bars": return `조회 이벤트 주변 학습 1분봉을 읽고 있습니다 · ${((i.request as { anchors?: unknown[] } | undefined)?.anchors?.length ?? 0)}개 시각`;
     case "screen_rule": return `후보 규칙을 학습 구간에서 사전 검사하고 있습니다 · ${((i.spec as { name?: string } | undefined)?.name) ?? "후보"}`;

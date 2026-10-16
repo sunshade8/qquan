@@ -7,6 +7,7 @@ import { ctRoundTripCostPct, ctStability, ctSummary, type CTResult } from "./ct-
 import { ctCostProfileText } from "./ct-costs.ts";
 import type { GenerationReview } from "./strategy-generation-spec.ts";
 import type { CTCostHurdle } from "./ct-design-tools.ts";
+import type { CTBarOverview } from "./ct-bar-overview.ts";
 import { CT_FAMILIES } from "./ct-families.ts";
 import type { CTLessonsRecorded, CTLessonsSnapshot } from "./ct-lessons.ts";
 export const ctRequestSchema = z
@@ -561,11 +562,24 @@ export const CT_DESIGNER_SYSTEM_STAGE5 = [SYS3_INTRO, SYS_SUCCESS, SYS_COSTS, SY
  * ------------------------------------------------------------------------------------------ */
 const SYS6_BARS = `Choosing the bar: you are trying to become a day trader who makes money, and nobody told you which chart that trader reads. The data is one-minute bars; the bar a rule trades on is yours to choose for each rule — spec.minutes 1, 5, 15 or 60 (stocks 1, 5 or 15) — and label_moves, query_conditional_returns and read_bars take barMinutes so you can measure on any of them. view_charts already shows one moment on 1-hour, 5-minute and 1-minute bars at once. Look at the same idea on more than one bar before you settle, and treat the bar as part of the hypothesis: say why it fits the mechanism. A move that takes hours to unfold is mostly noise and cost on one-minute bars; a reaction that lasts a few minutes vanishes inside a 60-minute bar. The round-trip cost is the same whatever the bar, so a coarser bar lets each trade aim at a larger move, but it also means fewer trades and coarser exits (a bar that touches both the stop and the target counts as the stop). Every bar you try is another test in the ledger (the same structure on another bar is a different signature): choose bars for reasons, never sweep them to find a winner.
 How the bar changes the rule's arithmetic: bars are built from complete minutes on the clock grid (a bar with a missing minute does not exist). Every bar count — lookback, offset, maxGapBars, cooldownBars, maxHoldBars, timeStop.bars, query horizons — counts bars of spec.minutes (or of the measurement's barMinutes); timeframe 1/3/12 means 1×/3×/12× that bar, while 60/240/1440 stay hours, 4 hours and days. Entry is at the next bar's open and the one-bar delay stress is one bar of that size. The day's last tradable bar is the one that closes one bar before the day ends: no signal is taken at its close and an open position is closed at its close. entryWindows and noEntryBeforeDayEndMinutes stay in minutes; opening_range_position.lookback stays minutes and must be a multiple of the bar. Holding never crosses the day. The cost_hurdle table in the context is measured on one-minute bars (its horizons are minutes).`;
-export const CT_DESIGNER_SYSTEM = [SYS3_INTRO, SYS_SUCCESS, SYS_COSTS, SYS_EXIT_STRUCTURE, SYS5_WORKFLOW, SYS3_GUARD, SYS5_LESSONS, SYS6_BARS, SYS_LANGUAGE, SYS_LEVELS, SYS_EXITS, SYS5_TOOLS, SYS_DATA].join("\n\n");
-/** The brief a contract runs under: free-bar / stage 5 / 4 / 3 trader briefs by tools version, the stage-2 brief otherwise (all but the newest frozen byte for byte, so cached prefixes of older runs survive). */
+/** FROZEN: traderTools = 4 contracts keep these bytes (SHA-256 pinned in tests/ct-bar-overview.test.mjs). */
+export const CT_DESIGNER_SYSTEM_STAGE6 = [SYS3_INTRO, SYS_SUCCESS, SYS_COSTS, SYS_EXIT_STRUCTURE, SYS5_WORKFLOW, SYS3_GUARD, SYS5_LESSONS, SYS6_BARS, SYS_LANGUAGE, SYS_LEVELS, SYS_EXITS, SYS5_TOOLS, SYS_DATA].join("\n\n");
+
+/* ------------------------------------------------------------------------------------------
+ * Bar overview (traderTools = 5, 2026-10-16): the first free-bar run (7a4354f4) used one bar only and twice declined to
+ * look at another "because it would be costly" (every label/contrast is a ledger test). The stable block now holds the
+ * cost hurdle and label base rate on every allowed bar (lib/ct-bar-overview.ts), and the brief says it is free.
+ * ------------------------------------------------------------------------------------------ */
+const SYS7_OVERVIEW = `The bar overview is free: barOverview in the context was measured once by the server on the training split for every bar you may choose. It has no condition and no threshold, so it is not a hypothesis test and nothing in it is added to the ledger — reading it and comparing every bar in it costs you nothing. For each bar (barOverview.bars[].barMinutes) it gives, per holding time (holdMinutes and holdBars; 0 = until the day's last tradable bar), the favourable (MFE) and adverse (MAE) move quantiles of an entry at a bar's open, gross of cost and beside the round-trip cost, and the share of entries whose MFE reaches 1×, 2× and 3× the cost; the same by time-of-day bucket and volatility regime; and the base rate of label_moves positives at its defaults (k 3, m 1, held to the day end) with events per day (columns names each row's fields). Before you settle on a bar for an idea, compare the bars there: which bar and holding time give moves large enough, often enough, where and when, and how many separate decisions a day each bar leaves you. Choose with that table, then spend ledger-counted tools on testing ideas on the bars you chose — not on finding out what each bar looks like.`;
+const SYS7_BARS = SYS6_BARS.replace(
+  "The cost_hurdle table in the context is measured on one-minute bars (its horizons are minutes).",
+  "The cost_hurdle table in the context is measured on one-minute bars (its horizons are minutes); barOverview covers every bar.",
+);
+export const CT_DESIGNER_SYSTEM = [SYS3_INTRO, SYS_SUCCESS, SYS_COSTS, SYS_EXIT_STRUCTURE, SYS5_WORKFLOW, SYS3_GUARD, SYS5_LESSONS, SYS7_BARS, SYS7_OVERVIEW, SYS_LANGUAGE, SYS_LEVELS, SYS_EXITS, SYS5_TOOLS, SYS_DATA].join("\n\n");
+/** The brief a contract runs under: bar-overview / free-bar / stage 5 / 4 / 3 trader briefs by tools version, the stage-2 brief otherwise (all but the newest frozen byte for byte, so cached prefixes of older runs survive). */
 export const ctDesignerSystem = (contract: Pick<CTContract, "policy">) => {
   const v = ctSessionPolicy(contract).toolsVersion;
-  return v >= 4 ? CT_DESIGNER_SYSTEM : v === 3 ? CT_DESIGNER_SYSTEM_STAGE5 : v === 2 ? CT_DESIGNER_SYSTEM_STAGE4 : v === 1 ? CT_DESIGNER_SYSTEM_STAGE3 : CT_DESIGNER_SYSTEM_STAGE2;
+  return v >= 5 ? CT_DESIGNER_SYSTEM : v === 4 ? CT_DESIGNER_SYSTEM_STAGE6 : v === 3 ? CT_DESIGNER_SYSTEM_STAGE5 : v === 2 ? CT_DESIGNER_SYSTEM_STAGE4 : v === 1 ? CT_DESIGNER_SYSTEM_STAGE3 : CT_DESIGNER_SYSTEM_STAGE2;
 };
 
 /** The contract as the designer needs it: boundaries, costs and gates. Stable across sessions. */
@@ -652,10 +666,13 @@ const ordinal = (id: string) => Number(id.split(":").at(-1)) || 0;
  *  - task: this session's brief and remaining room
  * Raw source texts and raw price CSVs are deliberately absent.
  */
-export function ctSessionContext(ct: CTResearch, brief: string, hurdle: CTCostHurdle, session: CTSession) {
+export function ctSessionContext(ct: CTResearch, brief: string, hurdle: CTCostHurdle, session: CTSession, barOverview?: CTBarOverview) {
+  const s = ctSessionPolicy(ct.contract);
   const stable = JSON.stringify({
     contract: contractView(ct.contract),
     costHurdle: hurdle,
+    // traderTools 5: the cost hurdle and label base rate on every allowed bar (server measured, not a test, free).
+    ...(s.barOverview && barOverview ? { barOverview } : {}),
     webPrinciples: {
       note: ct.sourceNote ?? "공개 원문에서 추출한 원리 · 성과 증거 아님 · 근거 id로 인용 가능",
       sources: ct.sources.map((s) => ({ id: s.id, title: s.title, url: s.url })),
@@ -716,13 +733,14 @@ export function ctSessionContext(ct: CTResearch, brief: string, hurdle: CTCostHu
     );
   // Candidates from runs before research sessions have no session; show them once, first.
   const legacy = entries.filter((e) => e.kind === "trial" && e.t.session === undefined).map(candidateRecord);
-  const s = ctSessionPolicy(ct.contract);
   const left = ct.contract.policy.maxCandidates - (ct.submitted ?? ct.trials.length);
   const task = [
     `세션 ${session.index + 1}/${s.maxSessions} (${session.kind === "design" ? "첫 설계" : "측정 결과 반영 후 재설계"}). 남은 후보 제출 한도 ${Math.max(0, left)}개 · 이 세션은 모델 턴 ${s.maxTurns}회, 도구 호출 ${s.maxToolCalls}회, screen_rule ${s.maxScreens}회${s.traderTools ? `, 차트 이미지 ${s.maxCharts}장(블라인드 세트 ${s.maxBlindSets}개${s.blindSize ? `, 세트당 ${s.blindSize.min}–${s.blindSize.max}장` : ""})` : ""}까지.`,
     session.kind === "reflect"
       ? "이전 세션의 조회와 후보 측정 결과가 위에 있습니다. 같은 아이디어의 미세 조정보다, 측정이 가리키는 다른 메커니즘이나 명확한 실패 원인의 수정을 우선하세요. 이전 queryId·contrastId·diagnosisId도 근거로 인용할 수 있습니다."
-      : s.traderTools
+      : s.barOverview
+        ? "cost_hurdle·barOverview(봉별 개요 · 무료, 검정 아님)와 플레이북부터 읽고, 봉별 개요로 봉을 비교한 뒤 거래할 가치가 있던 순간(label_moves)을 보고 그 직전의 차이를 찾으세요."
+        : s.traderTools
         ? "cost_hurdle과 플레이북부터 읽고, 거래할 가치가 있던 순간(label_moves)을 먼저 본 뒤 그 직전의 차이를 찾으세요."
         : "cost_hurdle부터 읽고 시작하세요.",
     `사용자 연구 방향: ${brief?.trim() ? brief : "(없음 · 자유 탐색)"}`,

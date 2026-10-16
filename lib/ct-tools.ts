@@ -112,6 +112,18 @@ export const CT_TOOLS = {
       })
       .passthrough(),
   },
+  // traderTools 5: the cost hurdle and label base rate on every allowed bar (lib/ct-bar-overview.ts). Not a test.
+  bar_overview: {
+    phases: ["design", "reflect"],
+    input: z.object({ from: time, to: time, dataHash: z.string() }).strict(),
+    output: z
+      .object({
+        note: z.string(),
+        roundTripCostPct: z.number().finite(),
+        bars: z.array(z.object({ barMinutes: z.number().int(), horizons: z.array(z.array(z.number())) }).passthrough()).min(1),
+      })
+      .passthrough(),
+  },
   query_conditional_returns: {
     phases: ["design", "reflect"],
     input: z.object({ query: ctQuerySchema, from: time, to: time, dataHash: z.string() }).strict(),
@@ -355,7 +367,7 @@ export function assertCTTool(name: string, input: unknown, ct: CTResearch) {
     if (data.kind !== "training" || data.from !== ct.contract.fromMs || data.to !== ct.contract.trainingToMs)
       throw new Error("설계 단계 백테스트는 학습 구간만 허용");
   }
-  if (name === "cost_hurdle" || name === "query_conditional_returns" || name === "screen_rule") {
+  if (name === "cost_hurdle" || name === "bar_overview" || name === "query_conditional_returns" || name === "screen_rule") {
     const data = value as { from: number; to: number; dataHash: string };
     if (data.dataHash !== ct.dataHash || !training(data.from, data.to))
       throw new Error("CT 설계 도구는 학습 구간만 허용");
