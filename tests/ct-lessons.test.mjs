@@ -365,9 +365,9 @@ test("the distillation's reserve: designer and reviewers cannot spend it, the di
 /* ------------------------------------------------------------------ policy and contracts */
 
 test("policy: a new contract carries stage 5 (and free bars), earlier ones are filled with nothing, QQUAN_CT_POLICY_VERSION still rebuilds them", () => {
-  // Free bars (tool version 4) keep every stage-5 field; stage 5 itself is tool version 3.
-  assert.equal(CT_POLICY.traderTools, 4);
-  assert.equal(ctSessionPolicy({ policy: CT_POLICY }).toolsVersion, 4);
+  // Free bars (tool version 4) and time-free blind sets (5) keep every stage-5 field; stage 5 itself is tool version 3.
+  assert.equal(CT_POLICY.traderTools, 5);
+  assert.equal(ctSessionPolicy({ policy: CT_POLICY }).toolsVersion, 5);
   assert.equal(ctSessionPolicy({ policy: CT_POLICY }).lessons, true);
   assert.equal(ctSessionPolicy({ policy: STAGE5_POLICY }).toolsVersion, 3);
   assert.equal(ctSessionPolicy({ policy: STAGE5_POLICY }).lessons, true);
@@ -382,6 +382,9 @@ test("policy: a new contract carries stage 5 (and free bars), earlier ones are f
   try {
     delete process.env.QQUAN_CT_POLICY_VERSION;
     assert.equal(ctPolicyForNewContract(), CT_POLICY, "default behaviour unchanged");
+    process.env.QQUAN_CT_POLICY_VERSION = "4";
+    assert.deepEqual(ctPolicyForNewContract(), { ...CT_POLICY, traderTools: 4 });
+    assert.equal(ctSessionPolicy({ policy: ctPolicyForNewContract() }).timeFreeBlind, false);
     process.env.QQUAN_CT_POLICY_VERSION = "3";
     assert.deepEqual(ctPolicyForNewContract(), STAGE5_POLICY);
     process.env.QQUAN_CT_POLICY_VERSION = "2";

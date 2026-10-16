@@ -225,19 +225,20 @@ test("designer brief and tools: free bars get their own; stage 5 stays as it was
   const free = { policy: contract(1).policy },
     five = { policy: contract(1, "crypto", 3).policy };
   assert.equal(research.ctDesignerSystem(five), research.CT_DESIGNER_SYSTEM_STAGE5);
-  assert.equal(research.ctDesignerSystem(free), research.CT_DESIGNER_SYSTEM);
-  assert.match(research.CT_DESIGNER_SYSTEM, /nobody told you which chart that trader reads/);
-  assert.match(research.CT_DESIGNER_SYSTEM, /never sweep them/);
-  assert.equal(research.CT_DESIGNER_SYSTEM.startsWith(research.CT_DESIGNER_SYSTEM_STAGE5.slice(0, 2000)), true);
+  // Free bars are frozen since time-free blind sets (traderTools 5) arrived: a traderTools 4 contract runs the FREEBARS brief and tools.
+  assert.equal(research.ctDesignerSystem(free), research.CT_DESIGNER_SYSTEM_FREEBARS);
+  assert.match(research.CT_DESIGNER_SYSTEM_FREEBARS, /nobody told you which chart that trader reads/);
+  assert.match(research.CT_DESIGNER_SYSTEM_FREEBARS, /never sweep them/);
+  assert.equal(research.CT_DESIGNER_SYSTEM_FREEBARS.startsWith(research.CT_DESIGNER_SYSTEM_STAGE5.slice(0, 2000)), true);
   assert.equal(store.ctSessionTools(five), store.CT_SESSION_TOOLS_STAGE5);
-  assert.equal(store.ctSessionTools(free), store.CT_SESSION_TOOLS);
+  assert.equal(store.ctSessionTools(free), store.CT_SESSION_TOOLS_FREEBARS);
   const tool = (set, name) => set.find((t) => t.name === name);
   for (const name of ["label_moves", "query_conditional_returns", "read_bars"]) {
-    assert.ok(tool(store.CT_SESSION_TOOLS, name).input_schema.properties.barMinutes, name);
+    assert.ok(tool(store.CT_SESSION_TOOLS_FREEBARS, name).input_schema.properties.barMinutes, name);
     assert.equal(tool(store.CT_SESSION_TOOLS_STAGE5, name).input_schema.properties.barMinutes, undefined, name);
   }
-  assert.equal(tool(store.CT_SESSION_TOOLS, "view_charts"), tool(store.CT_SESSION_TOOLS_STAGE5, "view_charts"), "charts are the minute-data picture");
-  assert.deepEqual(store.CT_SESSION_TOOLS.map((t) => t.name), store.CT_SESSION_TOOLS_STAGE5.map((t) => t.name));
+  assert.equal(tool(store.CT_SESSION_TOOLS_FREEBARS, "view_charts"), tool(store.CT_SESSION_TOOLS_STAGE5, "view_charts"), "charts are the minute-data picture");
+  assert.deepEqual(store.CT_SESSION_TOOLS_FREEBARS.map((t) => t.name), store.CT_SESSION_TOOLS_STAGE5.map((t) => t.name));
 });
 
 test("charts on 15-minute bars draw every panel; one-minute chart data is unchanged", () => {

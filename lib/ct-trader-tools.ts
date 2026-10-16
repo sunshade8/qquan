@@ -206,20 +206,34 @@ function tally(keys: string[], baseKeys: string[], order?: readonly string[]) {
 
 export type CTMoveAnchor = { at: number; time: string; symbol: string; netPct?: number; group: "positive" | "control" };
 
-/** Control moments matched to each positive event: same hour of the day and month, label 0, seeded. */
-export function ctMatchedControls(runs: CTLabelRun[], picks: Array<{ symbol: string; index: number }>, contract: CTContract, seed: number): CTMoveAnchor[] {
+/**
+ * Time-free blind charts (traderTools 5) draw the last 120 one-hour bars. A moment too close to the start of the data draws
+ * fewer of them, which would single it out among the times the designer chose; such moments are not issued as chart anchors
+ * with `slot: "bar"`. Crypto: five days. Stocks: 120 anchor-aligned hours take up to 24 sessions, about 35 calendar days.
+ */
+export const ctChartable = (ms: number, contract: Pick<CTContract, "market" | "fromMs">) => ms - contract.fromMs >= (contract.market === "crypto" ? 5 : 35) * DAY_MS;
+
+/**
+ * Control moments matched to each positive event: same hour of the day and month, label 0, seeded.
+ * `slot: "bar"` (traderTools 5, time-free blind sets) matches the event's bar slot of the day instead of its hour — the same
+ * minute after the day start at the label's bar size (a 15-minute label: the same quarter hour) — drawn from every bar, not
+ * every third: run 7a4354f4 told a 15-minute event from its same-hour control by how far into the day the chart was.
+ */
+export function ctMatchedControls(runs: CTLabelRun[], picks: Array<{ symbol: string; index: number }>, contract: CTContract, seed: number, slot: "hour" | "bar" = "hour"): CTMoveAnchor[] {
   const rng = ctRng(seed);
   const pools = new Map<string, Map<string, number[]>>();
   const keyOf = (run: CTLabelRun, i: number) => {
     const ms = run.rows[i].endMs;
-    return `${Math.floor((ms - run.day.startMs[i]) / (60 * MINUTE))}|${ctDate(ms, contract.market, contract.timezone).slice(0, 7)}`;
+    const size = slot === "bar" ? run.rows[i].endMs - run.rows[i].startMs : 60 * MINUTE;
+    return `${Math.floor((ms - run.day.startMs[i]) / size)}|${ctDate(ms, contract.market, contract.timezone).slice(0, 7)}`;
   };
   const poolOf = (run: CTLabelRun) => {
     let pool = pools.get(run.symbol);
     if (pool) return pool;
     pool = new Map();
-    for (let i = 0; i < run.rows.length; i += 3) {
+    for (let i = 0; i < run.rows.length; i += slot === "bar" ? 1 : 3) {
       if (run.labels.label[i] !== 0) continue;
+      if (slot === "bar" && !ctChartable(run.rows[i].endMs, contract)) continue;
       const key = keyOf(run, i);
       if (!pool.has(key)) pool.set(key, []);
       pool.get(key)!.push(i);
@@ -243,7 +257,8 @@ export function ctMatchedControls(runs: CTLabelRun[], picks: Array<{ symbol: str
  * The label_moves report: how many moments were worth trading, how many separate events, and when
  * they cluster, each against the same dimension over all valid moments.
  */
-export function ctLabelMovesReport(params: CTLabelParams, runs: CTLabelRun[], contract: CTContract, labelId: string, options: { blindReserve?: boolean } = {}) {
+export function ctLabelMovesReport(params: CTLabelParams, runs: CTLabelRun[], contract: CTContract, labelId: string, options: { blindReserve?: boolean; controlSlot?: "hour" | "bar" } = {}) {
+  const slot = options.controlSlot ?? "hour";
   const days = trainingDays(contract);
   const costPct = ctRoundTripCostPct(contract, params.costMultiplier);
   const eventKeys = { time: [] as string[], vol: [] as string[], weekday: [] as string[], month: [] as string[] };
@@ -285,7 +300,11 @@ export function ctLabelMovesReport(params: CTLabelParams, runs: CTLabelRun[], co
     valid = runs.reduce((s, r) => s + r.validMoments, 0);
   const timeOrder = contract.market === "crypto" ? ["00-06 UTC", "06-12 UTC", "12-18 UTC", "18-24 UTC"] : ["개장 60분", "장 중반", "마감 60분"];
   // Representative events: evenly spread over the training time line, up to 12.
-  const all = runs.flatMap((run) => run.events.map((i) => ({ run, i }))).sort((a, b) => a.run.rows[a.i].endMs - b.run.rows[b.i].endMs);
+  // Time-free blind sets: only moments with a full chart history behind them become anchors (the counts above use every event).
+  const all = runs
+    .flatMap((run) => run.events.map((i) => ({ run, i })))
+    .filter(({ run, i }) => slot !== "bar" || ctChartable(run.rows[i].endMs, contract))
+    .sort((a, b) => a.run.rows[a.i].endMs - b.run.rows[b.i].endMs);
   const take = Math.min(12, all.length);
   const picked = Array.from({ length: take }, (_, k) => all[Math.min(all.length - 1, Math.floor(((k + 0.5) * all.length) / take))]);
   const anchors: CTMoveAnchor[] = picked.map(({ run, i }) => ({
@@ -296,7 +315,7 @@ export function ctLabelMovesReport(params: CTLabelParams, runs: CTLabelRun[], co
     group: "positive",
   }));
   const seed = ctSeedOf(labelId);
-  const controls = ctMatchedControls(runs, picked.map(({ run, i }) => ({ symbol: run.symbol, index: i })), contract, seed);
+  const controls = ctMatchedControls(runs, picked.map(({ run, i }) => ({ symbol: run.symbol, index: i })), contract, seed, slot);
   // Stage 4: reserve anchors for blind sets (16–32 charts need up to 16 events and 16 controls beyond the 12 + 12 above).
   // Same representative-time rule; events are spread over the remaining timeline; controls are matched with another seed
   // and never repeat a displayed control or one another.
@@ -306,7 +325,7 @@ export function ctLabelMovesReport(params: CTLabelParams, runs: CTLabelRun[], co
     const takeReserve = Math.min(16, rest.length);
     const reservePicks = Array.from({ length: takeReserve }, (_, k) => rest[Math.min(rest.length - 1, Math.floor(((k + 0.5) * rest.length) / takeReserve))]);
     const seen = new Set(controls.map((c) => `${c.symbol}:${c.at}`));
-    const reserveControls = ctMatchedControls(runs, reservePicks.map(({ run, i }) => ({ symbol: run.symbol, index: i })), contract, ctSeedOf(`${labelId}:blind`)).filter((c) => {
+    const reserveControls = ctMatchedControls(runs, reservePicks.map(({ run, i }) => ({ symbol: run.symbol, index: i })), contract, ctSeedOf(`${labelId}:blind`), slot).filter((c) => {
       const key = `${c.symbol}:${c.at}`;
       if (seen.has(key)) return false;
       seen.add(key);
@@ -342,6 +361,7 @@ export function ctLabelMovesReport(params: CTLabelParams, runs: CTLabelRun[], co
     anchors,
     controlAnchors: controls,
     ...(blindReserve ? { blindReserve } : {}),
+    ...(slot === "bar" ? { controlMatching: `대조군 = 이벤트와 같은 달 · 하루 시작 후 같은 봉 자리(라벨 봉 단위, 15분 라벨이면 같은 15분) · 라벨 0. 블라인드 차트는 시각·시간대를 보이지 않는다(모든 패널이 결정 시각에서 끝나는 최근 N봉). 차트 이력(1시간봉 120개)이 모자라는 데이터 시작 ${contract.market === "crypto" ? "5일" : "35일"} 안의 순간은 시각으로 발급하지 않는다.` } : {}),
     note: "lift = 사건 비율 ÷ 전체 유효 순간 비율(기저 분포는 3분마다 표본). lift는 어디를 볼지의 단서일 뿐 성과 근거가 아니다. 학습 구간만.",
   };
 }

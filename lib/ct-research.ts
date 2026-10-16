@@ -358,6 +358,8 @@ export type CTResearch = {
   queries?: CTQueryRecord[];
   /** Training times the server offered as read_bars anchors. */
   anchors?: number[];
+  /** Time-free blind sets (traderTools 5): times opened with read_bars; a blind set refuses them (their bars showed the answer). */
+  barsRead?: number[];
   /**
    * Multiple-testing ledger: hypothesis signature → tool calls, whole run. Stage 3 adds one signature
    * per contrast feature × control quintile, per examined diagnosis stratum, per label definition and per
@@ -561,11 +563,22 @@ export const CT_DESIGNER_SYSTEM_STAGE5 = [SYS3_INTRO, SYS_SUCCESS, SYS_COSTS, SY
  * ------------------------------------------------------------------------------------------ */
 const SYS6_BARS = `Choosing the bar: you are trying to become a day trader who makes money, and nobody told you which chart that trader reads. The data is one-minute bars; the bar a rule trades on is yours to choose for each rule — spec.minutes 1, 5, 15 or 60 (stocks 1, 5 or 15) — and label_moves, query_conditional_returns and read_bars take barMinutes so you can measure on any of them. view_charts already shows one moment on 1-hour, 5-minute and 1-minute bars at once. Look at the same idea on more than one bar before you settle, and treat the bar as part of the hypothesis: say why it fits the mechanism. A move that takes hours to unfold is mostly noise and cost on one-minute bars; a reaction that lasts a few minutes vanishes inside a 60-minute bar. The round-trip cost is the same whatever the bar, so a coarser bar lets each trade aim at a larger move, but it also means fewer trades and coarser exits (a bar that touches both the stop and the target counts as the stop). Every bar you try is another test in the ledger (the same structure on another bar is a different signature): choose bars for reasons, never sweep them to find a winner.
 How the bar changes the rule's arithmetic: bars are built from complete minutes on the clock grid (a bar with a missing minute does not exist). Every bar count — lookback, offset, maxGapBars, cooldownBars, maxHoldBars, timeStop.bars, query horizons — counts bars of spec.minutes (or of the measurement's barMinutes); timeframe 1/3/12 means 1×/3×/12× that bar, while 60/240/1440 stay hours, 4 hours and days. Entry is at the next bar's open and the one-bar delay stress is one bar of that size. The day's last tradable bar is the one that closes one bar before the day ends: no signal is taken at its close and an open position is closed at its close. entryWindows and noEntryBeforeDayEndMinutes stay in minutes; opening_range_position.lookback stays minutes and must be a multiple of the bar. Holding never crosses the day. The cost_hurdle table in the context is measured on one-minute bars (its horizons are minutes).`;
-export const CT_DESIGNER_SYSTEM = [SYS3_INTRO, SYS_SUCCESS, SYS_COSTS, SYS_EXIT_STRUCTURE, SYS5_WORKFLOW, SYS3_GUARD, SYS5_LESSONS, SYS6_BARS, SYS_LANGUAGE, SYS_LEVELS, SYS_EXITS, SYS5_TOOLS, SYS_DATA].join("\n\n");
-/** The brief a contract runs under: free-bar / stage 5 / 4 / 3 trader briefs by tools version, the stage-2 brief otherwise (all but the newest frozen byte for byte, so cached prefixes of older runs survive). */
+/** FROZEN: traderTools = 4 contracts keep these bytes (SHA-256 pinned in tests/ct-blind-time-free.test.mjs). */
+export const CT_DESIGNER_SYSTEM_FREEBARS = [SYS3_INTRO, SYS_SUCCESS, SYS_COSTS, SYS_EXIT_STRUCTURE, SYS5_WORKFLOW, SYS3_GUARD, SYS5_LESSONS, SYS6_BARS, SYS_LANGUAGE, SYS_LEVELS, SYS_EXITS, SYS5_TOOLS, SYS_DATA].join("\n\n");
+
+/* ------------------------------------------------------------------------------------------
+ * Time-free blind sets (traderTools = 5, 2026-10-16): run 7a4354f4 matched its own 15-minute event and control times to the
+ * length of the blind chart's "today" panel. The brief now says what a blind chart shows and why, in place of the stage-4 sentence.
+ * ------------------------------------------------------------------------------------------ */
+const SYS4_BLIND = `A blind set may only use times you have not looked at in an ordinary view_charts call (the server refuses a chart whose answer you have seen), and its charts show no decision time or clock (relative minutes only), because you chose the times yourself and a printed clock would let you match a chart to your own list.`;
+const SYS7_BLIND = `A blind set may only use times you have not looked at in an ordinary view_charts call or opened with read_bars (the server refuses a chart whose answer you have seen), and until it is graded its times cannot be opened either way. A blind chart carries no time of day: every panel is the last bars ending at the decision (120 one-hour bars, 72 five-minute bars, 90 one-minute bars with volume), with no clock, no day boundary, a rolling 6-hour VWAP and the last 24 hours' high, low and earlier close instead of the day's VWAP, opening range and previous day; and each control shares its event's bar slot of the day. You chose the times yourself, so anything in the picture that told the time of day would let you match a chart to your own list instead of reading it: judge the shape, not the clock.`;
+if (!SYS5_WORKFLOW.includes(SYS4_BLIND)) throw new Error("stage-4 blind sentence moved");
+const SYS7_WORKFLOW = SYS5_WORKFLOW.replace(SYS4_BLIND, SYS7_BLIND);
+export const CT_DESIGNER_SYSTEM = [SYS3_INTRO, SYS_SUCCESS, SYS_COSTS, SYS_EXIT_STRUCTURE, SYS7_WORKFLOW, SYS3_GUARD, SYS5_LESSONS, SYS6_BARS, SYS_LANGUAGE, SYS_LEVELS, SYS_EXITS, SYS5_TOOLS, SYS_DATA].join("\n\n");
+/** The brief a contract runs under: time-free / free-bar / stage 5 / 4 / 3 trader briefs by tools version, the stage-2 brief otherwise (all but the newest frozen byte for byte, so cached prefixes of older runs survive). */
 export const ctDesignerSystem = (contract: Pick<CTContract, "policy">) => {
   const v = ctSessionPolicy(contract).toolsVersion;
-  return v >= 4 ? CT_DESIGNER_SYSTEM : v === 3 ? CT_DESIGNER_SYSTEM_STAGE5 : v === 2 ? CT_DESIGNER_SYSTEM_STAGE4 : v === 1 ? CT_DESIGNER_SYSTEM_STAGE3 : CT_DESIGNER_SYSTEM_STAGE2;
+  return v >= 5 ? CT_DESIGNER_SYSTEM : v === 4 ? CT_DESIGNER_SYSTEM_FREEBARS : v === 3 ? CT_DESIGNER_SYSTEM_STAGE5 : v === 2 ? CT_DESIGNER_SYSTEM_STAGE4 : v === 1 ? CT_DESIGNER_SYSTEM_STAGE3 : CT_DESIGNER_SYSTEM_STAGE2;
 };
 
 /** The contract as the designer needs it: boundaries, costs and gates. Stable across sessions. */

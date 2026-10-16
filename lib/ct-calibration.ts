@@ -18,8 +18,16 @@ import type { GenerationJob } from "./strategy-generation-types.ts";
 
 /** Chart rendering format of blind sets drawn until 2026-10-14: three panels, 1,420 × 456, the decision time printed in the header and on the clock ticks. */
 export const CT_CHART_FORMAT = "ct-chart-1";
-/** Stage-4 blind sets: the same panels with the decision time and clock ticks hidden (relative minutes), so the designer cannot match a chart to the times it chose. */
+/**
+ * Stage-4 blind sets: the same panels with the decision time and clock ticks hidden (relative minutes), so the designer cannot match a chart to the times it chose.
+ * Not time-free: the "today" panel still shows how far into the day the chart is, and the designer knows its own event and control times.
+ * Run 7a4354f4 (15-minute labels, same-hour controls) used exactly that; such sets are pooled only by contracts that draw this format.
+ */
 export const CT_CHART_FORMAT_BLIND = "ct-chart-2-blind";
+/** traderTools 5: every panel ends at the decision (no clock, no day boundary, rolling levels) and controls share the event's bar slot of the day. */
+export const CT_CHART_FORMAT_BLIND_TIME_FREE = "ct-chart-3-blind";
+/** The format a contract's blind sets are drawn and recorded in (and the only format its calibration summary pools). */
+export const ctBlindChartFormat = (toolsVersion: number) => (toolsVersion >= 5 ? CT_CHART_FORMAT_BLIND_TIME_FREE : toolsVersion >= 2 ? CT_CHART_FORMAT_BLIND : CT_CHART_FORMAT);
 
 export const CT_CALIBRATION_SCHEMA = [
   "CREATE TABLE IF NOT EXISTS ct_calibration (id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,run_id TEXT NOT NULL,market TEXT NOT NULL,symbols TEXT NOT NULL,blind_id TEXT NOT NULL,n INTEGER NOT NULL,k INTEGER NOT NULL,p_value REAL NOT NULL,verdict TEXT NOT NULL,power70 REAL NOT NULL,power75 REAL NOT NULL,needed_hits INTEGER NOT NULL,measured_from INTEGER NOT NULL,measured_to INTEGER NOT NULL,chart_format TEXT NOT NULL,source TEXT NOT NULL,recorded_at INTEGER NOT NULL)",
@@ -125,7 +133,7 @@ const overlaps = (row: { measured_from: number; measured_to: number }, contract:
 
 export type CTCalibrationView = {
   run: string;
-  /** "시각 표시" = the charts printed the decision time (the designer could have matched them to its own list); "시각 숨김" = stage-4 blind charts. */
+  /** "시각 표시" = the charts printed the decision time (the designer could have matched them to its own list); "시각 숨김" = stage-4 blind charts; "시각·시간대 숨김" = time-free blind charts. */
   chartFormat: string;
   symbols: string[];
   n: number;
@@ -142,7 +150,7 @@ export type CTCalibrationView = {
 export type CTCalibrationSnapshot = {
   note: string;
   records: CTCalibrationView[];
-  /** All non-overlapping sets of this market pooled (same chart format): more charts, more power. */
+  /** All non-overlapping sets of this market pooled (the run's own chart format only): more charts, more power. */
   pooled: { sets: number; n: number; hits: number; accuracyPct: number; pValue: number; verdict: CTCalibrationVerdict; powerIfEyeIs70Pct: number } | null;
 };
 
@@ -152,24 +160,40 @@ const READING: Record<CTCalibrationVerdict, string> = {
   inconclusive: "표본이 작아 판정 불가 — '판별력 없음'이 아니다",
 };
 
-/** Calibration records the designer starts a stage-4 run with (frozen in the run, like the playbook). */
-export async function ctCalibrationSnapshot(ownerId: string, contract: Pick<CTContract, "market" | "trainingToMs" | "toMs">, runId: string): Promise<CTCalibrationSnapshot> {
+/** How a record's chart format reads in a summary pooling `pool` (stage-4 summaries keep their words byte for byte). */
+function formatText(format: string, pool: string) {
+  if (pool !== CT_CHART_FORMAT_BLIND_TIME_FREE) return format === CT_CHART_FORMAT_BLIND ? "시각 숨김" : format === CT_CHART_FORMAT_BLIND_TIME_FREE ? "시각·시간대 숨김(다른 형식 · 합산하지 않음)" : "시각 표시(식별 누출 가능성 · 합산하지 않음)";
+  return format === CT_CHART_FORMAT_BLIND_TIME_FREE
+    ? "시각·시간대 숨김"
+    : format === CT_CHART_FORMAT_BLIND
+      ? "시각 숨김(오늘 패널 길이로 시간대 식별 가능성 · 합산하지 않음)"
+      : "시각 표시(식별 누출 가능성 · 합산하지 않음)";
+}
+
+/**
+ * Calibration records the designer starts a stage-4 run with (frozen in the run, like the playbook). Only sets of `pool`, the format
+ * the run itself draws, are pooled: a time-free run (traderTools 5) never pools a stage-4 set, whose charts told the time of day.
+ */
+export async function ctCalibrationSnapshot(ownerId: string, contract: Pick<CTContract, "market" | "trainingToMs" | "toMs">, runId: string, pool: string = CT_CHART_FORMAT_BLIND): Promise<CTCalibrationSnapshot> {
   const rows = await ctDb()
     .prepare("SELECT * FROM ct_calibration WHERE market=? AND owner_id=? AND run_id<>? ORDER BY recorded_at DESC, id LIMIT 40")
     .bind(contract.market, ownerId, runId)
     .all<CalibrationRow>();
   // Only sets drawn with the decision time hidden are pooled: a set whose charts printed the time could be matched to the designer's own list of times.
-  const open = rows.results.filter((r) => !overlaps(r, contract) && r.chart_format === CT_CHART_FORMAT_BLIND);
+  const open = rows.results.filter((r) => !overlaps(r, contract) && r.chart_format === pool);
   const n = open.reduce((s, r) => s + r.n, 0),
     hits = open.reduce((s, r) => s + r.k, 0);
   const facts = n ? ctCalibrationFacts(n, hits) : null;
   return {
-    note: "설계자의 '눈'(차트 판독)을 블라인드 세트로 잰 보정 기록(합산은 결정 시각을 숨긴 세트만). 거래 아이디어의 기각이 아니라 도구 보정이다. 검정력이 낮은 작은 세트의 p가 큰 것은 '판별력 없음'이 아니라 '알 수 없음'이다. 수치는 이 연구의 개발·최종 구간과 겹치지 않는 측정에만 있다.",
+    note:
+      pool === CT_CHART_FORMAT_BLIND_TIME_FREE
+        ? "설계자의 '눈'(차트 판독)을 블라인드 세트로 잰 보정 기록(합산은 시각과 시간대를 모두 숨긴 형식 ct-chart-3-blind 세트만. 그 전 형식은 오늘 패널 길이로 시간대를 알 수 있어 합산하지 않는다). 거래 아이디어의 기각이 아니라 도구 보정이다. 검정력이 낮은 작은 세트의 p가 큰 것은 '판별력 없음'이 아니라 '알 수 없음'이다. 수치는 이 연구의 개발·최종 구간과 겹치지 않는 측정에만 있다."
+        : "설계자의 '눈'(차트 판독)을 블라인드 세트로 잰 보정 기록(합산은 결정 시각을 숨긴 세트만). 거래 아이디어의 기각이 아니라 도구 보정이다. 검정력이 낮은 작은 세트의 p가 큰 것은 '판별력 없음'이 아니라 '알 수 없음'이다. 수치는 이 연구의 개발·최종 구간과 겹치지 않는 측정에만 있다.",
     records: rows.results.slice(0, 12).map((r) => {
       const hide = overlaps(r, contract);
       return {
         run: r.run_id.slice(0, 8),
-        chartFormat: r.chart_format === CT_CHART_FORMAT_BLIND ? "시각 숨김" : "시각 표시(식별 누출 가능성 · 합산하지 않음)",
+        chartFormat: formatText(r.chart_format, pool),
         symbols: JSON.parse(r.symbols) as string[],
         n: r.n,
         verdict: r.verdict,
