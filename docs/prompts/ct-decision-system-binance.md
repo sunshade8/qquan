@@ -341,4 +341,4 @@ experiment에는 가설, 기준/변경의 불변 버전과 실제 diff, primary 
 - `docs/deployment.md`와 Sites 스킬에 따라 기존 Sites 프로젝트 `appgprj_6a91dce3c51c8191bdb6b066a1c71d07`에 배포한 성공 상태와 실제 URL. 비공개 접근 권한 유지. 로컬 runner/bridge를 포함한 실제 API 연결도 확인한다.
 
 *추가 
-- 
+- UI에 에이전트 모델 버전을 추가한다. 지금부터 v0.0 이고 앞으로 에이전트가 모델 업데이트를 진행할때마다, UI에 버전을 simple yet elegant한 디자인으로 작게, 적절한 위치에 표기한다.
