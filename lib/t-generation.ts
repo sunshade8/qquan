@@ -269,7 +269,10 @@ export async function advanceGeneration(
     const { advanceCTResearch } = await import("./t-research-store.ts");
     await advanceCTResearch(job, token, (role, schema, prompt) => ask(job!, role, schema, prompt),
       (role, request, at, label) => askTurn(job!, role, request, at, label));
+    // A step that succeeded ends any earlier failure: the old error and its "retrying" note must not outlive the retry.
     delete job.recovery;
+    job.error = null;
+    delete job.nextAction;
     await commit();
     return (await getGenerationJob(id)) ?? job;
   } catch (error) {
