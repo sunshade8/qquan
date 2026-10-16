@@ -3,8 +3,9 @@
  *
  * Three consecutive runs (bcf289ab, 450b45dd, 3ab2ad6c) had the same contract, costs, data and label
  * definition: nothing new was learned and only the cumulative test count grew. A run is refused BEFORE any
- * paid call when an earlier run of the same owner has the same signature and is running or ended without a
- * passing strategy, unless the owner gives a repeatReason (kept on the contract and shown to reviewers).
+ * paid call when an earlier run of the same owner has the same signature and is still running. A board that ended
+ * without a passing strategy is not refused: the run starts and its orchestrator picks a different direction
+ * (ctResolveBoard). An owner-given repeatReason still reruns it as-is (kept on the contract, shown to reviewers).
  */
 import { ctHash, type CTContract } from "./t-spec.ts";
 

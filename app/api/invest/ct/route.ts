@@ -28,6 +28,7 @@ import { ctPlaybookList } from "@/lib/ct-playbook";
 import { ctCalibrationList } from "@/lib/ct-calibration";
 import { ctLessonsList } from "@/lib/ct-lessons";
 import { sessionThinking } from "@/lib/ct-activity";
+import { CTBoardRepeatError } from "@/lib/ct-board";
 export const dynamic = "force-dynamic";
 const headers = (owner: string, request: Request) => ({
   "set-cookie": researchOwnerCookie(owner, request),
@@ -204,11 +205,17 @@ export async function POST(request: Request) {
       const contract = await prepareCTContract(input);
       // Same refusal a real start gives, shown before anything is paid for.
       await assertFinalWindowFree(contract);
-      // ... and the same-board refusal (unless a repeatReason was given), so the screen can explain it first.
-      const repeated = await assertBoardFree(owner, contract, typeof input.repeatReason === "string" ? input.repeatReason : undefined);
+      // Same board: not a refusal any more — the run starts and its orchestrator picks a different direction (ctResolveBoard).
+      let repeated = contract, agentBoard = null as null | { previous: unknown[] };
+      try {
+        repeated = await assertBoardFree(owner, contract, typeof input.repeatReason === "string" ? input.repeatReason : undefined);
+      } catch (error) {
+        if (!(error instanceof CTBoardRepeatError) || error.detail.previous.some((p) => p.status === "running" || p.status === "paused")) throw error;
+        agentBoard = { previous: error.detail.previous };
+      }
       const sample = await ctDataPage(contract, contract.symbols[0], contract.toMs);
       const aggregated = aggregateCT(sample, contract.minutes, contract.market, contract.toMs);
-      return Response.json({contract: repeated, sampleBars: sample.length, aggregatedBars: aggregated.length}, {headers:headers(owner, request)});
+      return Response.json({contract: repeated, agentBoard, sampleBars: sample.length, aggregatedBars: aggregated.length}, {headers:headers(owner, request)});
     }
     if (body.action === "research") {
       // The client sends the run it is showing as `id`; a new research request has none.

@@ -266,3 +266,41 @@ test("legacy stock collection preserves original pages and requests local prepar
  try {await assert.rejects(()=>research.advanceCTResearch(j,'fixture',noModel),/데이터 준비/);assert.equal(calls,0);assert.equal(JSON.parse(sqlite.prepare('SELECT payload FROM ct_data_pages WHERE run_id=? AND symbol=?').get(j.id,'SPY').payload)[0].legacy,true);}
  finally {globalThis.fetch=original;}
 });
+
+test("same board: the orchestrator, not the owner, picks a new direction; 'stop' and repeated answers end the run without asking anyone", async () => {
+  const { ctBoardSignature } = await import("../lib/ct-board.ts");
+  // An earlier run on this board ended without a passing strategy.
+  const prior = await job("done");
+  prior.ct.contract.boardSignature = await ctBoardSignature(prior.ct.contract, "");
+  sqlite.prepare("UPDATE strategy_generation_runs SET status='completed', payload=? WHERE id=?").run(JSON.stringify({ ...prior, brief: "", status: "completed", ct: { ...prior.ct, passed: false, endReason: "설계 세션 한도 · 통과 전략 없음" } }), prior.id);
+  const fresh = async () => {
+    const j = await job("data");
+    j.brief = "";
+    j.ct.contract.boardSignature = prior.ct.contract.boardSignature;
+    j.ct.boardRepeat = { previous: [{ id: prior.id, at: prior.createdAt, status: "completed", endReason: "설계 세션 한도 · 통과 전략 없음", phase: "done" }], ownerBrief: "", attempts: [] };
+    return j;
+  };
+  const ended = [];
+  const done = (reason) => ended.push(reason);
+  // 1) A new direction: becomes the brief, the board changes, and the run goes on (returns false).
+  let j = await fresh(), prompts = [];
+  const direction = "거래량이 평소의 3배 이상 터진 뒤 첫 눌림에서 직전 고점 돌파를 노리고, 손절은 변동성 기준으로 둔다.";
+  assert.equal(await research.ctResolveBoard(j, async (role, _schema, prompt) => (prompts.push([role, prompt]), { decision: "new_direction", brief: direction, rationale: "이전 실행은 돌파 계열을 측정하지 않았다" }), done), false);
+  assert.equal(prompts[0][0], "ctOrchestrator");
+  assert.match(prompts[0][1], /설계 세션 한도/, "the earlier run's end reason reaches the orchestrator");
+  assert.equal(j.brief, direction);
+  assert.notEqual(j.ct.contract.boardSignature, prior.ct.contract.boardSignature);
+  assert.equal(j.ct.boardRepeat.resolved.brief, direction);
+  assert.match(j.events.at(-1).detail, /총괄이 새 연구 방향/);
+  assert.equal(ended.length, 0);
+  // 2) 'stop': the run ends with the orchestrator's reason.
+  j = await fresh();
+  assert.equal(await research.ctResolveBoard(j, async () => ({ decision: "stop", brief: "", rationale: "교훈상 이 판의 모든 계열이 이미 측정됐다" }), done), true);
+  assert.match(ended.at(-1), /총괄 판단/);
+  // 3) Twice the same board (empty brief = the owner's): ends after two tries, the second prompt carries the first answer.
+  j = await fresh(); prompts = [];
+  assert.equal(await research.ctResolveBoard(j, async (_r, _s, prompt) => (prompts.push(prompt), { decision: "new_direction", brief: "  ", rationale: "같은 방향을 다시 본다" }), done), true);
+  assert.equal(prompts.length, 2);
+  assert.equal(j.ct.boardRepeat.attempts.length, 2);
+  assert.match(ended.at(-1), /다른 연구 방향을 만들지 못함/);
+});

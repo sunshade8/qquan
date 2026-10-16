@@ -57,6 +57,7 @@ import {
   ctRequestSchema,
   ctTestLedger,
   ctApproachSchema,
+  ctBoardDirectionSchema,
   ctSessionContext,
   ctSubmissionSchema,
   ctSubmissionSchemaStage5,
@@ -84,7 +85,7 @@ import {
   type CTReadBars,
 } from "./t-design-tools.ts";
 import { ctDataPage, ctDb, ctResearchPageStart, loadCTData } from "./t-data.ts";
-import { ctBoardSignature, CTBoardRepeatError, type CTBoardPrior } from "./t-board.ts";
+import { ctBoardSignature, ctNormalizeBrief, CTBoardRepeatError, type CTBoardPrior } from "./t-board.ts";
 import { ctBarOverview, type CTBarOverview } from "./t-bar-overview.ts";
 import { ctLabelKey, ctMeasuredBefore } from "./t-measured.ts";
 import {
@@ -299,11 +300,6 @@ export async function assertFinalWindowFree(contract: CTContract, runId?: string
     );
   }
 }
-/**
- * T never asks the owner why a board is run again: free quota makes repeats cheap, so a repeat goes through and is
- * still recorded on the contract (repeat.n, previousRuns) so reviewers count the earlier tests.
- */
-export const T_AUTO_REPEAT_REASON = "T 무료 쿼터 연구: 같은 판 반복을 자동 허용(앞선 실행의 플레이북·교훈을 읽고 다른 가설 탐색)";
 /** What the next run of a continuous chain reuses: the owner's choices, never this run's identity or repeat reason. */
 function tLoopRequest(request: z.infer<typeof ctRequestSchema>) {
   const { requestId: _id, repeatReason: _reason, loopN: _n, ...rest } = request;
@@ -323,8 +319,16 @@ export async function createCTResearch(ownerId: string, input: unknown) {
     throw new Error(`연구 모델 키 미설정: ${availability.missing.join(", ")}`);
   let contract = await prepareCTContract(input);
   await assertFinalWindowFree(contract);
-  // Same board as an earlier run: refused before anything is paid for, unless the owner gave a reason.
-  contract = await assertBoardFree(ownerId, contract, request.repeatReason ?? T_AUTO_REPEAT_REASON);
+  // Same board as an earlier run: the run starts anyway and the orchestrator decides a different direction once the
+  // playbook and lessons are loaded (ctResolveBoard). An owner-given repeatReason still runs the same board on purpose.
+  let boardRepeat: CTResearch["boardRepeat"];
+  try {
+    contract = await assertBoardFree(ownerId, contract, request.repeatReason);
+  } catch (error) {
+    // A run still going on this board is a fact, not a judgement: that one stays refused.
+    if (!(error instanceof CTBoardRepeatError) || error.detail.previous.some((p) => p.status === "running" || p.status === "paused")) throw error;
+    boardRepeat = { previous: error.detail.previous, ownerBrief: request.brief, attempts: [] };
+  }
   // Only the models CT actually calls, before any paid call or queue slot.
   await checkGenerationModels(CT_ROLES);
   const { symbols, fromMs, toMs } = contract;
@@ -361,6 +365,7 @@ export async function createCTResearch(ownerId: string, input: unknown) {
       activeMs: 0,
       backtests: 0,
       duplicateCount: 0,
+      ...(boardRepeat ? { boardRepeat } : {}),
     },
   };
   await createGenerationJob(job);
@@ -856,6 +861,60 @@ function querySummary(result: Record<string, unknown>) {
     (grid ? ` · 격자 최선 손절 ${grid.stopPct}%/목표 ${grid.targetPct}% 순평균 ${grid.netMeanPct}%` : "");
 }
 
+/**
+ * Same board as an earlier run (docs/ct.md「판 서명」). Asking the owner "why run this again?" put a research decision
+ * on a person; the orchestrator makes it instead, with what the owner never had at hand: the earlier runs' end
+ * reasons, the playbook and the lessons (both already loaded for this run). Its direction becomes the run's brief,
+ * so the board changes and is checked again; a direction that is still a repeat gets one more try with that feedback.
+ * Returns true when the run ended here.
+ */
+export async function ctResolveBoard(job: GenerationJob, ask: CTAsk, done: (reason: string) => void) {
+  const ct = job.ct!,
+    c = ct.contract,
+    board = ct.boardRepeat!;
+  while (board.attempts.length < 2) {
+    const answer = await ask(
+      "ctOrchestrator",
+      ctBoardDirectionSchema,
+      `You lead this chart-trading research. The run was started on a board (same market, symbols, period, costs, data and research direction) that earlier runs already used without a passing strategy; running the same direction again would only add tests to the same data. Decide what this run studies instead. Read the earlier runs' end reasons, the playbook (ideas tried and their verdicts) and the lessons (families marked dead, coverage of what was measured). ` +
+        `Return decision "new_direction" with brief = one concrete research direction in Korean, at most 3 sentences: which price/volume shape on this market's bars, why a trader could have an edge there, and how the exit would work. It must differ in mechanism from the ideas the playbook rejected and the families the lessons mark dead, prefer coverage that is still unmeasured, and stay inside the owner's direction if the owner gave one. Chart shape only: no stock selection, news, fundamentals or other markets. rationale = why this run can learn something the earlier runs could not. ` +
+        `Return decision "stop" (brief "") only when the lessons show nothing untested is left on this board. Earlier answers below were still the same board; give a clearly different direction. ` +
+        JSON.stringify({
+          market: c.market,
+          symbols: c.symbols,
+          period: { from: new Date(c.fromMs).toISOString().slice(0, 10), to: new Date(c.toMs).toISOString().slice(0, 10) },
+          ownerBrief: board.ownerBrief || null,
+          earlierRuns: board.previous.map((p) => ({ status: p.status, endReason: p.endReason })),
+          earlierAnswers: board.attempts.map((a) => a.brief),
+          // The same leak-checked snapshots the designer gets for this run.
+          playbook: ct.playbook ?? null,
+          lessons: ct.lessons ?? null,
+        }),
+    );
+    const at = new Date().toISOString();
+    board.attempts.push({ ...answer, at });
+    if (answer.decision === "stop") {
+      done(`총괄 판단: 같은 판에서 새로 배울 방향 없음 · ${answer.rationale}`);
+      return true;
+    }
+    const brief = ctNormalizeBrief(answer.brief);
+    if (!brief) continue;
+    const contract = { ...c, boardSignature: await ctBoardSignature(c, brief) };
+    try {
+      await assertBoardFree(job.ownerId, contract, undefined, job.id);
+    } catch (error) {
+      if (error instanceof CTBoardRepeatError) continue;
+      throw error;
+    }
+    ct.contract = contract;
+    job.brief = brief;
+    board.resolved = { brief, rationale: answer.rationale, at };
+    job.events.push({ at, stage: "plan", state: "done", role: "ctOrchestrator", detail: `같은 판 → 총괄이 새 연구 방향 결정: ${brief}` });
+    return false;
+  }
+  done("총괄: 같은 판에서 이전과 다른 연구 방향을 만들지 못함 · 통과 전략 없음 · 최종 기간 미개봉");
+  return true;
+}
 export async function advanceCTResearch(
   job: GenerationJob,
   token: string,
@@ -1004,6 +1063,7 @@ export async function advanceCTResearch(
           () => ctLessonsSnapshot(job.ownerId, c, job.id, (ct.playbook?.entries ?? []).map((e) => e.id)),
         );
       if(ctSessionPolicy(c).book){ct.scopedMemory=await ctScopedMemorySnapshot(job.ownerId,c);delete ct.measured;}
+      if (ct.boardRepeat && !ct.boardRepeat.resolved && (await ctResolveBoard(job, ask, done))) return;
       ct.phase = "sources";
       return;
     }

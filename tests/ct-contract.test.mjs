@@ -235,7 +235,7 @@ test("the board signature ignores symbol order and whitespace and changes with a
   assert.equal(await sig({ createdAt: "2030-01-01T00:00:00Z" }), base);
 });
 
-test("the same board is refused before any paid call (409, zero outbound calls); a reason lets it run and is recorded as 'N-th run of the same board'", async () => {
+test("a board still running is refused (409); a finished board is handed to the orchestrator (ct.boardRepeat), not back to the owner; a reason still runs it as 'N-th run of the same board'", async () => {
   sqlite.exec("DELETE FROM ct_exposure"); // an earlier test opened a final window on BTCUSDT
   const input = (over = {}) => ({ ...request({ symbols: ["BTCUSDT"], brief: "같은 판 실험" }), ...over });
   const first = await research.createCTResearch("owner-a", input());
@@ -256,15 +256,15 @@ test("the same board is refused before any paid call (409, zero outbound calls);
   });
   assert.equal(modelChecks(), checks, "the refusal came before the model-access check");
   assert.equal(outbound, 0, "no outbound call");
-  // 2) Finished without a passing strategy: refused, with the reason it ended.
+  // 2) Finished without a passing strategy: the run starts, and the orchestrator (not the owner) decides a new direction
+  //    once the playbook and lessons are loaded (ctResolveBoard). Nothing is asked of the owner.
   sqlite.prepare("UPDATE strategy_generation_runs SET status='completed', payload=json_set(payload,'$.ct.phase','done','$.ct.endReason','설계자 판단: 비용 후 우위 미발견 · 통과 전략 없음','$.ct.passed',json('false')) WHERE id=?").run(first.id);
-  await assert.rejects(() => research.createCTResearch("owner-a", input()), (error) => {
-    assert.match(error.message, /통과 전략 없음/);
-    assert.match(error.message, /이미 끝났습니다/);
-    return true;
-  });
-  assert.equal(modelChecks(), checks);
+  const handed = await research.createCTResearch("owner-a", input());
+  assert.equal(handed.ct.contract.repeat, undefined, "no owner reason was needed");
+  assert.deepEqual([handed.ct.boardRepeat.previous[0].id, handed.ct.boardRepeat.ownerBrief, handed.ct.boardRepeat.attempts.length], [first.id, "같은 판 실험", 0]);
+  assert.match(handed.ct.boardRepeat.previous[0].endReason, /통과 전략 없음/);
   assert.equal(outbound, 0);
+  sqlite.prepare("UPDATE strategy_generation_runs SET status='cancelled' WHERE id=?").run(handed.id);
   // 3) A short reason is not a reason; another owner, another brief or another period is a new board.
   await assert.rejects(() => research.createCTResearch("owner-a", input({ repeatReason: "다시" })), /10/);
   assert.ok(await research.createCTResearch("owner-b", input()), "another owner");

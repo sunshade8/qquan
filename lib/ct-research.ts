@@ -12,6 +12,7 @@ import type { CTCostHurdle } from "./ct-design-tools.ts";
 import type { CTBarOverview } from "./ct-bar-overview.ts";
 import { CT_FAMILIES } from "./ct-families.ts";
 import type { CTLessonsRecorded, CTLessonsSnapshot } from "./ct-lessons.ts";
+import type { CTBoardPrior } from "./ct-board.ts";
 export const ctRequestSchema = z
   .object({
     requestId: z.string().uuid(),
@@ -35,6 +36,17 @@ export const ctSearchSchema = z
     queries: z.array(z.string().max(300)).min(1).max(3),
     urls: z.array(z.string()).min(1).max(6),
     rationale: z.string().max(1800),
+  })
+  .strict();
+/**
+ * The orchestrator's answer when a run lands on a board earlier runs already used (docs/ct.md「판 서명」): a research
+ * direction those runs did not take, or the judgement that the board has nothing untested left.
+ */
+export const ctBoardDirectionSchema = z
+  .object({
+    decision: z.enum(["new_direction", "stop"]),
+    brief: z.string().max(1500),
+    rationale: z.string().min(10).max(1500),
   })
   .strict();
 export const ctApproachSchema = z
@@ -412,6 +424,16 @@ export type CTResearch = {
   lessonsRecorded?: CTLessonsRecorded;
   /** Set when research continued without web sources (search optional). */
   sourceNote?: string;
+  /**
+   * Same board as an earlier run: the orchestrator, not the owner, decides the direction this run takes instead
+   * (ctResolveBoard). ownerBrief is what the owner asked for; resolved.brief replaces job.brief and the signature.
+   */
+  boardRepeat?: {
+    previous: CTBoardPrior[];
+    ownerBrief: string;
+    attempts: Array<{ decision: "new_direction" | "stop"; brief: string; rationale: string; at: string }>;
+    resolved?: { brief: string; rationale: string; at: string };
+  };
   tools: CTToolTrace[];
   memory: Array<{
     id: string;

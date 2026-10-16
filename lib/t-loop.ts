@@ -8,7 +8,8 @@ import { researchFailure } from "./research-recovery.ts";
  * T continuous research (docs/t.md「연속 연구」). T runs on the free router's quota, so nothing in the project
  * limits it: when a chained run ends, the runner starts the next one with the same request, and an interrupted
  * run (rate limit, router down) is resumed after a rest. The chain stops only when the owner stops it
- * (연속 연구 중지, 취소, 일시정지). Each new run still reads the playbook and lessons the earlier runs wrote.
+ * (연속 연구 중지, 취소, 일시정지). The next run is the same board, so its orchestrator reads the playbook and lessons the
+ * earlier runs wrote and picks a direction they did not take (ctResolveBoard) — nobody has to give a repeat reason.
  *
  * The same final window cannot be opened twice (t_exposure), so when the chain's symbols are spent the next
  * run moves to another symbol of the same market.
@@ -106,7 +107,6 @@ export async function continueTLoop(): Promise<string | null> {
         requestId: crypto.randomUUID(),
         continuous: true,
         loopN: n,
-        repeatReason: `T 연속 연구 ${n}번째 실행: 이전 연구 ${job.id.slice(0, 8)} 종료 후 무료 쿼터로 자동 재시작(같은 설정, 앞선 실행의 플레이북·교훈을 읽고 다른 가설 탐색)`,
       });
       await writeLoop(job.id, { note: `다음 연구 ${next.id.slice(0, 8)} 시작 (${symbols.join(", ")})` });
       return `T 연속 연구 ${n}번째 시작 ${next.id.slice(0, 8)} · ${symbols.join(", ")}`;
