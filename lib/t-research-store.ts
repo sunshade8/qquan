@@ -299,6 +299,11 @@ export async function assertFinalWindowFree(contract: CTContract, runId?: string
     );
   }
 }
+/**
+ * T never asks the owner why a board is run again: free quota makes repeats cheap, so a repeat goes through and is
+ * still recorded on the contract (repeat.n, previousRuns) so reviewers count the earlier tests.
+ */
+export const T_AUTO_REPEAT_REASON = "T 무료 쿼터 연구: 같은 판 반복을 자동 허용(앞선 실행의 플레이북·교훈을 읽고 다른 가설 탐색)";
 /** What the next run of a continuous chain reuses: the owner's choices, never this run's identity or repeat reason. */
 function tLoopRequest(request: z.infer<typeof ctRequestSchema>) {
   const { requestId: _id, repeatReason: _reason, loopN: _n, ...rest } = request;
@@ -319,7 +324,7 @@ export async function createCTResearch(ownerId: string, input: unknown) {
   let contract = await prepareCTContract(input);
   await assertFinalWindowFree(contract);
   // Same board as an earlier run: refused before anything is paid for, unless the owner gave a reason.
-  contract = await assertBoardFree(ownerId, contract, request.repeatReason);
+  contract = await assertBoardFree(ownerId, contract, request.repeatReason ?? T_AUTO_REPEAT_REASON);
   // Only the models CT actually calls, before any paid call or queue slot.
   await checkGenerationModels(CT_ROLES);
   const { symbols, fromMs, toMs } = contract;

@@ -19,6 +19,7 @@ import {
   ctPackages,
   ensureCTSchema,
   registerCT,
+  T_AUTO_REPEAT_REASON,
 } from "@/lib/t-research-store";
 import { ctDb, loadCTData, ctDataPage, aggregateCT } from "@/lib/t-data";
 import { generationAvailability, loadFreeCatalog, freeBaseUrl } from "@/lib/t-generation-llm";
@@ -224,7 +225,7 @@ export async function POST(request: Request) {
       // Same refusal a real start gives, shown before anything is paid for.
       await assertFinalWindowFree(contract);
       // ... and the same-board refusal (unless a repeatReason was given), so the screen can explain it first.
-      const repeated = await assertBoardFree(owner, contract, typeof input.repeatReason === "string" ? input.repeatReason : undefined);
+      const repeated = await assertBoardFree(owner, contract, typeof input.repeatReason === "string" ? input.repeatReason : T_AUTO_REPEAT_REASON);
       const sample = await ctDataPage(contract, contract.symbols[0], contract.toMs);
       const aggregated = aggregateCT(sample, contract.minutes, contract.market, contract.toMs);
       return Response.json({contract: repeated, sampleBars: sample.length, aggregatedBars: aggregated.length}, {headers:headers(owner, request)});
