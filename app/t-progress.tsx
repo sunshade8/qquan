@@ -228,6 +228,29 @@ type StatusProps = {
   busy: boolean;
   onAct: (action: "pause" | "resume" | "cancel") => void;
 };
+/** Why the run is not advancing right now: a failed call waiting to be retried, or a retry in flight. Always shown, never hidden. */
+function RetryNotice({ job }: { job: CTJob }) {
+  const now = useNow(1000, job.status === "running" && Boolean(job.recovery));
+  const recovery = job.recovery;
+  if (job.status !== "running" || !recovery) return null;
+  const calls = job.calls ?? [];
+  const lastOk = calls.map((c) => c.status).lastIndexOf("completed");
+  const failed = calls.slice(lastOk + 1).filter((c) => c.status === "failed");
+  const models = [...new Set(failed.map((c) => c.model))];
+  const waitMs = recovery.retryAt ? Date.parse(recovery.retryAt) - now : 0;
+  const detail = recovery.message.replace(/^무료 모델 호출 오류 \(\d+\): \d+ /, "").replace(/\s+/g, " ");
+  const reason = /rate_limit|한도|429/.test(recovery.message) ? "무료 한도 소진 — 풀릴 때까지 기다립니다" : /upstream|502|503|overloaded|high demand/.test(recovery.message) ? "제공자(Google 등) 쪽 과부하/장애" : "모델 호출 실패";
+  return (
+    <div className="ui-alert" data-tone="warn" role="status" aria-live="polite">
+      <div>
+        <strong>{waitMs > 0 ? `재시도 대기 ${Math.ceil(waitMs / 1000)}초` : "재시도 중…"} · {recovery.failures}번째 실패</strong>
+        <p>{reason}. 같은 단계를 자동으로 다시 호출하며 기존 후보와 검증 기록은 유지됩니다.{models.length ? ` 실패한 모델: ${models.join(", ")}.` : ""}</p>
+        <p className="ui-sub">{detail.slice(0, 220)}</p>
+      </div>
+    </div>
+  );
+}
+
 export function LiveStatusBar({ job, runnerOnline, busy, onAct }: StatusProps) {
   const { ct } = job;
   const live = isLive(job.status);
@@ -277,6 +300,7 @@ export function LiveStatusBar({ job, runnerOnline, busy, onAct }: StatusProps) {
           ) : null}
         </div>
       </div>
+      <RetryNotice job={job} />
       {live ? <div className="ct-live-rail" role="progressbar" aria-label="연구 단계 진행" aria-valuemin={1} aria-valuemax={total} aria-valuenow={stepIndex} aria-valuetext={announce}>
         <i style={{ "--v": stepIndex / total } as React.CSSProperties} data-tone={tone === "idle" ? undefined : tone} />
       </div> : null}
