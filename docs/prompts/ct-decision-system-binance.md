@@ -340,4 +340,5 @@ experiment에는 가설, 기준/변경의 불변 버전과 실제 diff, primary 
 - 검증된 변경만 `main`에 commit/push한 commit SHA.
 - `docs/deployment.md`와 Sites 스킬에 따라 기존 Sites 프로젝트 `appgprj_6a91dce3c51c8191bdb6b066a1c71d07`에 배포한 성공 상태와 실제 URL. 비공개 접근 권한 유지. 로컬 runner/bridge를 포함한 실제 API 연결도 확인한다.
 
-현재 사이트는 `https://qquant-research.stevenpark119.chatgpt.site`다. push/build 성공만으로 배포 성공을 보고하지 않는다. `.dev.vars`와 비밀값은 commit/소스 업로드하지 않는다. Vercel 작업은 기본 완료 범위가 아니다.
+*추가 
+- 
