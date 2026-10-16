@@ -359,6 +359,8 @@ export type CTResearch = {
   queries?: CTQueryRecord[];
   /** Training times the server offered as read_bars anchors. */
   anchors?: number[];
+  /** Time-free blind sets (traderTools 6): times opened with read_bars; a blind set refuses them (their bars showed the answer). */
+  barsRead?: number[];
   /**
    * Multiple-testing ledger: hypothesis signature → tool calls, whole run. Stage 3 adds one signature
    * per contrast feature × control quintile, per examined diagnosis stratum, per label definition and per
@@ -566,7 +568,7 @@ How the bar changes the rule's arithmetic: bars are built from complete minutes 
 export const CT_DESIGNER_SYSTEM_STAGE6 = [SYS3_INTRO, SYS_SUCCESS, SYS_COSTS, SYS_EXIT_STRUCTURE, SYS5_WORKFLOW, SYS3_GUARD, SYS5_LESSONS, SYS6_BARS, SYS_LANGUAGE, SYS_LEVELS, SYS_EXITS, SYS5_TOOLS, SYS_DATA].join("\n\n");
 
 /* ------------------------------------------------------------------------------------------
- * Bar overview (traderTools = 5, 2026-10-16): the first free-bar run (7a4354f4) used one bar only and twice declined to
+ * Bar overview (traderTools = 5, 2026-10-16; frozen when time-free blind sets arrived as 6): the first free-bar run (7a4354f4) used one bar only and twice declined to
  * look at another "because it would be costly" (every label/contrast is a ledger test). The stable block now holds the
  * cost hurdle and label base rate on every allowed bar (lib/ct-bar-overview.ts), and the brief says it is free.
  * ------------------------------------------------------------------------------------------ */
@@ -575,11 +577,21 @@ const SYS7_BARS = SYS6_BARS.replace(
   "The cost_hurdle table in the context is measured on one-minute bars (its horizons are minutes).",
   "The cost_hurdle table in the context is measured on one-minute bars (its horizons are minutes); barOverview covers every bar.",
 );
-export const CT_DESIGNER_SYSTEM = [SYS3_INTRO, SYS_SUCCESS, SYS_COSTS, SYS_EXIT_STRUCTURE, SYS5_WORKFLOW, SYS3_GUARD, SYS5_LESSONS, SYS7_BARS, SYS7_OVERVIEW, SYS_LANGUAGE, SYS_LEVELS, SYS_EXITS, SYS5_TOOLS, SYS_DATA].join("\n\n");
-/** The brief a contract runs under: bar-overview / free-bar / stage 5 / 4 / 3 trader briefs by tools version, the stage-2 brief otherwise (all but the newest frozen byte for byte, so cached prefixes of older runs survive). */
+/** FROZEN: traderTools = 5 contracts keep these bytes (SHA-256 pinned in tests/ct-blind-time-free.test.mjs). */
+export const CT_DESIGNER_SYSTEM_OVERVIEW = [SYS3_INTRO, SYS_SUCCESS, SYS_COSTS, SYS_EXIT_STRUCTURE, SYS5_WORKFLOW, SYS3_GUARD, SYS5_LESSONS, SYS7_BARS, SYS7_OVERVIEW, SYS_LANGUAGE, SYS_LEVELS, SYS_EXITS, SYS5_TOOLS, SYS_DATA].join("\n\n");
+/* ------------------------------------------------------------------------------------------
+ * Time-free blind sets (traderTools = 6, 2026-10-16): run 7a4354f4 matched its own 15-minute event and control times to the
+ * length of the blind chart's "today" panel. The brief now says what a blind chart shows and why, in place of the stage-4 sentence.
+ * ------------------------------------------------------------------------------------------ */
+const SYS4_BLIND = `A blind set may only use times you have not looked at in an ordinary view_charts call (the server refuses a chart whose answer you have seen), and its charts show no decision time or clock (relative minutes only), because you chose the times yourself and a printed clock would let you match a chart to your own list.`;
+const SYS7_BLIND = `A blind set may only use times you have not looked at in an ordinary view_charts call or opened with read_bars (the server refuses a chart whose answer you have seen), and until it is graded its times cannot be opened either way. A blind chart carries no time of day: every panel is the last bars ending at the decision (120 one-hour bars, 72 five-minute bars, 90 one-minute bars with volume), with no clock, no day boundary, a rolling 6-hour VWAP and the last 24 hours' high, low and earlier close instead of the day's VWAP, opening range and previous day; and each control shares its event's bar slot of the day. You chose the times yourself, so anything in the picture that told the time of day would let you match a chart to your own list instead of reading it: judge the shape, not the clock.`;
+if (!SYS5_WORKFLOW.includes(SYS4_BLIND)) throw new Error("stage-4 blind sentence moved");
+const SYS7_WORKFLOW = SYS5_WORKFLOW.replace(SYS4_BLIND, SYS7_BLIND);
+export const CT_DESIGNER_SYSTEM = [SYS3_INTRO, SYS_SUCCESS, SYS_COSTS, SYS_EXIT_STRUCTURE, SYS7_WORKFLOW, SYS3_GUARD, SYS5_LESSONS, SYS7_BARS, SYS7_OVERVIEW, SYS_LANGUAGE, SYS_LEVELS, SYS_EXITS, SYS5_TOOLS, SYS_DATA].join("\n\n");
+/** The brief a contract runs under: time-free blind / bar-overview / free-bar / stage 5 / 4 / 3 trader briefs by tools version, the stage-2 brief otherwise (all but the newest frozen byte for byte, so cached prefixes of older runs survive). */
 export const ctDesignerSystem = (contract: Pick<CTContract, "policy">) => {
   const v = ctSessionPolicy(contract).toolsVersion;
-  return v >= 5 ? CT_DESIGNER_SYSTEM : v === 4 ? CT_DESIGNER_SYSTEM_STAGE6 : v === 3 ? CT_DESIGNER_SYSTEM_STAGE5 : v === 2 ? CT_DESIGNER_SYSTEM_STAGE4 : v === 1 ? CT_DESIGNER_SYSTEM_STAGE3 : CT_DESIGNER_SYSTEM_STAGE2;
+  return v >= 6 ? CT_DESIGNER_SYSTEM : v === 5 ? CT_DESIGNER_SYSTEM_OVERVIEW : v === 4 ? CT_DESIGNER_SYSTEM_STAGE6 : v === 3 ? CT_DESIGNER_SYSTEM_STAGE5 : v === 2 ? CT_DESIGNER_SYSTEM_STAGE4 : v === 1 ? CT_DESIGNER_SYSTEM_STAGE3 : CT_DESIGNER_SYSTEM_STAGE2;
 };
 
 /** The contract as the designer needs it: boundaries, costs and gates. Stable across sessions. */

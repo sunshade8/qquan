@@ -128,7 +128,7 @@ test("traderTools 4 keeps its brief, tools and stable block byte for byte; 5 add
   assert.equal(sha(CT_DESIGNER_SYSTEM_STAGE6), "f3102e453b4677fdeb3192ead49c9b218f5cef280acbf709d7ad6a81b6e1e440");
   assert.equal(ctDesignerSystem(v4), CT_DESIGNER_SYSTEM_STAGE6);
   assert.equal(sha(research.ctSessionTools(v4)), "a9c1ed2be37725b7070388389e31cc9d6117a1820f1227e116a90007604b3685");
-  assert.equal(research.ctSessionTools({ policy: CT_POLICY }), research.ctSessionTools(v4), "the bar overview needs no new tool definition");
+  assert.equal(research.ctSessionTools({ policy: { ...CT_POLICY, traderTools: 5 } }), research.ctSessionTools(v4), "the bar overview needs no new tool definition");
   const overview = ctBarOverview(data, contract);
   for (const given of [undefined, overview]) {
     const old = ctSessionContext(fixture(v4.policy), "연구 방향", { note: "h", rows: [] }, session, given);

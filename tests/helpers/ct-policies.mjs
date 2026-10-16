@@ -6,3 +6,7 @@ export const STAGE3_POLICY = { ...beforeStage5, traderTools: 1, sessionMaxCharts
 export const STAGE4_POLICY = { ...beforeStage5, traderTools: 2 };
 // Stage 5 = today's fields with tool version 3 (free bars came after it as tool version 4).
 export const STAGE5_POLICY = { ...CT_POLICY, traderTools: 3 };
+// Free bars = today's fields with tool version 4 (the bar overview came after it as tool version 5).
+export const FREEBARS_POLICY = { ...CT_POLICY, traderTools: 4 };
+// Bar overview = today's fields with tool version 5 (time-free blind sets came after it as tool version 6).
+export const OVERVIEW_POLICY = { ...CT_POLICY, traderTools: 5 };

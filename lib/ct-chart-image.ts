@@ -161,6 +161,106 @@ export function ctChartData(rowsAll: ChartBar[], at: number, contract: Pick<CTCo
   };
 }
 
+/**
+ * Time-free blind charts (format ct-chart-3-blind, traderTools 6): every panel is the last N bars ENDING AT THE DECISION, so
+ * nothing in the picture depends on the clock. Run 7a4354f4 (2026-10-16) showed why the stage-4 blind chart was not enough:
+ * the designer picks the blind times itself and knows which are events, and the "today so far" panel (its length, the VWAP
+ * reset, the opening-range box, the day separators of the hourly panel) told it how far into the day each chart was — with
+ * 15-minute labels, a control from the same hour still sat 15–45 minutes away from its event.
+ *
+ *   left    the last 120 one-hour bars counted back from the decision (five days, no day separators)
+ *   middle  the last 72 five-minute bars counted back from the decision (six hours, crossing midnight freely)
+ *   right   the last 90 base bars with volume
+ * Bars are built backwards from the decision (a 1-hour bar ends at the decision, the one before it an hour earlier, ...), only
+ * from complete contiguous base bars; a group with a missing bar is not drawn. Bars are placed by their order, not by the clock
+ * (a session gap or a missing bar closes up), so not even a gap tells where the day stood. Day-anchored overlays are replaced by
+ * rolling ones that mean the same at every hour: VWAP since the middle panel's first bar (six hours), and the high / low of the
+ * last 24 hours with the close 24 hours before the decision instead of the previous day's high / low / close. No opening range.
+ */
+const FREE_H1 = 120,
+  FREE_MID = 72,
+  FREE_BASE = 90;
+function backBars(rows: ChartBar[], last: number, groupMin: number, count: number, baseMin: number): ChartBar[] {
+  const per = groupMin / baseMin;
+  const at = rows[last].endMs;
+  const out: ChartBar[] = [];
+  let j = last;
+  for (let g = 0; g < count; g++) {
+    const end = at - g * groupMin * MINUTE;
+    while (j >= 0 && rows[j].endMs > end) j--;
+    if (j < 0) break;
+    if (rows[j].endMs !== end || j - per + 1 < 0) continue;
+    const bars = rows.slice(j - per + 1, j + 1);
+    if (bars[0].startMs !== end - groupMin * MINUTE || bars.some((b, n) => n > 0 && b.startMs !== bars[n - 1].endMs)) continue;
+    out.push({
+      startMs: end - groupMin * MINUTE,
+      endMs: end,
+      open: bars[0].open,
+      close: bars[per - 1].close,
+      high: Math.max(...bars.map((b) => b.high)),
+      low: Math.min(...bars.map((b) => b.low)),
+      volume: bars.reduce((s, b) => s + b.volume, 0),
+    });
+  }
+  return out.reverse();
+}
+/** Bars placed by order: bar k of n occupies the k-th slot of width `slotMs` ending at `at` (gaps close up). */
+const byOrder = (bars: ChartBar[], at: number, slotMs: number) => bars.map((b, k) => ({ ...b, startMs: at - (bars.length - k) * slotMs, endMs: at - (bars.length - k - 1) * slotMs }));
+
+/** The time-free blind picture's data; the same shape as `ctChartData` with rolling levels in place of the day's. */
+export function ctChartDataTimeFree(rowsAll: ChartBar[], at: number, contract: Pick<CTContract, "market" | "timezone" | "trainingToMs" | "fromMs">, symbol: string): CTChartData {
+  if (at > contract.trainingToMs) throw new Error("차트 기준 시각이 학습 구간을 넘었습니다");
+  const i = indexOfEnd(rowsAll, at);
+  if (i < 0) throw new Error("기준 시각에 마감하는 학습 봉이 없습니다");
+  // Only bars closed by the anchor exist from here on (120 anchor-aligned stock hours can take 24 sessions of 390 minutes).
+  const rows = rowsAll.slice(Math.max(0, i + 1 - 12000), i + 1);
+  const last = rows.length - 1;
+  const anchorClose = rows[last].close;
+  const baseMin = (rows[last].endMs - rows[last].startMs) / MINUTE,
+    midMin = Math.max(5, baseMin);
+  const h1Real = 60 % baseMin === 0 ? backBars(rows, last, 60, FREE_H1, baseMin) : [];
+  const m5Real = midMin % baseMin === 0 ? backBars(rows, last, midMin, FREE_MID, baseMin) : [];
+  const m1Real = rows.slice(Math.max(0, last - (FREE_BASE - 1)));
+  // Rolling VWAP from the middle window's start: typical price × volume over the base bars inside it.
+  const vwapFrom = at - FREE_MID * midMin * MINUTE;
+  const inWindow = rows.filter((b) => b.startMs >= vwapFrom);
+  let pv = 0,
+    vol = 0;
+  const vwapByEnd = new Map<number, number>();
+  for (const b of inWindow) {
+    pv += ((b.high + b.low + b.close) / 3) * b.volume;
+    vol += b.volume;
+    vwapByEnd.set(b.endMs, vol > 0 ? pv / vol : b.close);
+  }
+  const vwap5 = m5Real.map((b) => vwapByEnd.get(b.endMs) ?? NaN),
+    vwap1 = m1Real.map((b) => vwapByEnd.get(b.endMs) ?? NaN);
+  // Rolling 24 hours: the high and low of the base bars that closed within it, and the close of the bar that closed 24 hours ago.
+  const day = rows.filter((b) => b.startMs >= at - DAY);
+  const ago = indexOfEnd(rows, at - DAY);
+  const levels = day.length ? { high: Math.max(...day.map((b) => b.high)), low: Math.min(...day.map((b) => b.low)), close: ago >= 0 ? rows[ago].close : NaN } : null;
+  const h1 = byOrder(h1Real, at, HOUR),
+    m5 = byOrder(m5Real, at, midMin * MINUTE),
+    m1 = byOrder(m1Real, at, baseMin * MINUTE);
+  const maxEndMs = Math.max(...[...h1Real, ...m5Real, ...m1Real].map((b) => b.endMs));
+  return {
+    symbol,
+    at,
+    anchorClose,
+    dayStart: at - FREE_MID * midMin * MINUTE,
+    dayEnd: at,
+    maxEndMs,
+    ...(baseMin > 1 ? { barMinutes: baseMin } : {}),
+    h1,
+    m5,
+    m1,
+    vwap5,
+    vwap1,
+    openingRange: null,
+    prevDay: levels,
+    prevDayH1: levels ? { high: levels.high, low: levels.low } : null,
+  };
+}
+
 /* ----------------------------------------------------------------- text */
 
 type Font = { unitsPerEm: number; layout: (text: string) => { glyphs: Array<{ path: { toSVG: () => string } }>; positions: Array<{ xAdvance: number; xOffset: number }> } };
@@ -466,6 +566,66 @@ export function ctChartSvg(data: CTChartData, font: Font, number: number, contra
   return { svg, labels: p.labels };
 }
 
+/** Ticks at fixed offsets before the decision for the time-free picture: minutes when the step is under an hour, hours otherwise. */
+function freeTicks(from: number, to: number) {
+  const span = to - from;
+  const step = [15, 30, 60, 120, 240, 360, 720, 1440].map((m) => m * MINUTE).find((st) => span / st <= 6) ?? DAY;
+  const out: Array<{ ms: number; label: string }> = [];
+  for (let t = to - step; t >= from; t -= step) {
+    const m = Math.round((to - t) / MINUTE);
+    out.push({ ms: t, label: step < HOUR ? `-${m}m` : `-${Math.round(m / 60)}h` });
+  }
+  return out.reverse();
+}
+
+/** The time-free blind picture (ct-chart-3-blind): no clock, no day boundary, every panel ends at the decision. */
+export function ctChartSvgTimeFree(data: CTChartData, font: Font, number: number) {
+  const p = painter(font);
+  const base = data.anchorClose;
+  const top = 62,
+    plotH = 360;
+  const pw = 400,
+    gap = 62;
+  const panels = [0, 1, 2].map((k) => ({ x: 56 + k * (pw + gap), y: top, w: pw, h: plotH }));
+  const midMin = Math.max(5, data.barMinutes ?? 1),
+    baseMin = data.barMinutes ?? 1;
+  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${CT_CHART_WIDTH}" height="${CT_CHART_HEIGHT}" viewBox="0 0 ${CT_CHART_WIDTH} ${CT_CHART_HEIGHT}"><rect width="100%" height="100%" fill="${C.bg}"/>`;
+  svg += p.text(`#${number}`, 14, 26, 20, C.text);
+  svg += p.text(`${data.symbol}   blind set: every panel ends at the decision, no clock, no day boundary   (axes: % vs the decision bar's close)`, 70, 26, 13, C.axis);
+  const lg = [`VWAP 6h`, `H24 / L24 / C24 = last 24h high / low, close 24h ago`];
+  svg += `<line x1="${CT_CHART_WIDTH - 420}" x2="${CT_CHART_WIDTH - 400}" y1="22" y2="22" stroke="${C.vwap}" stroke-width="2"/>` + p.text(lg[0], CT_CHART_WIDTH - 395, 26, 11, C.axis);
+  svg += p.text(lg[1], CT_CHART_WIDTH - 330, 26, 9.5, C.level);
+  const at = data.at;
+  const h1From = at - FREE_H1 * HOUR,
+    midFrom = at - FREE_MID * midMin * MINUTE,
+    baseFrom = at - FREE_BASE * baseMin * MINUTE;
+  const lvl = data.prevDay;
+  const lines24: Line[] = lvl
+    ? [
+        { price: lvl.high, color: C.level, dash: "5 3", label: "H24" },
+        { price: lvl.low, color: C.level, dash: "5 3", label: "L24" },
+      ]
+    : [];
+  svg += candlePanel(p, panels[0], `1h · last ${FREE_H1} bars`, data.h1, base, h1From, at, lines24, {}, freeTicks(h1From, at), null);
+  const linesMid: Line[] = lvl && Number.isFinite(lvl.close) ? [...lines24, { price: lvl.close, color: C.level, dash: "1 3", label: "C24" }] : lines24;
+  svg += candlePanel(p, panels[1], `${midMin}m · last ${FREE_MID} bars`, data.m5, base, midFrom, at, linesMid, { vwap: data.vwap5 }, freeTicks(midFrom, at), null);
+  svg += candlePanel(
+    p,
+    { ...panels[2], h: 290 },
+    `${baseMin}m · last ${FREE_BASE} bars`,
+    data.m1,
+    base,
+    baseFrom,
+    at,
+    [],
+    { vwap: data.vwap1 },
+    freeTicks(baseFrom, at),
+    { x: panels[2].x, y: panels[2].y + 298, w: pw, h: 62 },
+  );
+  svg += `</svg>`;
+  return { svg, labels: p.labels };
+}
+
 /* ------------------------------------------------------------------ png */
 
 let wasmReady: Promise<typeof import("@resvg/resvg-wasm")> | null = null;
@@ -488,10 +648,11 @@ async function resvg() {
 
 export type CTChartImage = { png: Uint8Array; width: number; height: number; labels: string[]; data: CTChartData };
 /** The picture for one anchor: training bars in, PNG bytes out. */
-export async function ctRenderChart(rows: ChartBar[], at: number, contract: Pick<CTContract, "market" | "timezone" | "trainingToMs" | "fromMs">, symbol: string, number: number, options: { blind?: boolean } = {}): Promise<CTChartImage> {
-  const data = ctChartData(rows, at, contract, symbol);
+/** `timeFree: true` draws the time-free blind picture (ct-chart-3-blind, traderTools 6) instead of the day-anchored one. */
+export async function ctRenderChart(rows: ChartBar[], at: number, contract: Pick<CTContract, "market" | "timezone" | "trainingToMs" | "fromMs">, symbol: string, number: number, options: { blind?: boolean; timeFree?: boolean } = {}): Promise<CTChartImage> {
+  const data = options.timeFree ? ctChartDataTimeFree(rows, at, contract, symbol) : ctChartData(rows, at, contract, symbol);
   const font = await loadFont();
-  const { svg, labels } = ctChartSvg(data, font, number, contract, options);
+  const { svg, labels } = options.timeFree ? ctChartSvgTimeFree(data, font, number) : ctChartSvg(data, font, number, contract, options);
   const { Resvg } = await resvg();
   const image = new Resvg(svg, { fitTo: { mode: "original" }, background: "#ffffff" }).render();
   return { png: image.asPng(), width: image.width, height: image.height, labels, data };

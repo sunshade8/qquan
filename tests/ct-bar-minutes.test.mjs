@@ -231,14 +231,14 @@ test("designer brief and tools: free bars get their own; stage 5 stays as it was
   assert.match(research.CT_DESIGNER_SYSTEM_STAGE6, /never sweep them/);
   assert.equal(research.CT_DESIGNER_SYSTEM_STAGE6.startsWith(research.CT_DESIGNER_SYSTEM_STAGE5.slice(0, 2000)), true);
   assert.equal(store.ctSessionTools(five), store.CT_SESSION_TOOLS_STAGE5);
-  assert.equal(store.ctSessionTools(free), store.CT_SESSION_TOOLS);
+  assert.equal(store.ctSessionTools(free), store.CT_SESSION_TOOLS_FREEBARS);
   const tool = (set, name) => set.find((t) => t.name === name);
   for (const name of ["label_moves", "query_conditional_returns", "read_bars"]) {
-    assert.ok(tool(store.CT_SESSION_TOOLS, name).input_schema.properties.barMinutes, name);
+    assert.ok(tool(store.CT_SESSION_TOOLS_FREEBARS, name).input_schema.properties.barMinutes, name);
     assert.equal(tool(store.CT_SESSION_TOOLS_STAGE5, name).input_schema.properties.barMinutes, undefined, name);
   }
-  assert.equal(tool(store.CT_SESSION_TOOLS, "view_charts"), tool(store.CT_SESSION_TOOLS_STAGE5, "view_charts"), "charts are the minute-data picture");
-  assert.deepEqual(store.CT_SESSION_TOOLS.map((t) => t.name), store.CT_SESSION_TOOLS_STAGE5.map((t) => t.name));
+  assert.equal(tool(store.CT_SESSION_TOOLS_FREEBARS, "view_charts"), tool(store.CT_SESSION_TOOLS_STAGE5, "view_charts"), "charts are the minute-data picture");
+  assert.deepEqual(store.CT_SESSION_TOOLS_FREEBARS.map((t) => t.name), store.CT_SESSION_TOOLS_STAGE5.map((t) => t.name));
 });
 
 test("charts on 15-minute bars draw every panel; one-minute chart data is unchanged", () => {

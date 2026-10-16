@@ -279,8 +279,12 @@ export const CT_POLICY = Object.freeze({
    *     (spec.minutes 1/5/15/60, stocks 1/5/15) and each measurement tool takes barMinutes; the ledger counts the bar.
    * 5 = bar overview (2026-10-16): the stable block also holds the cost hurdle and the label base rate on every allowed bar
    *     (lib/ct-bar-overview.ts, free: not a test), and the brief says so. Tools are the free-bar tools, byte for byte.
+   * 6 = time-free blind sets (2026-10-16): every panel of a blind chart is the last N bars ending at the decision (no clock,
+   *     no day boundary, no session VWAP or opening range: format ct-chart-3-blind), label_moves matches controls to the
+   *     event's bar slot of the day, and a time inside an ungraded blind set cannot be opened any other way. Run 7a4354f4
+   *     matched its own 15-minute event/control times to the length of the "today" panel (docs/ct.md「시간대 없는 블라인드」).
    */
-  traderTools: 5,
+  traderTools: 6,
   /** Stage 5: money withheld from the designer and the reviewers at the start of a run so the lesson distillation can always run (docs/ct.md「연구 교훈」). */
   lessonReserveUsd: 0.05,
   /** Stage 5: the distillation prompt may not exceed this many characters, and its answer this many output tokens. */
@@ -294,8 +298,8 @@ export const CT_POLICY = Object.freeze({
  */
 export function ctPolicyForNewContract(): CTContract["policy"] {
   const override = typeof process !== "undefined" ? process.env?.QQUAN_CT_POLICY_VERSION : undefined;
-  // Stage 5 exactly as frozen before free bars: every field of today's policy, tool version 3. 4 = free bars before the bar overview.
-  if (override === "3" || override === "4") return { ...CT_POLICY, traderTools: Number(override) };
+  // 5 = bar overview, 4 = free bars, 3 = stage 5: each exactly as frozen before the next version: every field of today's policy, only the tool version differs.
+  if (override === "3" || override === "4" || override === "5") return { ...CT_POLICY, traderTools: Number(override) };
   if (override === "1" || override === "2") {
     // An earlier-stage contract carries none of the stage-5 fields, exactly as it would have been frozen then.
     const { lessonReserveUsd: _a, lessonMaxInputChars: _b, lessonMaxOutputTokens: _c, ...earlier } = CT_POLICY;
@@ -335,12 +339,14 @@ export function ctSessionPolicy(contract: Pick<CTContract, "policy">) {
     maxBlindSets: p.sessionMaxBlindSets ?? 0,
     /** Stage 3+: the trader tools, the playbook and the self-rebuttal exist only on contracts that carry the flag. */
     traderTools: (p.traderTools ?? 0) >= 1,
-    /** 0 = stage-2 tools, 1 = stage-3 trader tools (frozen bytes), 2 = stage-4 tools, brief and request options, 3 = stage 5 (lessons, coverage, lessonChecks), 4 = free bars, 5 = bar overview. */
-    toolsVersion: (p.traderTools ?? 0) as 0 | 1 | 2 | 3 | 4 | 5,
+    /** 0 = stage-2 tools, 1 = stage-3 trader tools (frozen bytes), 2 = stage-4 tools, brief and request options, 3 = stage 5 (lessons, coverage, lessonChecks), 4 = free bars, 5 = bar overview, 6 = time-free blind sets. */
+    toolsVersion: (p.traderTools ?? 0) as 0 | 1 | 2 | 3 | 4 | 5 | 6,
     /** Free bars: a candidate and a measurement choose their own bar over the contract's one-minute data. */
     freeBars: (p.traderTools ?? 0) >= 4,
     /** Bar overview: the stable block holds the cost hurdle and label base rate on every allowed bar (not a test). */
     barOverview: (p.traderTools ?? 0) >= 5,
+    /** Time-free blind sets: blind charts carry no time of day (ct-chart-3-blind) and controls share the event's bar slot of the day. */
+    timeFreeBlind: (p.traderTools ?? 0) >= 6,
     /** Stage 5: the family lessons exist only on contracts that carry the flag; earlier contracts get 0 / false. */
     lessons: (p.traderTools ?? 0) >= 3,
     lessonReserveUsd: (p.traderTools ?? 0) >= 3 ? (p.lessonReserveUsd ?? 0) : 0,

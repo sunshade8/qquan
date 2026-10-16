@@ -113,7 +113,7 @@ import { ctBase64, ctRenderChart } from "./ct-chart-image.ts";
 import { CT_PLAYBOOK_SCHEMA, ctEvidenceFeatures, ctPlaybookSnapshot, ctDistinctPriorTests, recordCTPlaybook } from "./ct-playbook.ts";
 import { CT_LESSONS_SCHEMA, ctDeadLesson, ctDistillRun, ctLessonsSnapshot } from "./ct-lessons.ts";
 import { ctCandidateFamilies, ctIdeaFamily } from "./ct-families.ts";
-import { CT_CALIBRATION_SCHEMA, CT_CHART_FORMAT, CT_CHART_FORMAT_BLIND, ctCalibrationRow, ctCalibrationSnapshot, ctIsCalibrationHypothesis, ctRecordCalibration } from "./ct-calibration.ts";
+import { CT_CALIBRATION_SCHEMA, ctBlindChartFormat, ctCalibrationRow, ctCalibrationSnapshot, ctIsCalibrationHypothesis, ctRecordCalibration } from "./ct-calibration.ts";
 import {
   ctCheckpointResult,
   ctGate,
@@ -718,7 +718,8 @@ const withBar = (name: string, extra: string, schema?: z.ZodType): Anthropic.Too
   description: `${stage5(name).description}${extra}`,
   ...(schema ? { input_schema: jsonSchema(schema) } : {}),
 });
-export const CT_SESSION_TOOLS: Anthropic.Tool[] = CT_SESSION_TOOLS_STAGE5.map((t) => {
+/** FROZEN: traderTools = 4 and 5 contracts keep these bytes (SHA-256 pinned in tests/ct-blind-time-free.test.mjs). */
+export const CT_SESSION_TOOLS_FREEBARS: Anthropic.Tool[] = CT_SESSION_TOOLS_STAGE5.map((t) => {
   switch (t.name) {
     case "label_moves":
       return withBar(t.name, `${BAR_MEASURE} Here "every minute" means every bar of that size, entry at the next such bar's open, and horizon counts those bars; contrast_moves on this labelId measures its features on the same bars.`, ctLabelMovesSchemaBars);
@@ -738,10 +739,33 @@ export const CT_SESSION_TOOLS: Anthropic.Tool[] = CT_SESSION_TOOLS_STAGE5.map((t
       return t;
   }
 });
-/** The tool set a contract runs under (stage 2: four tools; stage 3: trader tools, frozen; stage 4: control groups, big blind sets, frozen; stage 5: lessonChecks, frozen; free bars: barMinutes). */
+/**
+ * Time-free blind sets (traderTools = 6, 2026-10-16): the free-bar tools, byte for byte, except label_moves and view_charts,
+ * whose descriptions say that controls share the event's bar slot of the day and that a blind chart carries no time of day
+ * (every panel ends at the decision), and that a time inside an ungraded blind set cannot be opened any other way.
+ */
+const freeBars = (name: string) => CT_SESSION_TOOLS_FREEBARS.find((t) => t.name === name)!;
+export const CT_SESSION_TOOLS: Anthropic.Tool[] = CT_SESSION_TOOLS_FREEBARS.map((t) => {
+  switch (t.name) {
+    case "label_moves":
+      return {
+        ...freeBars(t.name),
+        description: `${freeBars(t.name).description} Control times (controlAnchors and blindReserve) share their event's month and its bar slot of the day — the same minutes after the day start at the label's bar size (a 15-minute label: the same quarter hour) — so a picture's time of day says nothing about its group.`,
+      };
+    case "view_charts":
+      return {
+        ...freeBars(t.name),
+        description:
+          "See moments as candle charts (PNG): left 5 days of 1-hour bars with the previous day's high/low; middle today's 5-minute bars with VWAP, the opening range (first 30 minutes) and the previous day's high/low/close; right the 90 minutes before the decision in 1-minute bars with volume. Axes are percent of the decision bar's close (no price levels), there are no dates, only bars completed by the decision time are drawn. Anchors must be times the server issued (event/control times and blindReserve from label_moves, query anchors, screen_rule trade times); an ordinary call takes up to 8 anchors within the per-session image limit. blind: true takes 16–32 anchors (default 24) with EQUAL numbers of event and control times, shows them in random order with the group hidden, and refuses any time you already opened in an ordinary view or with read_bars. A blind chart carries no time of day at all: every panel is the last bars ending at the decision (120 one-hour bars, 72 five-minute bars, 90 one-minute bars with volume), placed by order with gaps closed, no clock, no day boundary, a rolling 6-hour VWAP and the last 24 hours' high/low with the close 24 hours earlier (H24/L24/C24) instead of the day's VWAP, opening range and previous day. Until a blind set is graded its times cannot be opened in an ordinary view or with read_bars. Decide each chart, then submit all calls with grade_blind. The result's text names each chart's number and (when not blind) its group.",
+      };
+    default:
+      return t;
+  }
+});
+/** The tool set a contract runs under (stage 2: four tools; stage 3: trader tools, frozen; stage 4: control groups, big blind sets, frozen; stage 5: lessonChecks, frozen; free bars: barMinutes, frozen; time-free blind sets (6); the bar overview (5) changed no tool). */
 export const ctSessionTools = (contract: Pick<CTContract, "policy">) => {
   const v = ctSessionPolicy(contract).toolsVersion;
-  return v >= 4 ? CT_SESSION_TOOLS : v === 3 ? CT_SESSION_TOOLS_STAGE5 : v === 2 ? CT_SESSION_TOOLS_STAGE4 : v === 1 ? CT_SESSION_TOOLS_STAGE3 : CT_SESSION_TOOLS_STAGE2;
+  return v >= 6 ? CT_SESSION_TOOLS : v === 5 ? CT_SESSION_TOOLS_FREEBARS : v === 4 ? CT_SESSION_TOOLS_FREEBARS : v === 3 ? CT_SESSION_TOOLS_STAGE5 : v === 2 ? CT_SESSION_TOOLS_STAGE4 : v === 1 ? CT_SESSION_TOOLS_STAGE3 : CT_SESSION_TOOLS_STAGE2;
 };
 
 type SessionMessage = Anthropic.MessageParam;
@@ -789,6 +813,11 @@ function hasBarEnd(rows: CTBar[], at: number) {
     else hi = mid - 1;
   }
   return false;
+}
+/** Times of this run's blind sets that are not graded yet (time-free blind sets keep them out of ordinary views and read_bars). */
+function ungradedBlindTimes(ct: CTResearch) {
+  const open = new Set(Object.values(ct.blinds ?? {}).filter((b) => !b.graded).map((b) => b.blindId));
+  return new Set((ct.charts ?? []).filter((x) => x.blind && open.has(x.blind)).map((x) => x.at));
 }
 const GROUP_TEXT = { positive: "이벤트(양성) 시점", control: "대조군 시점", other: "서버가 제공한 조회·거래 시점" } as const;
 const submittedCount = (ct: CTResearch) => ct.submitted ?? ct.trials.length;
@@ -932,7 +961,7 @@ export async function advanceCTResearch(
           token,
           "calibration_summary",
           { market: c.market, trainingToMs: c.trainingToMs, toMs: c.toMs, ownerScope: true },
-          () => ctCalibrationSnapshot(job.ownerId, c, job.id),
+          () => ctCalibrationSnapshot(job.ownerId, c, job.id, ctBlindChartFormat(ctSessionPolicy(c).toolsVersion)),
         );
         ct.measured = await tool(
           job,
@@ -1313,6 +1342,14 @@ export async function advanceCTResearch(
           } else if (use.name === "read_bars") {
             const request = (policy.freeBars ? ctReadBarsSchemaBars : ctReadBarsSchema).parse(use.input) as CTReadBars;
             checkBar(request.barMinutes);
+            if (policy.timeFreeBlind) {
+              // Bars at a time of an ungraded blind set would show that very chart (and what came after it): its answer.
+              const open = ungradedBlindTimes(ct),
+                hit = request.anchors.filter((a) => open.has(a));
+              if (hit.length) throw new Error(`채점 전 블라인드 세트의 시각 ${hit.length}개는 read_bars로 열 수 없습니다(${hit.slice(0, 4).join(", ")}). grade_blind로 채점한 뒤 여세요.`);
+              ct.barsRead ??= [];
+              for (const a of request.anchors) if (!ct.barsRead.includes(a)) ct.barsRead.push(a);
+            }
             const out = await tool(job, token, "read_bars", { request, dataHash: ct.dataHash }, async () =>
               ctReadBars(request, await bars(), c),
             );
@@ -1327,7 +1364,7 @@ export async function advanceCTResearch(
               const data = await bars();
               const at = Date.now();
               try {
-                return ctLabelMovesReport(params, ctRunLabels(params, data, c), c, labelId, { blindReserve: policy.toolsVersion >= 2 });
+                return ctLabelMovesReport(params, ctRunLabels(params, data, c), c, labelId, { blindReserve: policy.toolsVersion >= 2, ...(policy.timeFreeBlind ? { controlSlot: "bar" as const } : {}) });
               } finally {
                 ct.computeMs += Date.now() - at;
               }
@@ -1413,6 +1450,15 @@ export async function advanceCTResearch(
               if (seenOrdinary.length)
                 throw new Error(`블라인드 세트에 일반 보기로 이미 정답 그룹을 본 시각 ${seenOrdinary.length}개가 있습니다(${seenOrdinary.slice(0, 4).join(", ")}${seenOrdinary.length > 4 ? " …" : ""}). 빼고 label_moves의 blindReserve 시각으로 채우세요.`);
               if (seenBlind.length) throw new Error(`이미 다른 블라인드 세트에 쓴 시각 ${seenBlind.length}개가 있습니다(${seenBlind.slice(0, 4).join(", ")}). 세트마다 새 시각을 쓰세요.`);
+              // Time-free blind sets: read_bars at a time showed its bars and what came after them, which is its answer too.
+              const read = policy.timeFreeBlind ? request.anchors.filter((a) => (ct.barsRead ?? []).includes(a)) : [];
+              if (read.length) throw new Error(`블라인드 세트에 read_bars로 이미 연 시각 ${read.length}개가 있습니다(${read.slice(0, 4).join(", ")}). 빼고 label_moves의 blindReserve 시각으로 채우세요.`);
+            }
+            if (policy.timeFreeBlind && !request.blind) {
+              // An ordinary view names the group and draws the same moment: never for a time of an ungraded blind set.
+              const open = ungradedBlindTimes(ct),
+                hit = request.anchors.filter((a) => open.has(a));
+              if (hit.length) throw new Error(`채점 전 블라인드 세트의 시각 ${hit.length}개는 일반 보기로 열 수 없습니다(${hit.slice(0, 4).join(", ")}). grade_blind로 채점한 뒤 보세요.`);
             }
             const out = await tool(job, token, "view_charts", { request, from: c.fromMs, to: c.trainingToMs, dataHash: ct.dataHash }, async () => {
               const data = await bars();
@@ -1439,8 +1485,10 @@ export async function advanceCTResearch(
               try {
                 for (const [k, item] of items.entries()) {
                   const n = k + 1;
-                  // Stage 4 blind sets hide the decision time (the designer picks the times, so a printed clock would identify the group).
-                  const image = await ctRenderChart(data[item.symbol], item.at, c, item.symbol, n, { blind: policy.toolsVersion >= 2 && Boolean(request.blind) });
+                  // Stage 4 blind sets hide the decision time (the designer picks the times, so a printed clock would identify the group);
+                  // time-free blind sets (traderTools 6) hide the time of day altogether: every panel ends at the decision.
+                  const blindChart = policy.toolsVersion >= 2 && Boolean(request.blind);
+                  const image = await ctRenderChart(data[item.symbol], item.at, c, item.symbol, n, { blind: blindChart, ...(blindChart && policy.timeFreeBlind ? { timeFree: true } : {}) });
                   const chartId = (await ctHash({ run: job.id, symbol: item.symbol, at: item.at, n, blind: blindId })).slice(0, 16);
                   await ctDb()
                     .prepare("INSERT OR REPLACE INTO ct_chart_images (run_id,chart_id,png,meta,created_at) VALUES (?,?,?,?,?)")
@@ -1465,7 +1513,7 @@ export async function advanceCTResearch(
               {
                 type: "text",
                 text: out.blindId
-                  ? `블라인드 세트 ${out.blindId}: 차트 ${out.charts.length}장(이벤트와 대조군이 절반씩, 순서는 무작위, 그룹은 숨김). 각 장에 positive 또는 control 예측을 정해 grade_blind(blindId, predictions)로 한 번에 제출하세요. 축은 결정 봉 종가 대비 %이고 날짜는 없으며 결정 시각 이후 봉은 그려지지 않았습니다.`
+                  ? `블라인드 세트 ${out.blindId}: 차트 ${out.charts.length}장(이벤트와 대조군이 절반씩, 순서는 무작위, 그룹은 숨김). 각 장에 positive 또는 control 예측을 정해 grade_blind(blindId, predictions)로 한 번에 제출하세요. 축은 결정 봉 종가 대비 %이고 날짜는 없으며 결정 시각 이후 봉은 그려지지 않았습니다.${policy.timeFreeBlind ? " 모든 패널은 결정 시각에서 끝나는 최근 봉(1시간 120개 · 5분 72개 · 1분 90개)이고 시계·하루 경계가 없습니다. 채점 전에는 이 시각들을 일반 보기나 read_bars로 열 수 없습니다." : ""}`
                   : `차트 ${out.charts.length}장. 축은 결정 봉 종가 대비 %이고 날짜는 없으며 결정 시각 이후 봉은 그려지지 않았습니다(결정 = 오른쪽 끝 점선). 이 세션 이미지 ${session.charts}/${policy.maxCharts}장 사용.`,
               },
             ];
@@ -1488,7 +1536,7 @@ export async function advanceCTResearch(
             set.gradedKey = key;
             ctRecordTest(ct, `blind|${set.blindId}`);
             // The server files the result as a calibration record (never as a rejected trading idea). Idempotent per run and set.
-            await ctRecordCalibration(ctCalibrationRow(job, ct, set.blindId, { correct: out.correct, total: out.total }, "research", policy.toolsVersion >= 2 ? CT_CHART_FORMAT_BLIND : CT_CHART_FORMAT));
+            await ctRecordCalibration(ctCalibrationRow(job, ct, set.blindId, { correct: out.correct, total: out.total }, "research", ctBlindChartFormat(policy.toolsVersion)));
             answer({ ...out, multipleTesting: ctTestLedger(ct) });
           } else if (use.name === "diagnose_trades") {
             if (!policy.traderTools) throw new Error("이 연구 계약에는 diagnose_trades가 없습니다");
