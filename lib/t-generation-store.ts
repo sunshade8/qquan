@@ -1,21 +1,14 @@
-import { dataRPC, localStockPoints } from "./local-market-data.ts";
+import { localStockPoints } from "./local-market-data.ts";
 import type { RelayDataSource } from "./relay-report.ts";
 import { researchFailure, retryResearchStorage } from "./research-recovery.ts";
 import { GENERATION_STAGES } from "./t-generation-types.ts";
 import { env } from "cloudflare:workers";
 import { easternParts, shiftDate } from "./market-clock.ts";
 import { ensureSchema as ensureBaseSchema } from "@/db/ensure";
-import { RELAY_STRATEGIES } from "./relay-strategies.ts";
-import {
-  compileStrategy,
-  strategySpecHash,
-  type StrategySpec,
-} from "./strategy-generation-spec.ts";
 import type {
   GenerationJob,
   ResearchMeter,
 } from "./t-generation-types.ts";
-import { evidenceProblems } from "./strategy-generation-validation.ts";
 import type { SessionBars } from "./relay-engine.ts";
 import { rollUpComplete } from "./bar-rollup.ts";
 
@@ -34,6 +27,22 @@ type CompactGenerationData = {
 function db() {
   return (env as unknown as { DB: D1Database }).DB;
 }
+let schemaReady: Promise<void> | null = null;
+/** T keeps its own run tables so a free-model run can never block, mix with, or be mistaken for a paid CT run. */
+export function ensureSchema() {
+  schemaReady ??= (async () => {
+    await ensureBaseSchema();
+    await db().batch([
+      db().prepare("CREATE TABLE IF NOT EXISTS t_generation_meters (run_id text PRIMARY KEY NOT NULL, payload text NOT NULL, updated_at integer NOT NULL)"),
+      db().prepare("CREATE TABLE IF NOT EXISTS t_generation_runs (id text PRIMARY KEY, owner_id text NOT NULL, slot text NOT NULL, status text NOT NULL, payload text NOT NULL, created_at integer NOT NULL, updated_at integer NOT NULL, lease_owner text, lease_until integer)"),
+      db().prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_t_generation_active ON t_generation_runs(status) WHERE status='running'"),
+      db().prepare("CREATE INDEX IF NOT EXISTS idx_t_generation_owner ON t_generation_runs(owner_id,created_at)"),
+      db().prepare("CREATE TABLE IF NOT EXISTS t_generation_data (run_id text NOT NULL, part integer NOT NULL, payload text NOT NULL, PRIMARY KEY(run_id,part))"),
+    ]);
+  })().catch((error) => { schemaReady = null; throw error; });
+  return schemaReady;
+}
+
 async function listGenerationJobsOnce(ownerId: string) {
   await ensureSchema();
   const rows = await db()
@@ -391,192 +400,6 @@ async function readGenerationDataOnce(
   return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
 /** Global account registry, matching the existing shared live/paper dashboards. Owner is provenance. */
-export async function registeredRelayStrategies() {
-  await ensureSchema();
-  const rows = await db()
-    .prepare(
-      "SELECT spec_payload FROM generated_relay_strategies ORDER BY created_at",
-    )
-    .all<{ spec_payload: string }>();
-  const generated = rows.results.map((r) =>
-    compileStrategy(JSON.parse(r.spec_payload)),
-  );
-  const all = [...RELAY_STRATEGIES, ...generated];
-  if (new Set(all.map((s) => s.slot)).size !== all.length)
-    throw new Error("슬롯 중복 배정 — 실행 중단");
-  return all;
-}
-export async function publishGeneration(job: GenerationJob, token: string) {
-  if (
-    !job.selected ||
-    !job.evidence?.passed ||
-    !job.finalReview?.approved ||
-    job.finalReview.blockers.length ||
-    !job.riskReview?.approved
-  )
-    throw new Error("검증 승인 증거가 없습니다.");
-  if (
-    job.riskReview.blockers.length ||
-    job.frozenHash !== (await strategySpecHash(job.selected))
-  )
-    throw new Error("동결 규칙 또는 위험 검증 기록 불일치");
-  if (evidenceProblems(job.evidence).length)
-    throw new Error("검증 수치가 등록 기준을 충족하지 못합니다.");
-  if (RELAY_STRATEGIES.some((s) => s.slot === job.slot))
-    throw new Error("이미 코드 전략이 배정된 슬롯입니다.");
-  compileStrategy(job.selected);
-  const existing = await db()
-    .prepare("SELECT run_id FROM generated_relay_strategies WHERE slot=?")
-    .bind(job.slot)
-    .first<{ run_id: string }>();
-  if (existing?.run_id === job.id) return; // Recover after commit but before saving the completion event.
-  const completed: GenerationJob = {
-    ...job,
-    status: "completed",
-    updatedAt: new Date().toISOString(),
-    events: [
-      ...job.events,
-      {
-        at: new Date().toISOString(),
-        stage: "publish",
-        state: "done",
-        detail: "슬롯 등록 완료",
-        role: null,
-      },
-    ],
-  };
-  // The registry insert and job completion commit together. A racing cancel either
-  // wins before both writes or observes completed; never a cancelled-but-live rule.
-  const results = await db().batch([
-    db()
-      .prepare(
-        "INSERT INTO generated_relay_strategies (id,slot,run_id,owner_id,spec_payload,evidence_payload,created_at) SELECT ?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM t_generation_runs WHERE id=? AND status='running' AND lease_owner=? AND lease_until>?)",
-      )
-      .bind(
-        job.selected.id,
-        job.slot,
-        job.id,
-        job.ownerId,
-        JSON.stringify(job.selected),
-        JSON.stringify({
-          frozenHash: job.frozenHash,
-          evidence: job.evidence,
-          review: job.finalReview,
-          report: job.report,
-        }),
-        Date.now(),
-        job.id,
-        token,
-        Date.now(),
-      ),
-    db()
-      .prepare(
-        "UPDATE t_generation_runs SET status='completed',payload=?,updated_at=?,lease_owner=NULL,lease_until=NULL WHERE id=? AND status='running' AND lease_owner=? AND EXISTS (SELECT 1 FROM generated_relay_strategies WHERE run_id=?)",
-      )
-      .bind(JSON.stringify(completed), Date.now(), job.id, token, job.id),
-  ]);
-  if (results[0].meta.changes !== 1 || results[1].meta.changes !== 1)
-    throw new Error(
-      "슬롯 등록 전에 작업이 취소되었거나 실행 잠금을 잃었습니다.",
-    );
-}
-export async function registeredSpecs(): Promise<StrategySpec[]> {
-  await ensureSchema();
-  const rows = await db()
-    .prepare("SELECT spec_payload FROM generated_relay_strategies")
-    .all<{ spec_payload: string }>();
-  return rows.results.map((r) => JSON.parse(r.spec_payload));
-}
-
-/** Explicitly adopt one stored option. This only registers rules; it never starts trading. */
-export async function registerResearchOption(
-  job: GenerationJob,
-  optionId: string,
-) {
-  const option = job.research?.options.find((item) => item.id === optionId);
-  if (
-    job.status !== "completed" ||
-    !option ||
-    option.status !== "passed" ||
-    !option.selected ||
-    !option.evidence?.passed ||
-    !option.riskReview?.approved ||
-    option.riskReview.blockers.length ||
-    !option.finalReview?.approved ||
-    option.finalReview.blockers.length
-  )
-    throw new Error("완료된 연구의 검증 통과 후보만 배정할 수 있습니다.");
-  if (
-    option.selected.slot !== option.slot ||
-    option.frozenHash !== (await strategySpecHash(option.selected)) ||
-    evidenceProblems(option.evidence).length
-  )
-    throw new Error("동결된 규칙과 검증 근거가 일치하지 않습니다.");
-  compileStrategy(option.selected);
-  if (RELAY_STRATEGIES.some((strategy) => strategy.slot === option.slot))
-    throw new Error("이미 전략이 배정된 시간대입니다.");
-  await db()
-    .prepare(
-      "INSERT INTO generated_relay_strategies (id,slot,run_id,owner_id,spec_payload,evidence_payload,created_at) SELECT ?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM t_generation_runs WHERE id=? AND owner_id=? AND status='completed' AND payload=?) ON CONFLICT DO NOTHING",
-    )
-    .bind(
-      option.selected.id,
-      option.slot,
-      option.id,
-      job.ownerId,
-      JSON.stringify(option.selected),
-      JSON.stringify({
-        frozenHash: option.frozenHash,
-        evidence: option.evidence,
-        review: option.finalReview,
-        report: option.report,
-      }),
-      Date.now(),
-      job.id,
-      job.ownerId,
-      JSON.stringify(job),
-    )
-    .run();
-  const registered = await db()
-    .prepare("SELECT id FROM generated_relay_strategies WHERE slot=?")
-    .bind(option.slot)
-    .first<{ id: string }>();
-  if (registered?.id !== option.selected.id)
-    throw new Error(
-      "이 시간대에 다른 전략이 배정됐거나 연구 상태가 변경됐습니다. 새로고침 후 확인해 주세요.",
-    );
-  return option.selected.id;
-}
-
-/** Shared verified Parquet inventory; legacy SQL caches are retained, not readiness evidence. */
-export async function generationInventory() {
-  const status = await dataRPC<
-    Array<{
-      dataset: string;
-      instrument: string;
-      provider: string;
-      sessions: number;
-      rows: number;
-      coverage: number[][];
-    }>
-  >({ action: "status" });
-  const stock = status.find((s) => s.dataset === "stock");
-  if (!stock?.coverage.length) return [];
-  return [1, 5].map((minutes) => ({
-    symbol: stock.instrument,
-    interval: `${minutes}m`,
-    provider: stock.provider,
-    sessions: stock.sessions,
-    firstDate: new Date(Math.min(...stock.coverage.map((c) => c[0])))
-      .toISOString()
-      .slice(0, 10),
-    lastDate: new Date(Math.max(...stock.coverage.map((c) => c[1])) - 1)
-      .toISOString()
-      .slice(0, 10),
-    bars: stock.rows,
-  }));
-}
-
 export async function resumeGenerationBudget(job: GenerationJob) {
   if (job.status !== "paused" || job.pauseReason !== "budget")
     throw new Error("예산 대기 중인 연구만 재개할 수 있습니다.");

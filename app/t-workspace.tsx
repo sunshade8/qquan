@@ -21,7 +21,6 @@ import { lessonsPanelModel, playbookAnchor } from "@/lib/t-lessons-view";
 import { ctRuleText, type CTSpec, type CTMarket } from "@/lib/t-spec";
 import { CTEvidenceChart } from "./t-evidence-chart";
 import { CT_EXIT_REASON_TEXT } from "@/lib/t-trade-levels";
-import { TradingDashboards } from "./trading-dashboards";
 import { DataSyncCard, useStaleData } from "./ct-data-sync";
 import {
   ActivityFeed,
@@ -36,7 +35,7 @@ import {
 } from "./t-progress";
 import type { CTCapability } from "@/lib/t-capabilities";
 import { ctDailyMetrics } from "@/lib/t-experiment-stats";
-import { CTValidation, CTConnectionStatus } from "./t-validation";
+import { CTValidation } from "./t-validation";
 import { ResearchPicker } from "./t-picker";
 
 export { CT_PHASES };
@@ -667,8 +666,8 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
   const [products,setProducts]=useState<CTCapability[]>([]),[product,setProduct]=useState("spot"),[selectionMode,setSelectionMode]=useState("manual");
   useEffect(()=>{fetch("/api/invest/t/experiments").then(r=>r.json() as Promise<{capabilities:CTCapability[]}>).then(p=>setProducts(p.capabilities)).catch(()=>setProducts([]));},[]);
   const [tab,setTab]=useState("research");
-  useEffect(()=>{const read=()=>setTab(new URLSearchParams(location.search).get("ctTab")??"research");read();window.addEventListener("popstate",read);return()=>window.removeEventListener("popstate",read);},[]);
-  const selectTab=(next:string)=>{setTab(next);const u=new URL(location.href);u.searchParams.set("ctTab",next);u.searchParams.set("ctMarket",market);history.pushState({},"",u);};
+  useEffect(()=>{const read=()=>setTab(new URLSearchParams(location.search).get("tTab")??"research");read();window.addEventListener("popstate",read);return()=>window.removeEventListener("popstate",read);},[]);
+  const seletTab=(next:string)=>{setTab(next);const u=new URL(location.href);u.searchParams.set("tTab",next);u.searchParams.set("tMarket",market);history.pushState({},"",u);};
   const [market, setMarket] = useState<CTMarket>("stock"),
     [data, setData] = useState<CTResponse | null>(null),
     [selected, setSelected] = useState(""),
@@ -694,10 +693,10 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
   }, [market]);
   useEffect(() => {
     // A shared link's market wins over the stored one, with or without stored settings.
-    const linked = new URLSearchParams(location.search).get("ctMarket");
+    const linked = new URLSearchParams(location.search).get("tMarket");
     if (linked === "stock" || linked === "crypto") queueMicrotask(() => setMarket(linked));
     try {
-      const stored = JSON.parse(localStorage.getItem("qquan.ct.v1") ?? "null");
+      const stored = JSON.parse(localStorage.getItem("qquan.t.v1") ?? "null");
       if (stored)
         queueMicrotask(() => {
           if ((stored.market === "stock" || stored.market === "crypto") && linked !== "stock" && linked !== "crypto")
@@ -718,7 +717,7 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
     if (!ready) return;
     try {
       localStorage.setItem(
-        "qquan.ct.v1",
+        "qquan.t.v1",
         JSON.stringify({
           market,
           selected,
@@ -938,8 +937,8 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
       ) : null}
 
       <header className="ct-head">
-        <h1><ChartCandlestick size={22} strokeWidth={1.9} aria-hidden="true" />차트 트레이딩 <small className="ui-sub">v0.0</small></h1>
-        <p className="ui-sub">공개 접근법 조사부터 실제 실험까지. 검증된 규칙을 모의·실전 운용으로 연결합니다.</p>
+        <h1><ChartCandlestick size={22} strokeWidth={1.9} aria-hidden="true" />T · 무료 차트 트레이딩 <small className="ui-sub">free</small></h1>
+        <p className="ui-sub">CT와 같은 연구 엔진을 무료 모델(freellmapi)로 돌리는 실험 공간입니다. 연구·검증만 하며 모의·실전 운용은 CT에서만 합니다.</p>
       </header>
 
       <div className="ct-market">
@@ -950,7 +949,7 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
               aria-pressed={market === m}
               onClick={() => {
                 setMarket(m);
-                const u=new URL(location.href);u.searchParams.set("ctMarket",m);for(const key of ["experiment","day","decision"])u.searchParams.delete(key);history.pushState({},"",u);
+                const u=new URL(location.href);u.searchParams.set("tMarket",m);for(const key of ["tExperiment","tDay","tDecision"])u.searchParams.delete(key);history.pushState({},"",u);
                 setSelected("");
                 setSymbols("");
                 setCapital("");
@@ -968,7 +967,7 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
       </div>
 
       <nav className="ui-segmented ct-subtabs" aria-label="CT 작업">
-        {[["research","연구"],["validation","검증"],["operation","운용"]].map(([key,label])=><button key={key} aria-current={tab===key?"page":undefined} aria-pressed={tab===key} onClick={()=>selectTab(key)}>{label}</button>)}
+        {[["research","연구"],["validation","검증"]].map(([key,label])=><button key={key} aria-current={tab===key?"page":undefined} aria-pressed={tab===key} onClick={()=>seletTab(key)}>{label}</button>)}
       </nav>
       {tab==="validation"?<CTValidation key={market} market={market} runId={job?.id}/>:null}
       <div hidden={tab!=="research"}>
@@ -1299,14 +1298,7 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
         </section>
       ) : null}
 
-      {ct&&ctSessionPolicy(ct.contract).book?<section className="ui-card pad"><h2 className="ui-title">부품 · 북 · 정책 7</h2><p className="ui-sub">제품 {ct.contract.semantics?.productVersion??"v0.0"} · {ct.contract.semantics?.engine??"ct-decision-1"} · traderTools {ct.contract.policy.traderTools}</p><h3>부품</h3>{ct.components?.length?<div className="ui-scroll-x"><table className="ui-table"><thead><tr><th scope="col">조건/봉</th><th scope="col">이벤트/일</th><th scope="col">기준선 대비</th><th scope="col">군집 p</th><th scope="col">학습·개발 판정</th></tr></thead><tbody>{ct.components.map(r=><tr key={r.id}><th scope="row">{r.candidate.spec.name} · {r.candidate.spec.minutes}분 · 롱</th><td>{r.training?.events??"—"} / {r.training?.days??"—"}</td><td>{r.training?.differencePct.toFixed(4)??"—"}%</td><td>{r.training?.p.toFixed(4)??"—"}</td><td>{r.duplicateOf?"중복 제외":r.grade} · {r.training?.reasons.join(" · ")}</td></tr>)}</tbody></table></div>:<p className="ui-sub">제출된 부품 없음</p>}<h3>북</h3>{ct.books?.length?ct.books.map(b=><article key={b.id}><strong>{b.id} · {b.rule.kind} {"k" in b.rule?b.rule.k:""}</strong><p>{b.componentIds.join(" · ")}</p><p>일평균 {dayMean(b.development??b.training).toFixed(4)}% · 수익일 {(b.development??b.training).positiveDayPct?.toFixed(1)??"—"}% · 낙폭 {(b.development??b.training).maxDrawdownPct.toFixed(2)}%</p><p>{b.reasons.join(" · ")||"검증 중"}</p></article>):<p className="ui-sub">학습 통과·중복 제거 후 부품 2개 이상이 필요합니다. 개발에서 재조합하지 않습니다.</p>}<button className="ui-btn" onClick={()=>selectTab("validation")}>검증에서 비교 · 판단 리플레이</button></section>:null}
-      </div>
-      <div hidden={tab!=="operation"}>
-      <CTConnectionStatus/>
-      <TradingDashboards
-        key={market}
-        book={market === "stock" ? "ct-stock" : "ct-crypto"}
-      />
+      {ct&&ctSessionPolicy(ct.contract).book?<section className="ui-card pad"><h2 className="ui-title">부품 · 북 · 정책 7</h2><p className="ui-sub">제품 {ct.contract.semantics?.productVersion??"v0.0"} · {ct.contract.semantics?.engine??"ct-decision-1"} · traderTools {ct.contract.policy.traderTools}</p><h3>부품</h3>{ct.components?.length?<div className="ui-scroll-x"><table className="ui-table"><thead><tr><th scope="col">조건/봉</th><th scope="col">이벤트/일</th><th scope="col">기준선 대비</th><th scope="col">군집 p</th><th scope="col">학습·개발 판정</th></tr></thead><tbody>{ct.components.map(r=><tr key={r.id}><th scope="row">{r.candidate.spec.name} · {r.candidate.spec.minutes}분 · 롱</th><td>{r.training?.events??"—"} / {r.training?.days??"—"}</td><td>{r.training?.differencePct.toFixed(4)??"—"}%</td><td>{r.training?.p.toFixed(4)??"—"}</td><td>{r.duplicateOf?"중복 제외":r.grade} · {r.training?.reasons.join(" · ")}</td></tr>)}</tbody></table></div>:<p className="ui-sub">제출된 부품 없음</p>}<h3>북</h3>{ct.books?.length?ct.books.map(b=><article key={b.id}><strong>{b.id} · {b.rule.kind} {"k" in b.rule?b.rule.k:""}</strong><p>{b.componentIds.join(" · ")}</p><p>일평균 {dayMean(b.development??b.training).toFixed(4)}% · 수익일 {(b.development??b.training).positiveDayPct?.toFixed(1)??"—"}% · 낙폭 {(b.development??b.training).maxDrawdownPct.toFixed(2)}%</p><p>{b.reasons.join(" · ")||"검증 중"}</p></article>):<p className="ui-sub">학습 통과·중복 제거 후 부품 2개 이상이 필요합니다. 개발에서 재조합하지 않습니다.</p>}<button className="ui-btn" onClick={()=>seletTab("validation")}>검증에서 비교 · 판단 리플레이</button></section>:null}
       </div>
     </div>
   );

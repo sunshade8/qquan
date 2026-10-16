@@ -18,7 +18,7 @@ export type ResearchCall = {
   key: string;
   role: GenerationRole;
   model: string;
-  provider: "OpenAI" | "Anthropic";
+  provider: string;
   status: "started" | "completed" | "failed" | "interrupted";
   startedAt: string;
   updatedAt: string;

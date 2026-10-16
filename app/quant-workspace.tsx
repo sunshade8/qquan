@@ -14,6 +14,7 @@ import Play from "lucide-react/dist/esm/icons/play";
 import Newspaper from "lucide-react/dist/esm/icons/newspaper";
 import Send from "lucide-react/dist/esm/icons/send";
 import Settings from "lucide-react/dist/esm/icons/settings";
+import Zap from "lucide-react/dist/esm/icons/zap";
 import Sparkles from "lucide-react/dist/esm/icons/sparkles";
 import Trash2 from "lucide-react/dist/esm/icons/trash-2";
 import X from "lucide-react/dist/esm/icons/x";
@@ -24,9 +25,10 @@ import { MarketNews } from "./market-news";
 import { LabWorkspace, newConversationId } from "./lab-workspace";
 import { BacktestWorkspace } from "./backtest-workspace";
 import { InvestWorkspace } from "./invest-workspace";
+import { TWorkspace } from "./t-home";
 import type { AgentActivity } from "@/lib/lab-types";
 
-type View = "market" | "invest" | "backtest" | "calendar" | "news" | "lab" | "settings";
+type View = "market" | "invest" | "t" | "backtest" | "calendar" | "news" | "lab" | "settings";
 type DataTab = "rows" | "study" | "hypothesis";
 type Feature = "return1d" | "gap" | "range" | "volume20";
 type Operator = "gt" | "lt";
@@ -681,6 +683,7 @@ export function QuantWorkspace({initialView="market"}:{initialView?:"market"|"in
   const navItems = [
     { id: "market" as View, label: "Market", icon: ChartCandlestick },
     { id: "invest" as View, label: "투자", icon: DollarSign },
+    { id: "t" as View, label: "T", icon: Zap },
     { id: "backtest" as View, label: "Backtest", icon: FlaskConical },
     { id: "calendar" as View, label: "Calendar", icon: CalendarDays },
     { id: "news" as View, label: "News", icon: Newspaper },
@@ -834,6 +837,7 @@ export function QuantWorkspace({initialView="market"}:{initialView?:"market"|"in
           </div>
         )}
 
+        {view === "t" && <TWorkspace onPrepareData={()=>setView("settings")} />}
         {view === "invest" && <InvestWorkspace initialFeature={initialView==="invest"?"ct":undefined} onPrepareData={()=>setView("settings")} />}
 
         {view === "backtest" && <BacktestWorkspace focusStrategyId={focusStrategyId} onAskLab={askLab} />}

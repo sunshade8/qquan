@@ -12,7 +12,6 @@ import {
 } from "./t-generation-llm.ts";
 import type { AnthropicUsage } from "@/lib/llm-usage";
 import {
-  RESEARCH_WEB_SEARCH,
   researchModel,
   researchCallLimits,
   type GenerationRole,

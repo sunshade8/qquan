@@ -73,7 +73,7 @@ function DecisionReplay({
   const [index, setIndex] = useState(() => {
       const t = Number(
         typeof location !== "undefined"
-          ? new URLSearchParams(location.search).get("decision")
+          ? new URLSearchParams(location.search).get("tDecision")
           : 0,
       );
       return Math.max(0, times.indexOf(t));
@@ -105,7 +105,7 @@ function DecisionReplay({
   }, [playing, speed, times.length]);
   const select = (i: number) => {
     setIndex(i);
-    push({ decision: String(times[i]) });
+    push({ tDecision: String(times[i]) });
   };
   return (
     <section className="ui-card pad ct-replay" aria-label="동기 판단 리플레이">
@@ -305,7 +305,7 @@ export function CTValidation({
     [packet, setPacket] = useState<Packet | null>(null),
     [id, setId] = useState(() =>
       typeof location !== "undefined"
-        ? (new URLSearchParams(location.search).get("experiment") ?? "")
+        ? (new URLSearchParams(location.search).get("tExperiment") ?? "")
         : "",
     ),
     [create, setCreate] = useState(false),
@@ -318,7 +318,7 @@ export function CTValidation({
     [error, setError] = useState(""),
     [day, setDay] = useState(() =>
       typeof location !== "undefined"
-        ? (new URLSearchParams(location.search).get("day") ?? "")
+        ? (new URLSearchParams(location.search).get("tDay") ?? "")
         : "",
     );
   const load = useCallback(async () => {
@@ -347,8 +347,8 @@ export function CTValidation({
   useEffect(() => {
     const pop = () => {
       const q = new URLSearchParams(location.search);
-      setId(q.get("experiment") ?? "");
-      setDay(q.get("day") ?? "");
+      setId(q.get("tExperiment") ?? "");
+      setDay(q.get("tDay") ?? "");
     };
     window.addEventListener("popstate", pop);
     return () => window.removeEventListener("popstate", pop);
@@ -388,7 +388,7 @@ export function CTValidation({
       if (!r.ok) throw new Error(p.error ?? "요청 실패");
       if (p.experiment) {
         setId(p.experiment.id);
-        push({ experiment: p.experiment.id, day: "" });
+        push({ tExperiment: p.experiment.id, tDay: "" });
         setCreate(false);
       }
       await load();
@@ -419,7 +419,7 @@ export function CTValidation({
         day={selectedDay}
         onClose={() => {
           setDay("");
-          push({ day: "", decision: "" });
+          push({ tDay: "", tDecision: "" });
         }}
       />
     );
@@ -431,7 +431,7 @@ export function CTValidation({
           onClick={() => {
             setId("");
             setPacket(null);
-            push({ experiment: "", day: "" });
+            push({ tExperiment: "", tDay: "" });
           }}
         >
           비교 기록 선택
@@ -544,7 +544,7 @@ export function CTValidation({
                         className="ui-btn sm"
                         onClick={() => {
                           setId(r.id);
-                          push({ experiment: r.id });
+                          push({ tExperiment: r.id });
                         }}
                       >
                         {new Date(r.created_at).toLocaleDateString("ko-KR")}
@@ -758,7 +758,7 @@ export function CTValidation({
                           className="ui-btn sm"
                           onClick={() => {
                             setDay(d.day);
-                            push({ day: d.day });
+                            push({ tDay: d.day });
                           }}
                         >
                           같은 시각의 판단

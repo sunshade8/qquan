@@ -8,8 +8,8 @@ import { fetchCTSource } from "./t-source-network.ts";
 import { assertCTTool } from "./t-tools.ts";
 import { z } from "zod";
 import type Anthropic from "@anthropic-ai/sdk";
-import { ensureSchema } from "@/db/ensure";
 import {
+  ensureSchema,
   createGenerationJob,
   getGenerationJob,
   generationProgress,
@@ -56,7 +56,6 @@ import {
   ctRecordTest,
   ctRequestSchema,
   ctTestLedger,
-  ctSearchSchema,
   ctApproachSchema,
   ctSessionContext,
   ctSubmissionSchema,
@@ -560,9 +559,8 @@ export async function ctMemory(job: GenerationJob) {
 
 /** Role triplet for a candidate: who wrote it decides who may independently review it. */
 export function ctReviewRoles(designedBy: string | undefined) {
-  return designedBy === "ctDesigner"
-    ? ({ author: "ctDesigner", risk: "ctRiskReviewer", evidence: "ctEvidenceReviewer" } as const)
-    : ({ author: "designer", risk: "riskReviewer", evidence: "evidenceReviewer" } as const);
+  void designedBy; // T has no legacy designer: every candidate is written by ctDesigner.
+  return { author: "ctDesigner", risk: "ctRiskReviewer", evidence: "ctEvidenceReviewer" } as const;
 }
 const jsonSchema = (schema: z.ZodType) => z.toJSONSchema(schema, { io: "input" }) as Anthropic.Tool.InputSchema;
 /**
@@ -1005,40 +1003,6 @@ export async function advanceCTResearch(
     if (ct.phase === "sources") {
       // T runs on free models without a web-search tool; the optional source phase is skipped, never faked.
       withoutSources("무료 모델에는 웹 검색 도구가 없어 출처 없이 데이터로 설계");
-      return;
-    }
-    if (ct.phase === "sources_disabled") {
-      try {
-        ct.search = await ask(
-          "ctOrchestrator",
-          ctSearchSchema,
-          `Use the enabled public web search tool NOW to investigate publicly explained chart-trading approaches from traders' own articles, interviews or lessons. Choose research directions using the user's scope; do not pick a random fixed strategy. Prefer directly readable HTML articles; PDF/video-only sources are unsupported by the reader. minutes is the candle interval, not a time budget. Search and return 2–6 original URLs that actually occur in the search tool's evidence. No invented URLs. Explain research value, not performance. Sources are inspiration for a researcher who will test ideas on data; they are optional. ${JSON.stringify({ market: c.market, brief: job.brief, minutes: c.minutes, scope: c.symbols })}`,
-        );
-      } catch (error) {
-        // Budget, cancellation and the first transient failures keep their usual handling.
-        if (/작업 취소 또는 실행 잠금|연구 예산/.test(String(error)) || (researchFailure(error).transient && (job.recovery?.failures ?? 0) < 2))
-          throw error;
-        ct.tools.push({ id: await ctHash({ search: String(error), at: Date.now() }), name: "search_public_approaches", input: {}, at: new Date().toISOString(), status: "failed", error: String(error) });
-        withoutSources(`웹 검색 실패 · 출처 없이 데이터로 설계 (${error instanceof Error ? error.message.slice(0, 120) : "검색 오류"})`);
-        return;
-      }
-      const evidence =
-        job.calls?.filter((call) => call.status === "completed").at(-1)
-          ?.sources ?? [];
-      const allowed = new Set(evidence.map((s) => s.url));
-      ct.search.urls = ct.search.urls.filter((url) => allowed.has(url));
-      await tool(
-        job,
-        token,
-        "search_public_approaches",
-        { queries: ct.search.queries, callId: job.calls?.at(-1)?.id },
-        async () => ({ urls: ct.search!.urls, evidence }),
-      );
-      if (!ct.search.urls.length) {
-        withoutSources("검색 실행 증거가 있는 출처 없음 · 출처 없이 데이터로 설계");
-        return;
-      }
-      ct.phase = "read";
       return;
     }
     if (ct.phase === "read") {
@@ -2253,8 +2217,10 @@ export async function registerCT(job: GenerationJob) {
   // The roles that actually wrote and reviewed this rule (legacy runs: designer + Anthropic reviewers).
   const roles = ctReviewRoles(selected.designedBy);
   const requiredCalls = [roles.author, roles.risk, roles.evidence] as const;
-  if (researchModel(roles.author).model === researchModel(roles.risk).model || researchModel(roles.author).model === researchModel(roles.evidence).model)
-    throw new Error("필수 독립 모델 실행 증거 누락");
+  // Judged on the models that actually answered (placement can shift between days and failover can change a call's model).
+  const answered = (role: string) => latest.calls?.filter((call) => call.role === role && call.status === "completed").at(-1)?.model;
+  if (answered(roles.author) && (answered(roles.author) === answered(roles.risk) || answered(roles.author) === answered(roles.evidence)))
+    throw new Error("필수 독립 모델 실행 증거 누락 · 검토자가 작성자와 같은 모델");
   for (const role of requiredCalls)
     if (
       !latest.calls?.some(

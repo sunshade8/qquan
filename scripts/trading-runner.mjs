@@ -58,6 +58,8 @@ const GENERATORS = [
   { name: "급등주", path: "/api/invest/surge" },
   { name: "CT", path: "/api/invest/ct" },
   { name: "CT 비교", path: "/api/invest/ct/experiments" },
+  { name: "T", path: "/api/invest/t" },
+  { name: "T 비교", path: "/api/invest/t/experiments" },
 ];
 
 async function advance(generator) {
