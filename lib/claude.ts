@@ -37,8 +37,10 @@ export type ModelRole =
 const TIER_DEFAULTS: Record<ModelTier, string> = {
   frontier: "claude-opus-5-5",
   counter: "claude-opus-5-5",
-  balanced: "claude-sonnet-5",
-  fast: "claude-haiku-4-5",
+  // 2026-10-16 (LiveBench 2.0, 2026-10-14): Sonnet 5.5 scores 82.5 vs Sonnet 5's 74.6 at the same $2/$10; Haiku 5.5 scores
+  // 74.5 vs Haiku 4.5's 46.0 at a tenth of the price ($0.10/$0.50). Env overrides still win.
+  balanced: "claude-sonnet-5-5",
+  fast: "claude-haiku-5-5",
 };
 
 /**
@@ -147,6 +149,9 @@ export function supportsAdaptiveThinking(model: string) {
 }
 
 export function reasoningParams(model: string, effort: Effort): Pick<Anthropic.MessageCreateParams, "thinking" | "output_config"> {
+  // Haiku 5.5 thinks by default (adaptive, medium). The fast tier routes and summarises inside small max_tokens (400 for
+  // entity grounding), so thinking is off there; effort still applies (disabled is accepted at effort high or below).
+  if (/claude-haiku-5/i.test(model)) return { thinking: { type: "disabled" }, output_config: { effort } };
   if (!supportsAdaptiveThinking(model)) return {};
   return { thinking: { type: "adaptive" }, output_config: { effort } };
 }
@@ -241,14 +246,15 @@ export async function generateStructured<T extends z.ZodType>(input: StructuredC
   const model = modelForRole(call.role);
   const client = claudeClient();
   const messages = call.messages ?? [{ role: "user", content: call.prompt ?? "" }];
+  const reasoning = reasoningParams(model, call.effort ?? "medium");
   try {
     const message = await client.messages.parse({
       model,
       max_tokens: call.maxTokens ?? 4000,
       system: systemBlocks(call.system),
       messages,
-      output_config: { format: zodOutputFormat(call.schema), ...(supportsAdaptiveThinking(model) ? { effort: call.effort ?? "medium" } : {}) },
-      ...(supportsAdaptiveThinking(model) ? { thinking: { type: "adaptive" as const } } : {}),
+      output_config: { format: zodOutputFormat(call.schema), ...reasoning.output_config },
+      ...(reasoning.thinking ? { thinking: reasoning.thinking } : {}),
     });
     const costUsd = await recordLlmUsage(call.ownerId, model, call.feature, usageOf(message), "Anthropic", call.role);
     if (message.stop_reason === "refusal") throw new ClaudeApiError("Claude가 이 요청에 대한 응답을 거부했습니다.", 422);

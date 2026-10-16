@@ -6,6 +6,7 @@ import { queryLocalMarket } from "./local-market-data.ts";
 import { CT_CALENDAR_VERSION, ctStockSession } from "./ct-sessions.ts";
 import { fetchCTSource } from "./ct-source-network.ts";
 import { assertCTTool } from "./ct-tools.ts";
+import { CT_AMEND_HINT, ctAmendSchema, ctApplySubmissionEdits, ctCompactAnswer, ctTurnEffort } from "./ct-lean.ts";
 import { z } from "zod";
 import type Anthropic from "@anthropic-ai/sdk";
 import { ensureSchema } from "@/db/ensure";
@@ -63,6 +64,8 @@ import {
   ctSubmissionSchemaStage5,
   ctSubmissionSchemaBook,
   validateCTCandidate,
+  ctCandidateIssues,
+  ctCandidateDraftSchema,
   type CTCandidate,
   type CTLessonCheck,
   type CTChartRecord,
@@ -517,6 +520,25 @@ export async function readCTSource(
     publishedAt: null,
   };
 }
+const CT_SOURCE_REUSE_MS = 7 * 86_400_000;
+/** The newest run in the last week on the same market, symbols and brief whose web principles survived the quote check. */
+async function ctRecentSources(job: GenerationJob) {
+  const c = job.ct!.contract;
+  const rows = await ctDb()
+    .prepare(
+      "SELECT id, json_extract(payload,'$.brief') AS brief, json_extract(payload,'$.ct.contract.market') AS market, json_extract(payload,'$.ct.contract.symbols') AS symbols, json_extract(payload,'$.ct.search') AS search, json_extract(payload,'$.ct.sources') AS sources, json_extract(payload,'$.ct.approaches') AS approaches FROM strategy_generation_runs WHERE owner_id=? AND id<>? AND created_at>? AND created_at<? ORDER BY created_at DESC LIMIT 30",
+    )
+    .bind(job.ownerId, job.id, Date.parse(job.createdAt) - CT_SOURCE_REUSE_MS, Date.parse(job.createdAt))
+    .all<{ id: string; brief: string | null; market: string | null; symbols: string | null; search: string | null; sources: string | null; approaches: string | null }>();
+  for (const r of rows.results) {
+    if (r.market !== c.market || r.symbols !== JSON.stringify(c.symbols) || (r.brief ?? "").trim() !== (job.brief ?? "").trim()) continue;
+    const sources = JSON.parse(r.sources ?? "[]") as CTSource[];
+    const approaches = JSON.parse(r.approaches ?? "[]") as NonNullable<CTResearch["approaches"]>;
+    if (!r.search || !sources.length || !approaches.length) continue;
+    return { runId: r.id, search: JSON.parse(r.search) as NonNullable<CTResearch["search"]>, sources, approaches };
+  }
+  return null;
+}
 export async function ctMemory(job: GenerationJob) {
   const rows = await ctDb()
     .prepare(
@@ -774,13 +796,31 @@ export const CT_SESSION_TOOLS: Anthropic.Tool[] = CT_SESSION_TOOLS_FREEBARS.map(
   }
 });
 export const CT_SESSION_TOOLS_BOOK: Anthropic.Tool[] = CT_SESSION_TOOLS.map(t => t.name === "submit_candidates" ? { ...t, description: t.description + " Submit components (0–8) with candidate fields and whyNotAlone even when no standalone rule clears costs. Components are signals; the server freezes books on training only. An empty reflection requires two new measured signatures unless finalNotice or budget exhaustion.", input_schema: jsonSchema(ctSubmissionSchemaBook) } : t);
+/**
+ * traderTools 8 (cost-lean sessions): the book tools, byte for byte, except submit_candidates (one sentence on refusals) and a
+ * new last tool, amend_submission, which patches the refused submission instead of resending ~10k characters of JSON.
+ */
+export const CT_SESSION_TOOLS_LEAN: Anthropic.Tool[] = [
+  ...CT_SESSION_TOOLS_BOOK.map((t) => t.name === "submit_candidates" ? { ...t, description: `${t.description} A refused submission lists every issue at once; fix it with amend_submission (only the changed fields), not by resending it.` } : t),
+  {
+    name: "amend_submission",
+    description:
+      "Fix your last REFUSED submit_candidates without resending it. edits: [{path, value}] set a field by dotted path into that submission's JSON (candidates.0.selfRebuttal.0.chance, components.1.mapping.2.sourceId; array indices are numbers, '-' appends), [{path, remove: true}] deletes a field or array item. The patched submission is validated exactly like submit_candidates and, if accepted, ends the session the same way; if refused, the issues come back and you amend again.",
+    input_schema: jsonSchema(ctAmendSchema),
+  },
+];
 /** The tool set a contract runs under (stage 2: four tools; stage 3: trader tools, frozen; stage 4: control groups, big blind sets, frozen; stage 5: lessonChecks, frozen; free bars: barMinutes, frozen; time-free blind sets (6); the bar overview (5) changed no tool). */
 export const ctSessionTools = (contract: Pick<CTContract, "policy">) => {
   const v = ctSessionPolicy(contract).toolsVersion;
-  return v >= 7 ? CT_SESSION_TOOLS_BOOK : v === 6 ? CT_SESSION_TOOLS : v === 5 ? CT_SESSION_TOOLS_FREEBARS : v === 4 ? CT_SESSION_TOOLS_FREEBARS : v === 3 ? CT_SESSION_TOOLS_STAGE5 : v === 2 ? CT_SESSION_TOOLS_STAGE4 : v === 1 ? CT_SESSION_TOOLS_STAGE3 : CT_SESSION_TOOLS_STAGE2;
+  return v >= 8 ? CT_SESSION_TOOLS_LEAN : v === 7 ? CT_SESSION_TOOLS_BOOK : v === 6 ? CT_SESSION_TOOLS : v === 5 ? CT_SESSION_TOOLS_FREEBARS : v === 4 ? CT_SESSION_TOOLS_FREEBARS : v === 3 ? CT_SESSION_TOOLS_STAGE5 : v === 2 ? CT_SESSION_TOOLS_STAGE4 : v === 1 ? CT_SESSION_TOOLS_STAGE3 : CT_SESSION_TOOLS_STAGE2;
 };
 
+/**
+ * A session message: user/assistant turns, and (traderTools 8) effort-only system messages, which the SDK's MessageParam does
+ * not type yet. They are stored and replayed in place like every other message (append-only history).
+ */
 type SessionMessage = Anthropic.MessageParam;
+const ctEffortMessage = (effort: "medium" | "high") => ({ role: "system", content: [], output_config: { effort } }) as unknown as SessionMessage;
 async function loadSession(runId: string, session: CTSession) {
   const rows = await ctDb()
     .prepare("SELECT payload FROM ct_session_messages WHERE run_id=? AND session=? AND seq<? ORDER BY seq")
@@ -1003,6 +1043,19 @@ export async function advanceCTResearch(
       ct.phase = "design";
     };
     if (ct.phase === "sources") {
+      // traderTools 8: web principles are optional inspiration; a run within a week on the same market, symbols and brief
+      // already searched, read and quote-checked them, so they are reused instead of paying the orchestrator and analyst again.
+      if (ctSessionPolicy(c).lean) {
+        const prior = await tool(job, token, "reuse_public_sources", { market: c.market, symbols: c.symbols, brief: job.brief?.trim() ?? "", since: Date.parse(job.createdAt) - CT_SOURCE_REUSE_MS, ownerScope: true }, () => ctRecentSources(job));
+        if (prior) {
+          ct.search = prior.search;
+          ct.sources = prior.sources;
+          ct.approaches = prior.approaches;
+          ct.sourceNote = `이전 실행 ${prior.runId.slice(0, 8)}의 웹 출처·원리 재사용(같은 시장·종목·연구 방향, 7일 이내) · 공개 원문에서 추출한 원리 · 성과 증거 아님 · 근거 id로 인용 가능`;
+          ct.phase = "design";
+          return;
+        }
+      }
       try {
         ct.search = await ask(
           "ctOrchestrator",
@@ -1301,6 +1354,37 @@ export async function advanceCTResearch(
       let submission: z.infer<typeof ctSubmissionSchemaBook> | null = null;
       let lessonChecksOf: Array<CTLessonCheck & { candidateIndex: number }> = [];
       let duplicates = 0;
+      let refused = false;
+      // traderTools 8: everything the submit path below refuses on its own, collected in one pass (it re-checks and then passes).
+      const ctLeanSubmissionIssues = (input: unknown) => {
+        const issues: string[] = [];
+        const raw = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+        const top = ctSubmissionSchemaBook.safeParse(input);
+        if (!top.success) issues.push(...ctIssueText(top.error).split("\n"));
+        const evidence = ctEvidenceIds(ct);
+        const check = (label: string, draft: unknown, schema: z.ZodType) => {
+          const one = schema.safeParse(draft);
+          if (!one.success) return; // its schema issues are listed above
+          const candidate: CTCandidate = { ...(one.data as CTCandidate), evidenceVersion: CT_EVIDENCE_VERSION };
+          const unknownIds = candidate.spec.sourceIds.filter((id) => !evidence.includes(id));
+          if (unknownIds.length) issues.push(`${label}: 확인되지 않은 출처 spec.sourceIds ${unknownIds.join(", ")}`);
+          else
+            try {
+              validateCTSpec(candidate.spec, c, evidence);
+            } catch (error) {
+              issues.push(`${label}: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          for (const x of ctCandidateIssues(candidate, ct, true)) issues.push(`${label}: ${x}`);
+        };
+        const candidates = Array.isArray(raw.candidates) ? raw.candidates : [];
+        const components = Array.isArray(raw.components) ? raw.components : [];
+        candidates.forEach((d, i) => check(`후보 ${i + 1}(candidates.${i})`, d, ctCandidateDraftSchema));
+        components.forEach((d, i) => check(`부품 ${i + 1}(components.${i})`, d, ctSubmissionSchemaBook.shape.components.element));
+        const left = c.policy.maxCandidates - submittedCount(ct);
+        if (candidates.length > left) issues.push(`남은 후보 제출 한도는 ${left}개입니다.`);
+        if (!candidates.length && !raw.noEdgeReason) issues.push("후보가 없으면 noEdgeReason에 근거를 적어야 합니다.");
+        return issues;
+      };
       for (const use of uses) {
         session.toolCalls++;
         const answer = (content: unknown, isError = false) =>
@@ -1312,7 +1396,7 @@ export async function advanceCTResearch(
             ...(isError ? { is_error: true } : {}),
           });
         try {
-          if (use.name !== "submit_candidates" && session.toolCalls > policy.maxToolCalls)
+          if (use.name !== "submit_candidates" && use.name !== "amend_submission" && session.toolCalls > policy.maxToolCalls)
             throw new Error(`이 세션의 도구 호출 한도 ${policy.maxToolCalls}회를 넘었습니다. submit_candidates만 호출할 수 있습니다.`);
           if (use.name === "query_conditional_returns") {
             const query = (policy.freeBars ? ctQuerySchemaBars : ctQuerySchema).parse(use.input) as CTQuery;
@@ -1354,7 +1438,8 @@ export async function advanceCTResearch(
             }
             ctRecordTest(ct, ctTestSignature(query.stages, !!query.entryWindows?.length, query.barMinutes));
             anchor(...out.anchors.map((a) => a.at));
-            answer({ ...out, multipleTesting: ctTestLedger(ct) });
+            // traderTools 8: the same numbers as column tables (exitCompare, horizons, monthly, anchors…): about 40% fewer tokens.
+            answer(policy.lean ? ctCompactAnswer({ ...out, multipleTesting: ctTestLedger(ct) }) : { ...out, multipleTesting: ctTestLedger(ct) });
           } else if (use.name === "read_bars") {
             const request = (policy.freeBars ? ctReadBarsSchemaBars : ctReadBarsSchema).parse(use.input) as CTReadBars;
             checkBar(request.barMinutes);
@@ -1639,8 +1724,15 @@ export async function advanceCTResearch(
               for (const key of Object.keys(screens).slice(0, Math.max(0, Object.keys(screens).length - 30))) delete screens[key];
             }
             answer({ ...out, ...(screenId ? { screenId } : {}), freedom: ctFreedom(spec), multipleTesting: ctTestLedger(ct) });
-          } else if (use.name === "submit_candidates") {
-            const parsed = (policy.book ? ctSubmissionSchemaBook : policy.lessons ? ctSubmissionSchemaStage5 : ctSubmissionSchema).parse(use.input) as z.infer<typeof ctSubmissionSchemaBook>;
+          } else if (use.name === "submit_candidates" || (policy.lean && use.name === "amend_submission")) {
+            // traderTools 8: an amendment patches the last refused submission; every issue is reported at once (lib/ct-lean.ts).
+            const input = use.name === "amend_submission" ? ctApplySubmissionEdits(session.draft, ctAmendSchema.parse(use.input).edits) : use.input;
+            if (policy.lean) {
+              session.draft = input;
+              const issues = ctLeanSubmissionIssues(input);
+              if (issues.length) throw new Error(`제출 거부 · 문제 ${issues.length}개(전부):\n${issues.map((x, i) => `${i + 1}. ${x}`).join("\n")}\n${CT_AMEND_HINT}`);
+            }
+            const parsed = (policy.book ? ctSubmissionSchemaBook : policy.lessons ? ctSubmissionSchemaStage5 : ctSubmissionSchema).parse(input) as z.infer<typeof ctSubmissionSchemaBook>;
             const left = c.policy.maxCandidates - submittedCount(ct);
             if (parsed.candidates.length > left)
               throw new Error(`남은 후보 제출 한도는 ${left}개입니다.`);
@@ -1737,6 +1829,7 @@ export async function advanceCTResearch(
             }
             accepted = fresh.map((f) => f.hash);
             submission = parsed;
+            delete session.draft;
             lessonChecksOf = lessonChecks;
             answer({ accepted: fresh.length, duplicates, message: "제출을 받았습니다. 서버가 학습 게이트와 개발 실험을 실행합니다." });
           } else throw new Error(`알 수 없는 도구: ${use.name}`);
@@ -1745,7 +1838,9 @@ export async function advanceCTResearch(
           const message = error instanceof z.ZodError
             ? ctIssueText(error)
             : error instanceof Error ? error.message : String(error);
-          answer(message, true);
+          const refusedSubmit = policy.lean && (use.name === "submit_candidates" || use.name === "amend_submission");
+          if (refusedSubmit) refused = true;
+          answer(refusedSubmit && session.draft && !message.includes(CT_AMEND_HINT) ? `${message}\n${CT_AMEND_HINT}` : message, true);
         }
       }
       if (accepted && submission) {
@@ -1769,7 +1864,19 @@ export async function advanceCTResearch(
           ...(eye.length ? { calibrationRefs: eye.flatMap((h) => h.evidence.map((blindId) => ({ blindId, hypothesis: h.hypothesis, result: h.result }))) } : {}),
         };
         ct.duplicateCount += duplicates;
-        if(policy.book) {
+        if(policy.lean) {
+          // traderTools 8: components count only if they can still enter a book, and only once their training grade is known
+          // (the book phase settles it). Candidates count at once. Run c58b159a paid $1.52 for a third session after two
+          // sessions whose components all failed training, the second of them submitted after the books were frozen.
+          const components=session.submission.acceptedComponents??0;
+          session.bookable=!ct.books;
+          if(accepted.length) ct.emptySessions=0;
+          else if(!components||!session.bookable) { ct.emptySessions=(ct.emptySessions??0)+1; session.graded=true; }
+          if(accepted.length||components)ct.phase="experiment";
+          else if((ct.emptySessions??0)>=2)done("두 세션 연속 쓸 수 있는 후보·부품 없음 · 최종 기간 미개봉");
+          else ct.phase="reflect";
+        }
+        else if(policy.book) {
           const count=accepted.length+(session.submission.acceptedComponents??0);
           ct.emptySessions=count?0:(ct.emptySessions??0)+1;
           if(count)ct.phase="experiment";
@@ -1793,7 +1900,13 @@ export async function advanceCTResearch(
         );
       } else if (!session.finalNotice)
         notice.push(`남은 한도: 모델 턴 ${policy.maxTurns - session.turns}회 · 도구 호출 ${Math.max(0, policy.maxToolCalls - session.toolCalls)}회 · screen_rule ${policy.maxScreens - session.screens}회.`);
+      // traderTools 8: measurement turns run at medium, deciding/writing turns at high. An effort-only system message before
+      // the user turn changes it without touching the cached prefix (beta mid-conversation-output-config-2026-07-01).
+      const effort = policy.lean ? ctTurnEffort(uses.map((u) => u.name), { finalNotice: !!session.finalNotice, refused }) : undefined;
+      const effortChange = effort && effort !== (session.effort ?? "high") ? [ctEffortMessage(effort)] : [];
+      if (effortChange.length) session.effort = effort;
       await appendSession(job, token, session, [
+        ...effortChange,
         { role: "user", content: [...results, ...notice.map((t) => ({ type: "text" as const, text: t }))] },
       ]);
       await generationProgress(job, token);
@@ -1806,6 +1919,7 @@ export async function advanceCTResearch(
         .filter((t) => !t.reasons.length)
         .sort((a, b) => ctSessionPolicy(c).book ? (ct.trainingPriority??[]).indexOf(a.id)-(ct.trainingPriority??[]).indexOf(b.id) : ctMeanDaily(b.development) - ctMeanDaily(a.development));
       if(ctSessionPolicy(c).book&&(ct.components??[]).some(r=>r.grade==="pending")){ct.phase="book";return;}
+      if(ctSessionPolicy(c).lean&&!passing.length&&(ct.emptySessions??0)>=2){done("두 세션 연속 쓸 수 있는 후보·부품 없음 · 통과 전략 없음 · 최종 기간 미개봉");return;}
       if (passing.length) {
         ct.selectedId = passing[0].id;
         ct.frozenHash = passing[0].hash;
@@ -1956,6 +2070,13 @@ export async function advanceCTResearch(
     if(ct.phase === "book") {
       const all=ct.components??[],data=await bars();
       for(const r of all)if(!r.training){r.training=await computed(()=>ctMeasureComponent(r.candidate.spec,data,c,c.fromMs,c.trainingToMs));if(r.training.reasons.length)r.grade="training_failed";await generationProgress(job,token);}
+      if(ctSessionPolicy(c).lean)
+        for(const s of ct.sessions??[])if(s.status==="submitted"&&!s.graded&&!s.submission?.accepted) {
+          // A components-only session is productive only if one of its components passed training (and could be booked).
+          const alive=all.some(r=>r.session===s.index&&r.grade!=="training_failed");
+          ct.emptySessions=alive?0:(ct.emptySessions??0)+1;
+          s.graded=true;
+        }
       const eligible=ctDeduplicateComponents(all);
       if(!ct.books) {
         ct.books=await computed(()=>ctFreezeBooks(eligible,data,c,deadline()));

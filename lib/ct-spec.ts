@@ -291,7 +291,16 @@ export const CT_POLICY_V6 = Object.freeze({
   lessonMaxInputChars: 60_000,
   lessonMaxOutputTokens: 8000,
 });
-export const CT_POLICY = Object.freeze({ ...CT_POLICY_V6, traderTools: 7 });
+/** traderTools 7 (book): components, frozen books, scoped memory. Frozen; new contracts get traderTools 8 below. */
+export const CT_POLICY_V7 = Object.freeze({ ...CT_POLICY_V6, traderTools: 7 });
+/**
+ * traderTools 8 (2026-10-16, cost-lean sessions, docs/ct.md「비용 절감 세션」): the book policy with every gate, measurement and
+ * view unchanged, but a refused submission reports every issue at once and is fixed with amend_submission (changed fields only),
+ * a session whose components all fail training (or arrive after the books were frozen) counts as empty, earlier sessions'
+ * labelIds/contrastIds are listed for reuse, query results come as column tables, measurement turns run at effort medium,
+ * and a run reuses a recent run's verified web principles for the same market, symbols and brief.
+ */
+export const CT_POLICY = Object.freeze({ ...CT_POLICY_V6, traderTools: 8 });
 /**
  * The policy a NEW contract is frozen with. Always CT_POLICY — except for verification: QQUAN_CT_POLICY_VERSION=1 freezes it with the
  * stage-3 policy (tool version 1, 32 images) so the same-board refusal against runs made under that policy can be exercised on real
@@ -300,6 +309,7 @@ export const CT_POLICY = Object.freeze({ ...CT_POLICY_V6, traderTools: 7 });
 export function ctPolicyForNewContract(): CTContract["policy"] {
   const override = typeof process !== "undefined" ? process.env?.QQUAN_CT_POLICY_VERSION : undefined;
   // 5 = bar overview, 4 = free bars, 3 = stage 5: each exactly as frozen before the next version: every field of today's policy, only the tool version differs.
+  if (override === "7") return CT_POLICY_V7;
   if (override === "6") return CT_POLICY_V6;
   if (override === "3" || override === "4" || override === "5") return { ...CT_POLICY_V6, traderTools: Number(override) };
   if (override === "1" || override === "2") {
@@ -341,9 +351,11 @@ export function ctSessionPolicy(contract: Pick<CTContract, "policy">) {
     maxBlindSets: p.sessionMaxBlindSets ?? 0,
     /** Stage 3+: the trader tools, the playbook and the self-rebuttal exist only on contracts that carry the flag. */
     traderTools: (p.traderTools ?? 0) >= 1,
-    /** 0 = stage-2 tools, 1 = stage-3 trader tools (frozen bytes), 2 = stage-4 tools, brief and request options, 3 = stage 5 (lessons, coverage, lessonChecks), 4 = free bars, 5 = bar overview, 6 = time-free blind sets. */
-    toolsVersion: (p.traderTools ?? 0) as 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7,
+    /** 0 = stage-2 tools, 1 = stage-3 trader tools (frozen bytes), 2 = stage-4 tools, brief and request options, 3 = stage 5 (lessons, coverage, lessonChecks), 4 = free bars, 5 = bar overview, 6 = time-free blind sets, 7 = book, 8 = cost-lean sessions. */
+    toolsVersion: (p.traderTools ?? 0) as 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8,
     book: (p.traderTools ?? 0) >= 7,
+    /** traderTools 8: cost-lean sessions (all submit issues at once + amend_submission, empty-session rule after training, reuse lists, column tables, per-turn effort, source reuse). */
+    lean: (p.traderTools ?? 0) >= 8,
     /** Free bars: a candidate and a measurement choose their own bar over the contract's one-minute data. */
     freeBars: (p.traderTools ?? 0) >= 4,
     /** Bar overview: the stable block holds the cost hurdle and label base rate on every allowed bar (not a test). */

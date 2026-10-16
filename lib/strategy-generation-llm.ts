@@ -67,8 +67,9 @@ async function streamClaude(
   params: Anthropic.MessageCreateParamsNonStreaming,
   meter: ReturnType<typeof usageMeter>,
   setAbort: (abort: () => void) => void,
+  headers?: Record<string, string>,
 ) {
-  const stream = claudeClient().messages.stream(params, { timeout: 240_000, maxRetries: 0 });
+  const stream = claudeClient().messages.stream(params, { timeout: 240_000, maxRetries: 0, ...(headers ? { headers } : {}) });
   setAbort(() => stream.abort());
   const { state, emit } = meter;
   let stopReason: string | null = null;
@@ -221,6 +222,8 @@ export async function designerTurn(
   let abort: (() => void) | undefined;
   try {
     await meter.emit(true, true);
+    // traderTools 8 stores effort-only system messages in the session (measurement turns at medium); they need the beta header.
+    const perTurnEffort = request.messages.some((m) => (m as { role: string }).role === "system");
     const { response, stopReason } = await streamClaude({
       model: choice.model,
       max_tokens: maxOutputTokens,
@@ -231,7 +234,7 @@ export async function designerTurn(
       output_config: { effort },
       cache_control: { type: "ephemeral" },
       messages: request.messages,
-    }, meter, (a) => { abort = a; });
+    }, meter, (a) => { abort = a; }, perTurnEffort ? { "anthropic-beta": "mid-conversation-output-config-2026-07-01" } : undefined);
     const usage = meter.state.usage;
     await meter.emit(false, true);
     await recordLlmUsage(ownerId, choice.model, "ct-research", usage, "Anthropic", role);

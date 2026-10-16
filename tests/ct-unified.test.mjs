@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import {
   CT_POLICY,
   CT_POLICY_V6,
+  CT_POLICY_V7,
   ctPolicyForNewContract,
   ctSessionPolicy,
   ctHash,
@@ -105,7 +106,7 @@ test("policy 6 bytes remain frozen; default and explicit override 7 use separate
   );
   assert.equal(ctDesignerSystem({ policy: CT_POLICY_V6 }), CT_DESIGNER_SYSTEM);
   assert.equal(
-    ctDesignerSystem({ policy: CT_POLICY }),
+    ctDesignerSystem({ policy: CT_POLICY_V7 }),
     CT_DESIGNER_SYSTEM_BOOK,
   );
   assert.equal(
@@ -113,7 +114,7 @@ test("policy 6 bytes remain frozen; default and explicit override 7 use separate
     research.CT_SESSION_TOOLS,
   );
   assert.equal(
-    research.ctSessionTools({ policy: CT_POLICY }),
+    research.ctSessionTools({ policy: CT_POLICY_V7 }),
     research.CT_SESSION_TOOLS_BOOK,
   );
   const old = process.env.QQUAN_CT_POLICY_VERSION;
@@ -410,8 +411,7 @@ test("all Binance mutations are blocked by default before any network call, read
 test("policy 7 first empty session reflects; second requires two NEW signatures, final notice permits honest termination", async () => {
   sqlite.exec("UPDATE strategy_generation_runs SET status='cancelled'");
   const ct = ctState();
-  ct.contract.policy = CT_POLICY;
-  ct.contract.policy = { ...CT_POLICY, lessonReserveUsd: 0 };
+  ct.contract.policy = { ...CT_POLICY_V7, lessonReserveUsd: 0 };
   ct.dataHash = await ctHash({ "KRW-BTC": bars(864) });
   const j = {
     id: "book-empty-fixture",

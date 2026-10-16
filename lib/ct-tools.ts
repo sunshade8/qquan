@@ -264,6 +264,16 @@ export const CT_TOOLS = {
       evidence: z.array(z.object({ url: z.string().url(), title: z.string() })),
     }),
   },
+  // traderTools 8: the web principles of a run within a week on the same market, symbols and brief (null when none).
+  reuse_public_sources: {
+    phases: ["sources"],
+    input: z
+      .object({ market: z.string(), symbols: z.array(z.string()), brief: z.string(), since: z.number(), ownerScope: z.literal(true) })
+      .strict(),
+    output: z
+      .object({ runId: z.string(), search: z.object({ urls: z.array(z.string()) }).passthrough(), sources: z.array(z.object({ id: z.string(), url: z.string() }).passthrough()).min(1), approaches: z.array(z.object({ sourceId: z.string(), quote: z.string() }).passthrough()).min(1) })
+      .nullable(),
+  },
   read_public_source: {
     phases: ["read"],
     input: z.object({ url: z.string().url() }).strict(),

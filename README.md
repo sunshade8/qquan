@@ -101,8 +101,8 @@ is only used where it matters:
 | --- | --- | --- | --- |
 | frontier | `ANTHROPIC_MODEL` (or OpenAI, below) | `claude-opus-4-7` | Lab JARVIS orchestrator, News synthesizer, strategy builder |
 | counter | — (derived) | opposite provider's frontier | challenger — reviews frontier output |
-| balanced | `ANTHROPIC_MODEL_BALANCED` | `claude-sonnet-5` | headline sentiment analyst, request planner, and the auditor roles — pattern analyst, similarity auditor, Lab sweep judge, Lab result auditor |
-| fast | `ANTHROPIC_MODEL_FAST` | `claude-haiku-4-5` | routing, summarisation |
+| balanced | `ANTHROPIC_MODEL_BALANCED` | `claude-sonnet-5-5` | headline sentiment analyst, request planner, and the auditor roles — pattern analyst, similarity auditor, Lab sweep judge, Lab result auditor |
+| fast | `ANTHROPIC_MODEL_FAST` | `claude-haiku-5-5` (thinking off) | routing, summarisation |
 
 Tiers follow the cost of being wrong rather than call volume, with one deliberate exception. The
 `auditor` role decides whether an effect is real and tries to break the orchestrator's

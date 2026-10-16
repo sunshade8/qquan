@@ -381,7 +381,7 @@ test("policy: a new contract carries stage 5 (and free bars), earlier ones are f
   const keep = process.env.QQUAN_CT_POLICY_VERSION;
   try {
     delete process.env.QQUAN_CT_POLICY_VERSION;
-    assert.equal(ctPolicyForNewContract().traderTools, 7, "new contracts use policy 7; old fixtures freeze 6");
+    assert.equal(ctPolicyForNewContract().traderTools, 8, "new contracts use policy 8 (cost-lean); old fixtures freeze 6");
     process.env.QQUAN_CT_POLICY_VERSION = "4";
     assert.deepEqual(ctPolicyForNewContract(), { ...CT_POLICY, traderTools: 4 });
     assert.equal(ctSessionPolicy({ policy: ctPolicyForNewContract() }).timeFreeBlind, false);

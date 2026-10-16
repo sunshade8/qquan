@@ -25,6 +25,7 @@ const prices: Array<[RegExp, Price]> = [
   [/claude-opus-(?:4-(?:5|6|7|8)|5)/i, { input: 5, output: 25, cacheWrite: 6.25, cacheRead: .5 }],
   [/claude-sonnet-5/i, { input: 2, output: 10, cacheWrite: 2.5, cacheRead: .2 }],
   [/claude-sonnet-4-(?:5|6)/i, { input: 3, output: 15, cacheWrite: 3.75, cacheRead: .3 }],
+  [/claude-haiku-5-5/i, { input: .1, output: .5, cacheWrite: .125, cacheRead: .01 }],
   [/claude-haiku-4-5/i, { input: 1, output: 5, cacheWrite: 1.25, cacheRead: .1 }],
   [/gpt-5\.5/i, { input: 5, output: 25, cacheWrite: 5, cacheRead: .5 }],
 ];
@@ -44,8 +45,10 @@ export function usageCostUsd(model: string, usage: AnthropicUsage) {
   const cacheWrite = Math.max(0, Number(usage.cache_creation_input_tokens) || 0);
   const cacheRead = Math.max(0, Number(usage.cache_read_input_tokens) || 0);
   const longContext = /^gpt-6(?:\.1-sol|-astra|-luna)(?:-|$)/i.test(model) && input + cacheWrite + cacheRead > 272_000;
-  const inputMultiplier = longContext ? 2 : 1;
-  const outputMultiplier = longContext ? 1.5 : 1;
+  // Claude Haiku 5.5: $0.10/$0.50 up to 100K prompt tokens, $0.50/$2.50 beyond (claude-api skill price table, 2026-10-06).
+  const longHaiku = /claude-haiku-5-5/i.test(model) && input + cacheWrite + cacheRead > 100_000;
+  const inputMultiplier = longContext ? 2 : longHaiku ? 5 : 1;
+  const outputMultiplier = longContext ? 1.5 : longHaiku ? 5 : 1;
   return Number((((input * price.input + cacheWrite * price.cacheWrite + cacheRead * price.cacheRead) * inputMultiplier + output * price.output * outputMultiplier) / 1_000_000).toFixed(8));
 }
 

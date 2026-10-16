@@ -1,5 +1,6 @@
 import { ctTradeSettingsSchema } from "./ct-capabilities.ts";
 import { z } from "zod";
+import { ctReusableMeasurements } from "./ct-lean.ts";
 import { ctBarChoices, ctFreedom, ctRuleText, ctSessionPolicy, ctSpecSchema, type CTContract, type CTSpec } from "./ct-spec.ts";
 import type { CTBlindSet, CTControlMode, CTLabelParams } from "./ct-trader-tools.ts";
 import type { CTCalibrationSnapshot } from "./ct-calibration.ts";
@@ -236,6 +237,14 @@ export type CTSession = {
   initialSignatures?: string[];
   /** The "submit now" instruction has been sent. */
   finalNotice?: boolean;
+  /** traderTools 8: the last refused submission, which amend_submission patches (removed once accepted). */
+  draft?: unknown;
+  /** traderTools 8: the effort the next turn runs at (set by an effort-only system message; the session opens at the contract's). */
+  effort?: "medium" | "high";
+  /** traderTools 8: components submitted while the books were not yet frozen (later ones can never enter a book). */
+  bookable?: boolean;
+  /** traderTools 8: the empty-session count already took this session's training grades into account. */
+  graded?: boolean;
   submission?: {
     candidates: number;
     accepted: number;
@@ -605,10 +614,17 @@ export const CT_DESIGNER_SYSTEM = [SYS3_INTRO, SYS_SUCCESS, SYS_COSTS, SYS_EXIT_
 export const CT_DESIGNER_SYSTEM_BOOK = CT_DESIGNER_SYSTEM + `
 
 A measurement that beats its time-of-day baseline before costs but not the round-trip cost is a COMPONENT, not a rejection. Submit it in components with the same spec, hypothesis, mapping, selfRebuttal and whyNotAlone. Components are signals, never registrable strategies. Up to 8 unique components per run; every component counts as a test. The server tests day-cluster uncertainty, months, concentration and development, freezes at most 3 vote/confluence books on TRAINING only and charges actual fills once. Funding, interest and all product costs still accrue. Do not stop just because no single rule clears costs. An empty first session enters reflection when limits permit; a second empty submission needs two new measured signatures, except after finalNotice/budget exhaustion. Respect all budget/time/session limits. noEdgeReason must explain whether components were found and why their gate fails. Use unused coverage cells and non-dead families, reconsider pre-cost baseline winners. Never select, optimize or rank from development/final results, reviewer conclusions, or another scope's memory. Memory requires matching instrument/product/direction/period/risk and information available at this cursor; unknown is not wildcard. Submit only supported capability settings within the owner's bounds. Research cannot enable orders or change account settings.`;
+/**
+ * traderTools 8 (cost-lean sessions, docs/ct.md「비용 절감 세션」): the book brief plus what the server now does to keep a run from
+ * paying twice for the same thing. Nothing about gates, measurements or what may be seen changes.
+ */
+export const CT_DESIGNER_SYSTEM_LEAN = CT_DESIGNER_SYSTEM_BOOK + `
+
+Cost discipline (the server enforces it). Books are frozen once, from the components of the first session that submits any; components submitted after that are measured but can never enter a book, so a later session should submit only standalone candidates or end with zero. A session whose components all fail the training component gate counts as empty, and two empty sessions in a row end the run. Only submit a component whose own measurement beats its baseline by a margin the component gate can confirm. labelIds, contrastIds, queryIds and diagnosisIds from earlier sessions stay valid: never re-run a label_moves definition that history lists — call contrast_moves or view_charts with its labelId. query_conditional_returns answers its row lists as column tables ({columns, rows}). A refused submission lists every issue at once; fix it with amend_submission (changed fields only), never by resending the whole submission.`;
 /** The brief a contract runs under: time-free blind / bar-overview / free-bar / stage 5 / 4 / 3 trader briefs by tools version, the stage-2 brief otherwise (all but the newest frozen byte for byte, so cached prefixes of older runs survive). */
 export const ctDesignerSystem = (contract: Pick<CTContract, "policy">) => {
   const v = ctSessionPolicy(contract).toolsVersion;
-  return v >= 7 ? CT_DESIGNER_SYSTEM_BOOK : v === 6 ? CT_DESIGNER_SYSTEM : v === 5 ? CT_DESIGNER_SYSTEM_OVERVIEW : v === 4 ? CT_DESIGNER_SYSTEM_STAGE6 : v === 3 ? CT_DESIGNER_SYSTEM_STAGE5 : v === 2 ? CT_DESIGNER_SYSTEM_STAGE4 : v === 1 ? CT_DESIGNER_SYSTEM_STAGE3 : CT_DESIGNER_SYSTEM_STAGE2;
+  return v >= 8 ? CT_DESIGNER_SYSTEM_LEAN : v === 7 ? CT_DESIGNER_SYSTEM_BOOK : v === 6 ? CT_DESIGNER_SYSTEM : v === 5 ? CT_DESIGNER_SYSTEM_OVERVIEW : v === 4 ? CT_DESIGNER_SYSTEM_STAGE6 : v === 3 ? CT_DESIGNER_SYSTEM_STAGE5 : v === 2 ? CT_DESIGNER_SYSTEM_STAGE4 : v === 1 ? CT_DESIGNER_SYSTEM_STAGE3 : CT_DESIGNER_SYSTEM_STAGE2;
 };
 
 /** The contract as the designer needs it: boundaries, costs and gates. Stable across sessions. */
@@ -762,6 +778,8 @@ export function ctSessionContext(ct: CTResearch, brief: string, hurdle: CTCostHu
         ended: s.endReason ?? s.status,
       }),
     );
+  // traderTools 8: earlier sessions' labels and contrasts stay valid by id; listing them saves re-running (and re-reading) them.
+  const reuse = s.lean && session.index > 0 ? ctReusableMeasurements(ct, session.index) : null;
   // Candidates from runs before research sessions have no session; show them once, first.
   const legacy = entries.filter((e) => e.kind === "trial" && e.t.session === undefined).map(candidateRecord);
   const left = ct.contract.policy.maxCandidates - (ct.submitted ?? ct.trials.length);
@@ -775,12 +793,15 @@ export function ctSessionContext(ct: CTResearch, brief: string, hurdle: CTCostHu
         ? "cost_hurdle과 플레이북부터 읽고, 거래할 가치가 있던 순간(label_moves)을 먼저 본 뒤 그 직전의 차이를 찾으세요."
         : "cost_hurdle부터 읽고 시작하세요.",
     `사용자 연구 방향: ${brief?.trim() ? brief : "(없음 · 자유 탐색)"}`,
-    ...(s.book&&session.kind==="reflect"?["미사용 커버리지 칸과 새로운 기법 계열을 측정하세요. 비용 전 기준선은 이겼지만 단독 비용은 못 넘은 측정을 부품으로 다시 보세요. 직전 noEdgeReason과 학습 기각 가설은 history에 있습니다. 새 0/0에는 이 실행에 없던 가설 서명 2개 이상이 필요합니다."]:[]),
+    ...(s.book&&session.kind==="reflect"&&!(s.lean&&ct.books)?["미사용 커버리지 칸과 새로운 기법 계열을 측정하세요. 비용 전 기준선은 이겼지만 단독 비용은 못 넘은 측정을 부품으로 다시 보세요. 직전 noEdgeReason과 학습 기각 가설은 history에 있습니다. 새 0/0에는 이 실행에 없던 가설 서명 2개 이상이 필요합니다."]:[]),
+    // traderTools 8: once the books are frozen, a later component cannot be booked (ct-research-store「book」).
+    ...(s.lean&&session.kind==="reflect"&&ct.books?[`책은 이미 동결됐습니다(${ct.books.length}개). 이번 세션의 부품은 책에 들어가지 않으니, 단독으로 비용 후 순이익이 나는 후보만 제출하거나 후보 0개와 noEdgeReason으로 끝내세요. 직전 noEdgeReason과 학습 기각 가설은 history에 있습니다. 새 0/0에는 이 실행에 없던 가설 서명 2개 이상이 필요합니다.`]:[]),
+    ...(reuse?["history의 reusable에 있는 labelId·contrastId는 그대로 유효합니다. 같은 label_moves를 다시 부르지 말고 그 id로 contrast_moves·view_charts를 쓰세요."]:[]),
     "끝낼 때는 반드시 submit_candidates를 호출하세요.",
   ].join("\n");
   return {
     stable,
-    history: [...(legacy.length ? [JSON.stringify({ priorCandidates: legacy })] : []), ...history].join("\n") || "(이전 세션 없음)",
+    history: [...(legacy.length ? [JSON.stringify({ priorCandidates: legacy })] : []), ...history, ...(reuse ? [JSON.stringify({ reusable: reuse })] : [])].join("\n") || "(이전 세션 없음)",
     task,
   };
 }
@@ -790,9 +811,19 @@ export function ctSessionContext(ct: CTResearch, brief: string, hurdle: CTCostHu
  * exists in this run; version 1 candidates keep the original web-source rule.
  */
 export function validateCTCandidate(candidate: CTCandidate, ct: CTResearch) {
+  const issues = ctCandidateIssues(candidate, ct);
+  if (issues.length) throw new Error(issues[0]);
+  return candidate;
+}
+/**
+ * Every traceability issue of a candidate, in the order validateCTCandidate checks them (its error is the first one, unchanged).
+ * `detailed` (traderTools 8) names the stage, condition and ids so one refusal can be fixed in one amend_submission.
+ */
+export function ctCandidateIssues(candidate: CTCandidate, ct: CTResearch, detailed = false) {
+  const issues: string[] = [];
   const v2 = candidate.evidenceVersion === CT_EVIDENCE_VERSION;
   if (candidate.parentId && !ct.trials.some((t) => t.id === candidate.parentId))
-    throw new Error("알 수 없는 부모 후보");
+    issues.push(detailed ? `알 수 없는 부모 후보: parentId ${candidate.parentId}` : "알 수 없는 부모 후보");
   if (
     (candidate.parentId || (!v2 && ct.trials.length)) &&
     (!candidate.parentId ||
@@ -800,12 +831,12 @@ export function validateCTCandidate(candidate: CTCandidate, ct: CTResearch) {
       !candidate.changes.length ||
       !candidate.expectedEffect)
   )
-    throw new Error("수정의 부모·실측 문제·변경·기대 효과 필요");
-  if (candidate.memoryIds.some((id) => !ct.memory.some((m) => m.id === id)))
-    throw new Error("허용되지 않은 연구 기억");
+    issues.push("수정의 부모·실측 문제·변경·기대 효과 필요");
+  const memory = candidate.memoryIds.filter((id) => !ct.memory.some((m) => m.id === id));
+  if (memory.length) issues.push(detailed ? `허용되지 않은 연구 기억: memoryIds ${memory.join(", ")}` : "허용되지 않은 연구 기억");
   if (v2 && ctSessionPolicy(ct.contract).traderTools) {
     const r = candidate.selfRebuttal ?? [];
-    if (r.length < 3) throw new Error("selfRebuttal: 이 규칙이 우연일 가장 그럴듯한 이유 3가지와, 각각을 데이터로 배제했는지(excluded)를 적어야 합니다");
+    if (r.length < 3) issues.push(`selfRebuttal: 이 규칙이 우연일 가장 그럴듯한 이유 3가지와, 각각을 데이터로 배제했는지(excluded)를 적어야 합니다${detailed ? ` (지금 ${r.length}개)` : ""}`);
   }
   const sources = new Set(ct.sources.map((s) => s.id));
   const queries = new Map((ct.queries ?? []).map((q) => [q.queryId, q]));
@@ -813,7 +844,7 @@ export function validateCTCandidate(candidate: CTCandidate, ct: CTResearch) {
   const diagnoses = new Map((ct.diagnoses ?? []).map((d) => [d.diagnosisId, d]));
   const known = (id: string) => queries.has(id) || contrasts.has(id) || diagnoses.has(id);
   for (const id of candidate.spec.sourceIds)
-    if (!sources.has(id) && !(v2 && known(id))) throw new Error(`확인되지 않은 근거 id: ${id}`);
+    if (!sources.has(id) && !(v2 && known(id))) issues.push(`확인되지 않은 근거 id: ${id}`);
   for (let stage = 0; stage < candidate.spec.stages.length; stage++)
     for (
       let condition = 0;
@@ -824,25 +855,39 @@ export function validateCTCandidate(candidate: CTCandidate, ct: CTResearch) {
         (m) => m.stage === stage && m.condition === condition,
       );
       const rule = candidate.spec.stages[stage].conditions[condition];
+      const at = `stage ${stage} condition ${condition}`;
       if (
         !map ||
         map.feature !== rule.feature ||
         !candidate.spec.sourceIds.includes(map.sourceId)
-      )
-        throw new Error("서술·실행 규칙 추적 불일치");
+      ) {
+        issues.push(
+          !detailed
+            ? "서술·실행 규칙 추적 불일치"
+            : !map
+              ? `서술·실행 규칙 추적 불일치: ${at}(${rule.feature})에 mapping 없음`
+              : map.feature !== rule.feature
+                ? `서술·실행 규칙 추적 불일치: ${at}의 mapping.feature ${map.feature} ≠ 규칙 ${rule.feature}`
+                : `서술·실행 규칙 추적 불일치: ${at}의 mapping.sourceId ${map.sourceId}가 spec.sourceIds에 없음`,
+        );
+        continue;
+      }
       if (sources.has(map.sourceId)) continue;
       const query = v2 ? (queries.get(map.sourceId) ?? contrasts.get(map.sourceId)) : undefined;
       const diagnosis = v2 ? diagnoses.get(map.sourceId) : undefined;
       const measured = query ?? diagnosis;
-      if (!measured) throw new Error(`확인되지 않은 근거 id: ${map.sourceId}`);
+      if (!measured) {
+        issues.push(`확인되지 않은 근거 id: ${map.sourceId}`);
+        continue;
+      }
       // A measurement is evidence for a condition only if it measured that feature on that timeframe, in training.
       if (query && (query.to > ct.contract.trainingToMs || query.from < ct.contract.fromMs))
-        throw new Error("학습 구간 밖 조회는 근거가 될 수 없음");
+        issues.push(detailed ? `학습 구간 밖 조회는 근거가 될 수 없음: ${map.sourceId}` : "학습 구간 밖 조회는 근거가 될 수 없음");
       if (!measured.features.some((f) => f.feature === rule.feature && f.timeframe === rule.timeframe))
-        throw new Error(`근거 ${map.sourceId}가 ${rule.feature}(${rule.timeframe}배)를 측정하지 않음`);
+        issues.push(`근거 ${map.sourceId}가 ${rule.feature}(${rule.timeframe}배)를 측정하지 않음`);
       // A rule built on a diagnosis filter is a change from the rule that was diagnosed and must say so.
       if (diagnosis && (!candidate.observedProblem.trim() || !candidate.changes.length))
-        throw new Error("진단(diagnosisId) 근거를 쓴 후보는 observedProblem과 changes에 부모 대비 변경을 적어야 합니다");
+        issues.push("진단(diagnosisId) 근거를 쓴 후보는 observedProblem과 changes에 부모 대비 변경을 적어야 합니다");
     }
-  return candidate;
+  return issues;
 }
