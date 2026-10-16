@@ -49,6 +49,8 @@ type CTResponse = {
   runnerOnline: boolean;
   /** Cost profile a start would use (exchange, version, round trip per symbol). */
   costPreview?: { label: string; version: number; provisional: boolean; feeVerified: boolean; perSymbol: Array<{ symbol: string; roundTripPct: number }> };
+  /** Continuous research chain of the newest continuous run (lib/t-loop.ts). */
+  loop?: { runId: string; status: string; stopped: boolean; note: string | null; retryAt: string | null } | null;
 };
 const CRYPTO_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
 function download(value: unknown, name: string) {
@@ -675,7 +677,7 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
     [busy, setBusy] = useState(false),
     [brief, setBrief] = useState(""),
     [symbols, setSymbols] = useState(""),
-    [budget, setBudget] = useState(8),
+    [continuous, setContinuous] = useState(true),
     [capital, setCapital] = useState(""),
     [days, setDays] = useState(""),
     [repeat, setRepeat] = useState<{ message: string; previous: Array<{ id: string; at: string; status: string; endReason: string | null }> } | null>(null),
@@ -704,7 +706,7 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
           setSelected(stored.selected ?? "");
           setBrief(stored.brief ?? "");
           setSymbols(stored.symbols ?? "");
-          setBudget([8, 16, 24].includes(stored.budget) ? stored.budget : 8);
+          setContinuous(stored.continuous !== false);
           setCapital(stored.capital ?? "");
           setDays(stored.days ?? "");
         });
@@ -723,7 +725,7 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
           selected,
           brief,
           symbols,
-          budget,
+          continuous,
           capital,
           days,
         }),
@@ -731,7 +733,7 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
     } catch {
       /* Storage is optional. */
     }
-  }, [ready, market, selected, brief, symbols, budget, capital, days]);
+  }, [ready, market, selected, brief, symbols, continuous, capital, days]);
   const load = useCallback(async () => {
     if (loading.current) return;
     loading.current = true;
@@ -888,7 +890,7 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
       ...(reason ? { repeatReason: reason } : {}),
       market,
       brief,
-      budgetUsd: budget,
+      continuous,
       ...(symbols.trim()
         ? {
             symbols: symbols
@@ -914,7 +916,7 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
     chosenSymbols.join(", "),
     "봉 주기 에이전트 선택",
     `${days || 365}일`,
-    `예산 $${budget}`,
+    continuous ? "예산 무제한 · 연속 연구" : "예산 무제한 · 1회",
     capital ? `자본 ${Number(capital).toLocaleString("ko-KR")}` : "기본 자본",
   ].join(" · ");
   const preview = data?.costPreview;
@@ -991,6 +993,15 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
         </div>
         {job?.status === "running" ? (
           <p className="ui-sub">진행 중인 연구가 끝나거나 취소되면 새 연구를 시작할 수 있습니다.</p>
+        ) : null}
+        {data?.loop && !data.loop.stopped ? (
+          <div className="ct-compare-toolbar" data-testid="t-loop">
+            <span className="ui-sub">
+              연속 연구 켜짐 · 러너{runnerOnline ? "" : "(오프라인 — npm run local 필요)"}가 연구가 끝날 때마다 다음 연구를 시작하고, 중단되면 10분 뒤 이어갑니다
+              {data.loop.note ? ` · ${data.loop.note}` : ""}
+            </span>
+            <button className="ui-btn sm" disabled={busy} onClick={() => void act("stop_loop", { id: data.loop!.runId })}>연속 연구 중지</button>
+          </div>
         ) : null}
         {repeat ? (
           <div className="ui-alert ct-blocking" role="alert" data-testid="ct-board-repeat">
@@ -1107,11 +1118,10 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
                 />
               </label>
               <label className="ui-field">
-                <span>연구 API 예산</span>
-                <select value={budget} onChange={(e) => setBudget(Number(e.target.value))}>
-                  {[8, 16, 24].map((n) => (
-                    <option key={n} value={n}>${n}</option>
-                  ))}
+                <span>연구 방식 (예산 무제한 · 무료 쿼터)</span>
+                <select value={continuous ? "loop" : "once"} onChange={(e) => setContinuous(e.target.value === "loop")}>
+                  <option value="loop">연속 연구 · 끝나면 자동으로 다음 연구</option>
+                  <option value="once">1회만</option>
                 </select>
               </label>
               <label className="ui-field">

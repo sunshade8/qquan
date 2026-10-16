@@ -299,6 +299,12 @@ export async function assertFinalWindowFree(contract: CTContract, runId?: string
     );
   }
 }
+/** What the next run of a continuous chain reuses: the owner's choices, never this run's identity or repeat reason. */
+function tLoopRequest(request: z.infer<typeof ctRequestSchema>) {
+  const { requestId: _id, repeatReason: _reason, loopN: _n, ...rest } = request;
+  void _id; void _reason; void _n;
+  return rest as Record<string, unknown>;
+}
 export async function createCTResearch(ownerId: string, input: unknown) {
   const request = ctRequestSchema.parse(input);
   await ensureCTSchema();
@@ -332,6 +338,7 @@ export async function createCTResearch(ownerId: string, input: unknown) {
     brief: request.brief,
     costUsd: 0,
     budgetUsd: request.budgetUsd,
+    ...(request.continuous ? { tLoop: { request: tLoopRequest(request), n: request.loopN ?? 1 } } : {}),
     error: null,
     events: [],
     calls: [],

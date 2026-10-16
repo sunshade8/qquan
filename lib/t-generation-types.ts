@@ -131,6 +131,8 @@ export type GenerationJob = {
   researchSessions?: number;
   pauseReason?: "budget" | "data" | "interrupted";
   nextAction?: string;
+  /** T only: continuous research (lib/t-loop.ts). The request the next run reuses, and its place in the chain. */
+  tLoop?: { request: Record<string, unknown>; n: number; stopped?: boolean; note?: string };
   attempts?: Array<{
     attempt: number;
     stage: GenerationStage;

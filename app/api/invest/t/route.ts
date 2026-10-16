@@ -29,6 +29,7 @@ import { ctPlaybookList } from "@/lib/t-playbook";
 import { ctCalibrationList } from "@/lib/t-calibration";
 import { ctLessonsList } from "@/lib/t-lessons";
 import { sessionThinking } from "@/lib/t-activity";
+import { continueTLoop, stopTLoop, tLoopStatus } from "@/lib/t-loop";
 export const dynamic = "force-dynamic";
 async function ctRunnerOnline() {
   const row = await ctDb().prepare("SELECT MAX(heartbeat_at) AS beat FROM t_runtime").first<{ beat: number | null }>();
@@ -193,6 +194,7 @@ export async function GET(request: Request) {
         availability: generationAvailability(),
         runnerOnline: await ctRunnerOnline(),
         costPreview: ctCostPreview(market),
+        loop: await tLoopStatus(owner, market),
       },
       { headers: headers(owner, request) },
     );
@@ -263,7 +265,8 @@ export async function POST(request: Request) {
         .first<{ id: string }>();
       id = row?.id ?? null;
     }
-    if (!id) return Response.json({ job: null });
+    // Nothing running: the continuous chain (lib/t-loop.ts) resumes or starts the next run.
+    if (!id) return Response.json({ job: null, ...(runner ? { loop: await continueTLoop() } : {}) });
     const job = await getGenerationJob(id);
     if (!job?.ct || (!runner && job.ownerId !== owner))
       return Response.json({ error: "연구 없음" }, { status: 404 });
@@ -272,7 +275,8 @@ export async function POST(request: Request) {
         { strategyId: await registerCT(job) },
         { headers: headers(owner, request) },
       );
-    if (body.action === "cancel") await cancelGenerationJob(job);
+    if (body.action === "stop_loop") await stopTLoop(job.id);
+    else if (body.action === "cancel") await cancelGenerationJob(job);
     else if (body.action === "pause") await pauseGenerationJob(job);
     else if (body.action === "resume") await resumeGenerationFailure(job);
     else if (body.action === "advance") {

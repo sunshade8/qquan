@@ -11,6 +11,8 @@ import type { CTCostHurdle } from "./t-design-tools.ts";
 import type { CTBarOverview } from "./t-bar-overview.ts";
 import { CT_FAMILIES } from "./t-families.ts";
 import type { CTLessonsRecorded, CTLessonsSnapshot } from "./t-lessons.ts";
+/** Virtual-dollar allowance that never binds; a run still ends by its session/candidate/time limits. */
+export const T_UNLIMITED_BUDGET_USD = 100000;
 export const ctRequestSchema = z
   .object({
     requestId: z.string().uuid(),
@@ -21,7 +23,11 @@ export const ctRequestSchema = z
     // The contract's data is always one-minute bars. The bar a rule trades on is the designer's choice per
     // candidate and per measurement (traderTools 4, 2026-10-16), never the owner's; this field only rejects other values.
     minutes: z.literal(1).optional(),
-    budgetUsd: z.union([z.literal(8), z.literal(16), z.literal(24)]).default(8),
+    // T runs on free quota: the provider's monthly token budget is the only limit (docs/t.md「연속 연구」).
+    budgetUsd: z.number().positive().max(T_UNLIMITED_BUDGET_USD).default(T_UNLIMITED_BUDGET_USD),
+    // Continuous research: when this run ends, the runner starts the next one with the same request (lib/t-loop.ts).
+    continuous: z.boolean().default(true),
+    loopN: z.number().int().min(1).optional(),
     capital: z.number().positive().max(100000000).optional(),
     // Crypto up to 3 years; stocks up to the local coverage (checked against the catalog). Default 1 year: docs/ct.md「데이터 범위」.
     days: z.number().int().min(90).max(1095).default(365),

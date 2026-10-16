@@ -259,7 +259,9 @@ export function LiveStatusBar({ job, runnerOnline, busy, onAct }: StatusProps) {
   const elapsed = end - Date.parse(job.createdAt);
   const ids=ctPhaseIds(ct), stepIndex = ids.indexOf(ct.phase) + 1;
   const total = ids.length;
-  const costRatio = job.budgetUsd > 0 ? job.costUsd / job.budgetUsd : 0;
+  // T runs on free quota: an unlimited run (T_UNLIMITED_BUDGET_USD) shows no ceiling.
+  const unlimited = job.budgetUsd >= 1000;
+  const costRatio = job.budgetUsd > 0 && !unlimited ? job.costUsd / job.budgetUsd : 0;
   const costWarn = costRatio >= 0.8;
   const tone = statusTone(job.status);
   const announce = `${STATUS_LABEL[job.status] ?? job.status}, ${total}단계 중 ${stepIndex}단계 ${CT_PHASES[ct.phase]}`;
@@ -282,7 +284,7 @@ export function LiveStatusBar({ job, runnerOnline, busy, onAct }: StatusProps) {
           <div className="ct-live-cost" data-tone={costWarn ? "warn" : undefined}>
             <dt>비용{costWarn ? " · 예산 임박" : ""}</dt>
             <dd>
-              <span className="ui-num">{usd(job.costUsd)} <small>/ {usd(job.budgetUsd)}</small></span>
+              <span className="ui-num">{usd(job.costUsd)} <small>/ {unlimited ? "무제한" : usd(job.budgetUsd)}</small></span>
               <span className="ui-meter" data-tone={costWarn ? "warn" : undefined} style={{ "--v": Math.min(1, costRatio) } as React.CSSProperties} role="img" aria-label={`예산 ${Math.round(costRatio * 100)}% 사용`}><i /></span>
             </dd>
           </div>
@@ -332,7 +334,9 @@ export function PhaseStepper({ job }: { job: CTJob }) {
   }, [ct.phase]);
   const activeLeft = Math.max(0, policy.maxActiveMs - ct.activeMs);
   const limits = [
-    { label: "비용", value: `${usd(job.costUsd)} / ${usd(job.budgetUsd)}`, ratio: job.costUsd / (job.budgetUsd || 1) },
+    job.budgetUsd >= 1000
+      ? { label: "비용", value: `${usd(job.costUsd)} / 무제한`, ratio: 0 }
+      : { label: "비용", value: `${usd(job.costUsd)} / ${usd(job.budgetUsd)}`, ratio: job.costUsd / (job.budgetUsd || 1) },
     { label: "후보", value: `${ct.submitted ?? ct.trials.length} / ${policy.maxCandidates}`, ratio: (ct.submitted ?? ct.trials.length) / policy.maxCandidates },
     { label: "활성 시간", value: `${formatClock(ct.activeMs)} / ${formatClock(policy.maxActiveMs)}`, ratio: ct.activeMs / policy.maxActiveMs },
   ];
