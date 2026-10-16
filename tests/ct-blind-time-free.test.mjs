@@ -167,12 +167,14 @@ test("a blind set from a 15-minute label cannot be ordered by panel length: ever
 
 /* ------------------------------------------------------------------ calibration records */
 
-test("old and new blind formats are never pooled together; stage-4 summaries are unchanged; records are only listed, never removed", async () => {
+test("old and new blind formats are never pooled together; the owner-excluded 7a4354f4 set is pooled by no policy; records are only listed, never removed", async () => {
   sqlite.exec("DELETE FROM ct_calibration;");
   const c = { ...contract };
   const mk = (run, blind, k, n, format) =>
     calibration.ctRecordCalibration(calibration.ctCalibrationRow({ id: run, ownerId: "owner" }, { contract: c }, blind, { correct: k, total: n }, "research", format));
-  await mk("7a4354f4-contaminated", "562efbccb2a2", 18, 24, calibration.CT_CHART_FORMAT_BLIND);
+  const contaminated = "7a4354f4-ae1e-49ba-9f1b-9d5e33734498:blind:562efbccb2a2";
+  assert.ok(calibration.CT_CALIBRATION_EXCLUDED[contaminated], "the owner's exclusion (2026-10-16) names the exact record");
+  await mk("7a4354f4-ae1e-49ba-9f1b-9d5e33734498", "562efbccb2a2", 18, 24, calibration.CT_CHART_FORMAT_BLIND);
   await mk("older-s4", "b4", 12, 24, calibration.CT_CHART_FORMAT_BLIND);
   await mk("free-1", "f1", 13, 24, calibration.CT_CHART_FORMAT_BLIND_TIME_FREE);
   await mk("free-2", "f2", 11, 24, calibration.CT_CHART_FORMAT_BLIND_TIME_FREE);
@@ -186,20 +188,31 @@ test("old and new blind formats are never pooled together; stage-4 summaries are
   assert.deepEqual([fresh.pooled.sets, fresh.pooled.n, fresh.pooled.hits], [2, 48, 24]);
   assert.equal(fresh.pooled.verdict, "no_skill", "48 charts are enough to say it");
   const byRun = Object.fromEntries(fresh.records.map((r) => [r.run, r]));
-  assert.equal(byRun["7a4354f4"].chartFormat, "시각 숨김(오늘 패널 길이로 시간대 식별 가능성 · 합산하지 않음)");
+  assert.equal(byRun["7a4354f4"].chartFormat, "시각 숨김(오늘 패널 길이로 시각을 맞춘 흔적(소유자 결정으로 합산 제외) · 합산하지 않음)");
+  assert.equal(byRun["older-s4"].chartFormat, "시각 숨김(오늘 패널 길이로 시간대 식별 가능성 · 합산하지 않음)");
   assert.equal(byRun["7a4354f4"].hits, 18, "listed with its numbers, just not pooled");
   assert.equal(byRun["free-1"].chartFormat, "시각·시간대 숨김");
   assert.match(byRun["printed"].chartFormat, /시각 표시/);
   assert.match(fresh.note, /ct-chart-3-blind/);
-  // A stage-4 / free-bar run pools what it always pooled, in the same words (the time-free sets are another format to it).
+  // A stage-4 / free-bar run pools its own format as before — without the excluded set (the owner's decision) — and in the same
+  // words for every other record (the time-free sets are another format to it).
   const old = await calibration.ctCalibrationSnapshot("owner", c, "new-run");
-  assert.deepEqual([old.pooled.sets, old.pooled.n, old.pooled.hits], [2, 48, 30]);
+  assert.deepEqual([old.pooled.sets, old.pooled.n, old.pooled.hits], [1, 24, 12], "only older-s4: 18/24 of 7a4354f4 is left out");
+  assert.equal(old.pooled.verdict, "inconclusive");
   const oldBy = Object.fromEntries(old.records.map((r) => [r.run, r]));
-  assert.equal(oldBy["7a4354f4"].chartFormat, "시각 숨김");
+  assert.equal(oldBy["7a4354f4"].chartFormat, "시각 숨김(오늘 패널 길이로 시각을 맞춘 흔적(소유자 결정으로 합산 제외) · 합산하지 않음)");
+  assert.equal(oldBy["7a4354f4"].hits, 18, "still listed with its numbers");
+  assert.equal(oldBy["older-s4"].chartFormat, "시각 숨김");
   assert.equal(oldBy["free-1"].chartFormat, "시각·시간대 숨김(다른 형식 · 합산하지 않음)");
   assert.match(old.note, /^설계자의 '눈'\(차트 판독\)을 블라인드 세트로 잰 보정 기록\(합산은 결정 시각을 숨긴 세트만\)/);
   // Nothing is deleted or edited.
-  assert.equal(sqlite.prepare("SELECT k FROM ct_calibration WHERE id='7a4354f4-contaminated:blind:562efbccb2a2'").get().k, 18);
+  const row = sqlite.prepare("SELECT * FROM ct_calibration WHERE id=?").get(contaminated);
+  assert.deepEqual([row.n, row.k, row.verdict, row.chart_format], [24, 18, "skill", "ct-chart-2-blind"], "the row itself is untouched");
+  // The same exclusion for every older policy that pools the stage-4 format.
+  for (const v of [2, 3, 4]) {
+    const snap = await calibration.ctCalibrationSnapshot("owner", c, "new-run", calibration.ctBlindChartFormat(v));
+    assert.equal(snap.pooled.n, 24, `traderTools ${v}`);
+  }
   assert.equal(sqlite.prepare("SELECT count(*) n FROM ct_calibration").get().n, 5);
 });
 

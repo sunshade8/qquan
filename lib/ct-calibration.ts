@@ -26,6 +26,15 @@ export const CT_CHART_FORMAT = "ct-chart-1";
 export const CT_CHART_FORMAT_BLIND = "ct-chart-2-blind";
 /** traderTools 5: every panel ends at the decision (no clock, no day boundary, rolling levels) and controls share the event's bar slot of the day. */
 export const CT_CHART_FORMAT_BLIND_TIME_FREE = "ct-chart-3-blind";
+/**
+ * Records the owner excluded from every `pooled` sum (2026-10-16), whatever the run's policy. The rows stay in the table as they
+ * are and are still listed with their numbers. Run 7a4354f4 (15-minute labels, stage-4 blind charts) matched its own event and
+ * control times to the length of the "today" panel, so its 18/24 measured the leak, not the eye (docs/ct.md「시간대 없는 블라인드」).
+ */
+export const CT_CALIBRATION_EXCLUDED: Readonly<Record<string, string>> = {
+  "7a4354f4-ae1e-49ba-9f1b-9d5e33734498:blind:562efbccb2a2": "오늘 패널 길이로 시각을 맞춘 흔적(소유자 결정으로 합산 제외)",
+};
+
 /** The format a contract's blind sets are drawn and recorded in (and the only format its calibration summary pools). */
 export const ctBlindChartFormat = (toolsVersion: number) => (toolsVersion >= 5 ? CT_CHART_FORMAT_BLIND_TIME_FREE : toolsVersion >= 2 ? CT_CHART_FORMAT_BLIND : CT_CHART_FORMAT);
 
@@ -161,7 +170,8 @@ const READING: Record<CTCalibrationVerdict, string> = {
 };
 
 /** How a record's chart format reads in a summary pooling `pool` (stage-4 summaries keep their words byte for byte). */
-function formatText(format: string, pool: string) {
+function formatText(format: string, pool: string, id = "") {
+  if (CT_CALIBRATION_EXCLUDED[id]) return `${format === CT_CHART_FORMAT_BLIND_TIME_FREE ? "시각·시간대 숨김" : format === CT_CHART_FORMAT_BLIND ? "시각 숨김" : "시각 표시"}(${CT_CALIBRATION_EXCLUDED[id]} · 합산하지 않음)`;
   if (pool !== CT_CHART_FORMAT_BLIND_TIME_FREE) return format === CT_CHART_FORMAT_BLIND ? "시각 숨김" : format === CT_CHART_FORMAT_BLIND_TIME_FREE ? "시각·시간대 숨김(다른 형식 · 합산하지 않음)" : "시각 표시(식별 누출 가능성 · 합산하지 않음)";
   return format === CT_CHART_FORMAT_BLIND_TIME_FREE
     ? "시각·시간대 숨김"
@@ -180,7 +190,8 @@ export async function ctCalibrationSnapshot(ownerId: string, contract: Pick<CTCo
     .bind(contract.market, ownerId, runId)
     .all<CalibrationRow>();
   // Only sets drawn with the decision time hidden are pooled: a set whose charts printed the time could be matched to the designer's own list of times.
-  const open = rows.results.filter((r) => !overlaps(r, contract) && r.chart_format === pool);
+  // Records the owner excluded (CT_CALIBRATION_EXCLUDED) are never pooled, under any policy.
+  const open = rows.results.filter((r) => !overlaps(r, contract) && r.chart_format === pool && !CT_CALIBRATION_EXCLUDED[r.id]);
   const n = open.reduce((s, r) => s + r.n, 0),
     hits = open.reduce((s, r) => s + r.k, 0);
   const facts = n ? ctCalibrationFacts(n, hits) : null;
@@ -193,7 +204,7 @@ export async function ctCalibrationSnapshot(ownerId: string, contract: Pick<CTCo
       const hide = overlaps(r, contract);
       return {
         run: r.run_id.slice(0, 8),
-        chartFormat: formatText(r.chart_format, pool),
+        chartFormat: formatText(r.chart_format, pool, r.id),
         symbols: JSON.parse(r.symbols) as string[],
         n: r.n,
         verdict: r.verdict,
