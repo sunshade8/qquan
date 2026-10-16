@@ -1,4 +1,4 @@
-import { CT_ENGINE, CT_POLICY } from "../../lib/ct-spec.ts";
+import { CT_ENGINE, CT_POLICY_V6 as CT_POLICY } from "../../lib/ct-spec.ts";
 export const condition = {
   feature: "prior_high_distance_pct",
   lookback: 3,

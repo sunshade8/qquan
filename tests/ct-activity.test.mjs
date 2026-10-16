@@ -107,7 +107,7 @@ test("truncation uses the recorded stop reason and allowance, not the role defau
 });
 
 import { traderSummary, toolDoing, sessionProgress } from "../lib/ct-activity.ts";
-import { CT_POLICY } from "../lib/ct-spec.ts";
+import { CT_POLICY_V6 as CT_POLICY } from "../lib/ct-spec.ts";
 test("the progress view summarises the trader tools and names them while they run", () => {
   assert.equal(traderSummary({}), null);
   const summary = traderSummary({

@@ -1,3 +1,4 @@
+import { ctBookRuntime } from "./ct-book.ts";
 import Decimal from "decimal.js";
 import type {
   DashboardState,
@@ -349,6 +350,7 @@ export async function tickCTDashboard(
         (b) => b.startMs >= entryAt && b.endMs > (trade.checkedThroughMs ?? 0),
       )) {
         const step = ctExitStep(rule.spec, trade.ctSignal, trade.ctPosition!, bar);
+        if(!step.exit && rule.book && !ctBookRuntime(rule.book,rule.components??[],{[trade.symbol]:bars},rule.contract,bar.endMs).target)step.exit={price:bar.close,reason:"book_signal_expired"};
         trade.ctPosition = step.position;
         trade.checkedThroughMs = bar.endMs;
         if (step.exit) {
@@ -454,7 +456,7 @@ export async function tickCTDashboard(
         ctEntryBlocked(rule.spec, rule.contract.market, now, true)
       )
         continue;
-      const signal = detectCT(rule.spec, symbol, bars, now);
+      const signal = rule.book ? ctBookRuntime(rule.book,rule.components??[],{[symbol]:bars},rule.contract,last.endMs).signal : detectCT(rule.spec, symbol, bars, now);
       if (!signal || now >= signal.validUntil) continue;
       // Entry windows are judged at the signal bar's close — the same instant the backtest uses.
       if (rule.spec.entry.entryWindows?.length && ctEntryBlocked(rule.spec, rule.contract.market, signal.decidedAt)) continue;

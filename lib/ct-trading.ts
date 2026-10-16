@@ -1,3 +1,5 @@
+import { binanceQuote, binanceSpotBroker } from "./binance-broker.ts";
+import { binanceSetting } from "./binance-api.ts";
 import { queryLocalMarket } from "./local-market-data.ts";
 import { saveCTTradeEvidence } from "./ct-trade-evidence.ts";
 import { ensureCTSchema } from "./ct-research-store.ts";
@@ -135,7 +137,7 @@ export async function ctBroker(
   if (mode === "paper") {
     const quote =
       book === "ct-crypto"
-        ? upbitQuote
+        ? (symbol:string)=>symbol.startsWith("KRW-")?upbitQuote(symbol):binanceQuote(symbol)
         : (s: string) => fetchTossQuote(s, { withBook: true });
     return {
       mode: "paper" as const,
@@ -144,7 +146,7 @@ export async function ctBroker(
         return { brokerOrderId: `paper-${r.clientOrderId}` };
       },
       async poll(order: Parameters<DashboardBroker["poll"]>[0]) {
-        const fee = book === "ct-crypto" ? 0.05 : feePerSidePct();
+        const fee = book === "ct-crypto" ? (order.symbol.startsWith("KRW-")?.05:.1) : feePerSidePct();
         return {
           status: "filled" as const,
           filledQuantity: order.quantity,
@@ -159,7 +161,10 @@ export async function ctBroker(
       async cancel() {},
     };
   }
-  if (book === "ct-crypto") return cryptoBroker();
+  if (book === "ct-crypto") {
+    const legacy=cryptoBroker(),binance=binanceSpotBroker();
+    return {mode:"live" as const,quote:(symbol:string)=>symbol.startsWith("KRW-")?legacy.quote(symbol):binance.quote(symbol),submit:(r:Parameters<DashboardBroker["submit"]>[0])=>r.symbol.startsWith("KRW-")?legacy.submit(r):binance.submit(r),poll:(r:Parameters<DashboardBroker["poll"]>[0])=>r.symbol.startsWith("KRW-")?legacy.poll(r):binance.poll(r),cancel:(r:Parameters<DashboardBroker["cancel"]>[0])=>r.symbol.startsWith("KRW-")?legacy.cancel(r):binance.cancel(r),recover:(r:Parameters<DashboardBroker["poll"]>[0])=>r.symbol.startsWith("KRW-")?legacy.recover(r):binance.recover(r),sellableQuantity:(symbol:string)=>symbol.startsWith("KRW-")?legacy.sellableQuantity!(symbol):binance.sellableQuantity!(symbol),entryProblem:(symbol:string,slot:Parameters<NonNullable<DashboardBroker["entryProblem"]>>[1],date:string)=>symbol.startsWith("KRW-")?legacy.entryProblem!(symbol,slot,date):binance.entryProblem!(symbol,slot,date)};
+  }
   const broker = await toss();
   return {
     ...broker,
@@ -217,7 +222,7 @@ export async function ctTick(
       return dataCache.get(symbol)!;
     },
     async entryAllowed(symbol) {
-      if(book === "ct-crypto" && symbol && symbol !== "KRW-BTC") return false;
+      if(book === "ct-crypto" && symbol && !["KRW-BTC","BTCUSDT","ETHUSDT","SOLUSDT"].includes(symbol)) return false;
       if (
         state.mode === "live" &&
         (await accountHasUncertainOrders(`${book}-live`))
@@ -241,30 +246,26 @@ export async function ctStartState(
   book: CTBook,
   state: DashboardState,
   packages: CTPackage[],
+  selectedIds?:string[],
 ) {
+  if(selectedIds){if(!selectedIds.length||new Set(selectedIds).size!==selectedIds.length||selectedIds.some(id=>!packages.some(p=>p.id===id)))throw new Error("선택 운용 버전 오류");packages=selectedIds.map(id=>packages.find(p=>p.id===id)!);}
+  else packages=packages.slice(-1);
   if (!packages.length) throw new Error("등록된 CT 전략 없음");
   for (const p of packages)
-    if ((await ctHash(executableCT(p.spec))) !== p.hash)
+    if ((p.book?.hash ?? await ctHash(executableCT(p.spec))) !== p.hash)
       throw new Error("CT 등록 해시 불일치");
   const chosen = packages.at(-1)!;
-  if (chosen.contract.currency === 'USDT') throw new Error('Binance BTCUSDT 연구는 Upbit KRW 실행과 호환되지 않습니다. 거래소·통화·비용 검증 전 실행 불가'); // One global position; a start pins the most recently explicitly registered version.
-  state.ctRules = [
-    {
-      id: chosen.id,
-      spec: chosen.spec,
-      hash: chosen.hash,
-      contract: chosen.contract,
-    },
-  ];
+
+  if(packages.some(p=>p.contract.currency!==chosen.contract.currency||p.contract.capital!==chosen.contract.capital||p.contract.costProfile?.id!==chosen.contract.costProfile?.id))throw new Error("운용 패키지의 통화·자본·비용 프로파일 불일치");
+  state.ctRules = packages.map(p=>({...(p.book?{book:p.book,components:p.components}:{}),id:p.id,spec:p.spec,hash:p.hash,contract:p.contract}));
   state.ctProgress = {};
-  state.strategyIds = [chosen.id];
+  state.strategyIds = packages.map(p=>p.id);
   state.initialCapitalUsd = chosen.contract.capital;
   state.cashUsd = chosen.contract.capital;
   state.peakEquityUsd = chosen.contract.capital;
-  state.strategies = {
-    [chosen.id]: {
-      id: chosen.id,
-      name: chosen.spec.name,
+  state.strategies = Object.fromEntries(packages.map(p=>[p.id,{
+      id: p.id,
+      name: p.spec.name,
       slot: "open",
       signals: 0,
       entries: 0,
@@ -275,8 +276,7 @@ export async function ctStartState(
       wins: 0,
       pnlUsd: 0,
       commissionUsd: 0,
-    },
-  };
+    }]));
   void book;
   return state;
 }
@@ -290,10 +290,7 @@ export async function ctReadiness(
   const paperReasons: string[] = [],
     liveReasons: string[] = [];
   const latest = packages.at(-1);
-  if (latest?.contract.currency === 'USDT') {
-    paperReasons.push('Binance USDT 연구 → Upbit KRW 실행 변환 미지원');
-    liveReasons.push(...paperReasons);
-  }
+
   if (latest?.contract.dataSnapshot) {
     try { await queryLocalMarket({ dataset: book === 'ct-stock' ? 'stock' : 'btc', instrument: latest.contract.symbols[0], from: latest.contract.fromMs, to: latest.contract.toMs, minutes: 60, snapshot: latest.contract.dataSnapshot }); }
     catch (e) { paperReasons.push(e instanceof Error ? e.message : '데이터 준비 필요'); liveReasons.push(...paperReasons); }
@@ -304,7 +301,11 @@ export async function ctReadiness(
   }
   let balance: number | null = null,
     error: string | null = null;
-  if (book === "ct-crypto") {
+  if(book === "ct-crypto"&&latest?.contract.currency==="USDT") {
+    if(binanceSetting("BINANCE_TRADING_DISABLED")!=="false")liveReasons.push("BINANCE_TRADING_DISABLED · 실주문 잠금");
+    liveReasons.push("Binance 계좌/수수료/주문/스트림 통합 검증 필요");
+  }
+  else if (book === "ct-crypto") {
     if (!upbitConfigured()) liveReasons.push("Upbit 계좌 키 미설정");
     else
       try {
@@ -345,7 +346,7 @@ export function ctDecorateView(
 ) {
   const rules = state.ctRules?.length
     ? state.ctRules
-    : packages.slice(-1).map((p) => ({
+    : packages.map((p) => ({
         id: p.id,
         spec: p.spec,
         hash: p.hash,

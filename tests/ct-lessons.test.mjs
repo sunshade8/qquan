@@ -9,7 +9,7 @@ import { register } from "node:module";
 import { z } from "zod";
 import { ctState, candidate, bars, spec as specFixture } from "./helpers/ct-fixture.mjs";
 import { STAGE3_POLICY, STAGE4_POLICY, STAGE5_POLICY } from "./helpers/ct-policies.mjs";
-import { CT_POLICY, ctHash, ctPolicyForNewContract, ctSessionPolicy } from "../lib/ct-spec.ts";
+import { CT_POLICY_V6 as CT_POLICY, ctHash, ctPolicyForNewContract, ctSessionPolicy } from "../lib/ct-spec.ts";
 import { CT_FAMILIES, ctCandidateFamilies, ctIdeaFamily, ctParseSignature, ctStructuralFamily } from "../lib/ct-families.ts";
 import { researchMaxTokens, researchModel, CT_ROLES, RESEARCH_MODELS } from "../lib/strategy-generation-models.ts";
 import { ctSessionContext, ctSubmissionSchema, ctSubmissionSchemaStage5, CT_DESIGNER_SYSTEM_STAGE5 as CT_DESIGNER_SYSTEM, CT_DESIGNER_SYSTEM_STAGE4 } from "../lib/ct-research.ts";
@@ -381,7 +381,7 @@ test("policy: a new contract carries stage 5 (and free bars), earlier ones are f
   const keep = process.env.QQUAN_CT_POLICY_VERSION;
   try {
     delete process.env.QQUAN_CT_POLICY_VERSION;
-    assert.equal(ctPolicyForNewContract(), CT_POLICY, "default behaviour unchanged");
+    assert.equal(ctPolicyForNewContract().traderTools, 7, "new contracts use policy 7; old fixtures freeze 6");
     process.env.QQUAN_CT_POLICY_VERSION = "4";
     assert.deepEqual(ctPolicyForNewContract(), { ...CT_POLICY, traderTools: 4 });
     assert.equal(ctSessionPolicy({ policy: ctPolicyForNewContract() }).timeFreeBlind, false);

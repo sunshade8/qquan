@@ -419,7 +419,7 @@ async function tossQuotesReachable(force = false) {
   return quoteProbe;
 }
 
-export async function startTrading(book: TradingBook, mode: DashboardMode, confirm: string | undefined) {
+export async function startTrading(book: TradingBook, mode: DashboardMode, confirm: string | undefined, selectedIds?:string[]) {
   if(isCTBook(book)) {
     const data=await tradingDashboards(book);const ready=data.dashboards[mode].readiness;
     if(!ready.ready)throw new TradingUserError(ready.reasons.join(" · "));
@@ -428,7 +428,7 @@ export async function startTrading(book: TradingBook, mode: DashboardMode, confi
     await withLease(book,mode,async state=>{
       if(state.status!=="stopped"||state.orders.some(isActiveOrder)||state.trades.some(t=>heldQuantity(t)>1e-8))throw new TradingUserError("실행 중이거나 정지 청산 미완료");
       const next=startDashboard(state,{now:()=>Date.now(),id:()=>crypto.randomUUID()},"CT 동결 버전");
-      return ctStartState(book,next,packages);
+      return ctStartState(book,next,packages,selectedIds);
     });return;
   }
   if (mode === "live") {
@@ -499,11 +499,13 @@ export async function tradingDashboards(book: TradingBook = "relay"): Promise<Tr
     const packages=await ctPackages(ctMarketOf(book));
     const heartbeat=Math.max(live.runnerHeartbeatAt??0,paper.runnerHeartbeatAt??0),online=Date.now()-heartbeat<RUNNER_ONLINE_MS;
     const readiness=await ctReadiness(book,live.state,paper.state,packages,online);
-    let toss:TradingDashboardResponse["toss"]={ready:readiness.liveReasons.length===0,reason:readiness.error,cause:null,egressIp:null,accountNo:book==="ct-crypto"?"Upbit":null,buyingPowerUsd:readiness.balance};
+    // New coin runs are Binance USDT; only a book whose latest package is a legacy Upbit KRW contract keeps the Upbit framing.
+    const upbit=book==="ct-crypto"&&packages.at(-1)?.contract.currency==="KRW",venue=book==="ct-stock"?"Toss" as const:upbit?"Upbit" as const:"Binance" as const;
+    let toss:TradingDashboardResponse["toss"]={ready:readiness.liveReasons.length===0,reason:readiness.error,cause:null,egressIp:null,accountNo:book==="ct-crypto"?venue:null,buyingPowerUsd:readiness.balance};
     if(book==="ct-stock") { const status=await cachedTossStatus();toss={ready:status.ready,reason:status.reason,cause:status.cause,egressIp:status.egressIp,accountNo:status.account?.accountNo??null,buyingPowerUsd:status.buyingPowerUsd};if(!status.ready)readiness.liveReasons.push(status.reason??"토스 연결 실패");if((status.buyingPowerUsd??0)<(packages.at(-1)?.contract.capital??Infinity))readiness.liveReasons.push("실제 USD 주문 가능 잔고가 CT 예산보다 적습니다."); }
-    const capital=packages.at(-1)?.contract.capital??(book==="ct-crypto"?1000000:1000);
+    const capital=packages.at(-1)?.contract.capital??(upbit?1000000:1000);
     for(const row of [live,paper])if(!row.state.startedAt){row.state.initialCapitalUsd=capital;row.state.cashUsd=capital;row.state.peakEquityUsd=capital;}
-    return {book,currency:book==="ct-crypto"?"KRW":"USD",broker:book==="ct-crypto"?"Upbit":"Toss",timezone:book==="ct-crypto"?"Asia/Seoul":"America/New_York",now:new Date().toISOString(),dashboards:{live:ctDecorateView(view(live.state,{ready:!readiness.liveReasons.length,reasons:readiness.liveReasons},[]),live.state,packages),paper:ctDecorateView(view(paper.state,{ready:!readiness.paperReasons.length,reasons:readiness.paperReasons},[]),paper.state,packages)},runner:{online,lastHeartbeatAt:heartbeat?new Date(heartbeat).toISOString():null,intervalSeconds:RUNNER_INTERVAL_SECONDS},registeredStrategies:packages.length,toss,capitalUsd:capital};
+    return {book,currency:venue==="Upbit"?"KRW":venue==="Binance"?"USDT":"USD",broker:venue,timezone:venue==="Upbit"?"Asia/Seoul":venue==="Binance"?"UTC":"America/New_York",now:new Date().toISOString(),dashboards:{live:ctDecorateView(view(live.state,{ready:!readiness.liveReasons.length,reasons:readiness.liveReasons},[]),live.state,packages),paper:ctDecorateView(view(paper.state,{ready:!readiness.paperReasons.length,reasons:readiness.paperReasons},[]),paper.state,packages)},runner:{online,lastHeartbeatAt:heartbeat?new Date(heartbeat).toISOString():null,intervalSeconds:RUNNER_INTERVAL_SECONDS},registeredStrategies:packages.length,toss,capitalUsd:capital};
   }
   const [toss, quotes] = await Promise.all([cachedTossStatus(), tossQuotesReachable()]);
   const liveReasons: string[] = [];

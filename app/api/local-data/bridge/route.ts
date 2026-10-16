@@ -9,7 +9,7 @@ export async function POST(request:Request) {
     if (Number(request.headers.get('content-length') || 0) > 600_000) throw Error('입력 크기 초과');
     const body = await request.json() as Record<string,unknown>;
     if (body.action === 'poll') {
-      const task = await claimBridgeRequest(body.heartbeatOnly === true);
+      const task = await claimBridgeRequest(body.heartbeatOnly === true, Array.isArray(body.capabilities) && body.capabilities.includes("ct-control-v1"));
       return Response.json({task:task ? {...task,input:JSON.parse(task.input)} : null},{headers:{'cache-control':'no-store'}});
     }
     if (typeof body.id !== 'string' || !/^[a-f0-9-]{36}$/.test(body.id) || typeof body.lease !== 'string' || !/^[a-f0-9-]{36}$/.test(body.lease)) throw Error('잘못된 작업 ID');

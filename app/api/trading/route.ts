@@ -42,7 +42,7 @@ export async function POST(request: Request) {
       const results = await tickDashboards(body.source === "runner" ? "runner" : "page");
       if (body.source === "runner") return Response.json({ ok: true, results });
     } else if (body.action === "start" && mode) {
-      await startTrading(book, mode, body.confirm);
+      await startTrading(book, mode, body.confirm,Array.isArray((body as unknown as {strategyIds?:unknown}).strategyIds)?((body as unknown as {strategyIds:unknown[]}).strategyIds.map(id=>String(id))):undefined);
     } else if (body.action === "stop" && mode) {
       await stopTrading(book, mode);
     } else {

@@ -77,6 +77,7 @@ export type CTTradeManagement = {
   moves: Array<{ at: number; from: number; to: number; source: "breakeven" | "trail" }>;
 };
 export type CTResult = {
+  accountState?: {peakEquity:number;maxDrawdownPct:number};
   engine: string;
   status: "measured" | "no_trades" | "data_error";
   bars: number;
@@ -981,6 +982,8 @@ export function replayCT(
     deadline?: number;
     /** Scales the initial stop distance (the gate's ±10% stop stress for managed exits). */
     stopScale?: number;
+    accountState?: {peakEquity:number;maxDrawdownPct:number};
+    policy?: { observe:(at:number)=>void; signal:(symbol:string,at:number)=>CTSignal|null; exit:()=>boolean };
   } = {},
 ): CTResult {
   const spec = ctSpecSchema.parse(specInput),
@@ -997,7 +1000,7 @@ export function replayCT(
     missed: 0,
     costs: 0,
     netReturnPct: 0,
-    maxDrawdownPct: 0,
+    maxDrawdownPct: options.accountState?.maxDrawdownPct ?? 0,
     winRatePct: 0,
     payoff: 0,
     expectancy: 0,
@@ -1022,7 +1025,7 @@ export function replayCT(
   }
   const history = ctHistoryBars(spec);
   let cash = contract.capital,
-    peak = cash,
+    peak = options.accountState?.peakEquity ?? cash,
     lastExit = -Infinity,
     day = "",
     dayStart = cash;
@@ -1092,6 +1095,7 @@ export function replayCT(
       });
   };
   for (const time of times) {
+    options.policy?.observe(time);
     if (options.deadline && Date.now() > options.deadline)
       throw new Error("CT 계산 시간 상한");
     const date = ctDate(time - 1, contract.market, contract.timezone);
@@ -1195,7 +1199,7 @@ export function replayCT(
         );
         const step = ctExitStep(spec, held.signal, held.position, bar, ctForcedExit(spec, contract.market, bar));
         held.position = step.position;
-        const exit = step.exit;
+        const exit = step.exit ?? (options.policy?.exit() ? {price:bar.close,reason:"book_signal_expired"} : null);
         if (exit) {
           const price = ctFillPrice(
             exit.price *
@@ -1268,7 +1272,7 @@ export function replayCT(
           Math.max(0, i - history, firstInRange[symbol]),
           i + 1,
         );
-        const signal = detectCT(spec, symbol, rows, time, featureCaches[symbol], higherSets[symbol], levelSets[symbol]);
+        const signal = options.policy ? options.policy.signal(symbol,time) : detectCT(spec, symbol, rows, time, featureCaches[symbol], higherSets[symbol], levelSets[symbol]);
         if (signal) {
           result.signals++;
           pending = { symbol, signal, index: i };
@@ -1376,6 +1380,7 @@ export function replayCT(
     result.diagnostics.push("비용 후 양의 엣지 미확인");
   if ((result.meanDailyReturnPct ?? 0) <= 0)
     result.diagnostics.push("일평균 비용 후 수익 0 이하");
+  if(options.accountState)result.accountState={peakEquity:peak,maxDrawdownPct:result.maxDrawdownPct};
   return result;
 }
 /**

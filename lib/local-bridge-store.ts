@@ -16,7 +16,7 @@ export async function bridgeOnline() {
   const row = await db().prepare("SELECT heartbeat FROM local_bridge_runtime WHERE id='data'").first<{heartbeat:number}>();
   return Boolean(row && row.heartbeat > Date.now() - 45_000);
 }
-export async function claimBridgeRequest(heartbeatOnly = false) {
+export async function claimBridgeRequest(heartbeatOnly = false, control = false) {
   await ensureBridge();
   const now = Date.now();
   await db().prepare("INSERT INTO local_bridge_runtime VALUES ('data',?) ON CONFLICT(id) DO UPDATE SET heartbeat=excluded.heartbeat").bind(now).run();
@@ -25,8 +25,8 @@ export async function claimBridgeRequest(heartbeatOnly = false) {
   await db().prepare("DELETE FROM local_bridge_chunks WHERE id IN (SELECT id FROM local_bridge_requests WHERE expires<?)").bind(now - 60_000).run();
   await db().prepare("DELETE FROM local_bridge_requests WHERE expires<?").bind(now - 60_000).run();
   const lease = crypto.randomUUID();
-  return db().prepare("UPDATE local_bridge_requests SET lease=?,lease_until=?,status='running' WHERE id=(SELECT id FROM local_bridge_requests WHERE expires>? AND (status='queued' OR (status='running' AND lease_until<?)) ORDER BY created LIMIT 1) RETURNING id,input,lease")
-    .bind(lease,now+100_000,now,now).first<{id:string;input:string;lease:string}>();
+  return db().prepare("UPDATE local_bridge_requests SET lease=?,lease_until=?,status='running' WHERE id=(SELECT id FROM local_bridge_requests WHERE expires>? AND (?=1 OR COALESCE(json_extract(input,'$.action'),'')<>'ct_control') AND (status='queued' OR (status='running' AND lease_until<?)) ORDER BY created LIMIT 1) RETURNING id,input,lease")
+    .bind(lease,now+100_000,now,control?1:0,now).first<{id:string;input:string;lease:string}>();
 }
 export async function putBridgeChunk(id:string, lease:string, page:number, payload:string) {
   await ensureBridge();

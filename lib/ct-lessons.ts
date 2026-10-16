@@ -43,7 +43,8 @@ import type { GenerationJob } from "./strategy-generation-types.ts";
 
 /* ----------------------------------------------------------------------- coverage */
 
-export const GRADE_RANK: Record<CTPlaybookGrade, number> = { rejected_in_training: 0, screen_failed: 1, development_failed: 2, failed_final: 3, passed_final: 4, adopted_daily: 5 };
+export const GRADE_RANK: Record<CTPlaybookGrade, number> = {
+  component_passed:3,component_dev_failed:1,component_training_failed:0,book_development_failed:2,book_passed_final:4,book_failed_final:3, rejected_in_training: 0, screen_failed: 1, development_failed: 2, failed_final: 3, passed_final: 4, adopted_daily: 5 };
 const TIMEFRAMES = [1, 3, 12, 60, 240, 1440] as const;
 /** Every feature × timeframe the rule language can express (level features exist on 1-minute bars only). */
 export const CT_FEATURE_CELLS: string[] = [

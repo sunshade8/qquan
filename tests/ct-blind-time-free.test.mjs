@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 import { register } from "node:module";
 import { ctState } from "./helpers/ct-fixture.mjs";
 import { plantedMarket, plantedContract, MINUTE, DAY } from "./helpers/ct-trader-fixture.mjs";
-import { ctHash, CT_POLICY, ctSessionPolicy } from "../lib/ct-spec.ts";
+import { ctHash, CT_POLICY_V6 as CT_POLICY, ctSessionPolicy } from "../lib/ct-spec.ts";
 import { FREEBARS_POLICY, OVERVIEW_POLICY, STAGE5_POLICY } from "./helpers/ct-policies.mjs";
 import { ctRunLabels, ctLabelMovesReport, ctLabelMovesSchemaBars, ctChartable } from "../lib/ct-trader-tools.ts";
 import { ctRenderChart, ctBase64 } from "../lib/ct-chart-image.ts";

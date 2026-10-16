@@ -8,7 +8,7 @@ import { register } from "node:module";
 import { ctState } from "./helpers/ct-fixture.mjs";
 import { plantedMarket, plantedContract } from "./helpers/ct-trader-fixture.mjs";
 import { stockWalk, contractFor } from "./helpers/ct-golden-cases.mjs";
-import { ctHash, CT_ENGINE, CT_POLICY, ctSessionPolicy } from "../lib/ct-spec.ts";
+import { ctHash, CT_ENGINE, CT_POLICY_V6 as CT_POLICY, ctSessionPolicy } from "../lib/ct-spec.ts";
 import { ctDataAt } from "../lib/ct-engine.ts";
 import { ctCostHurdle } from "../lib/ct-design-tools.ts";
 import { ctRunLabels, ctLabelMovesReport } from "../lib/ct-trader-tools.ts";

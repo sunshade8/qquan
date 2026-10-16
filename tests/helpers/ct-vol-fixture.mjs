@@ -3,7 +3,7 @@
 //              extreme past returns of EITHER sign are over-represented among events when controls ignore volatility.
 //  - reversal: the same plus mean reversion (a dip tends to be followed by a rebound): events follow dips, stop-first moments follow rallies.
 import { ctRng } from "../../lib/ct-trader-tools.ts";
-import { CT_ENGINE, CT_POLICY } from "../../lib/ct-spec.ts";
+import { CT_ENGINE, CT_POLICY_V6 as CT_POLICY } from "../../lib/ct-spec.ts";
 
 export const MINUTE = 60_000;
 export const DAY = 86_400_000;

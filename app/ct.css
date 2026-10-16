@@ -469,3 +469,17 @@
 .ct-table-wrap { overflow-x: auto; max-width: 100%; }
 .ct-coverage-table td:first-child, .ct-coverage-table th:first-child { white-space: normal; min-width: 12rem; }
 .ct-coverage-table td { color: var(--text); }
+
+.ct-subtabs { margin: 16px 0 24px; }
+.ct-compare-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin:16px 0; }
+.ct-compare-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; margin:18px 0; }
+.ct-compare-form > h2,.ct-compare-form > p { grid-column:1/-1; }
+.ct-compare-form label { display:flex; flex-direction:column; gap:6px; min-width:0; }
+.ct-compare-form input,.ct-compare-form select,.ct-replay select { font:inherit; color:inherit; background:transparent; border:1px solid var(--border,#ddd); border-radius:6px; padding:8px; min-width:0; }
+.ct-comparison-chart { width:100%; max-height:300px; display:block; margin:20px 0; }
+.ct-replay-arms { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:24px; }
+.ct-validation pre,.ct-replay pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:450px; overflow:auto; font-size:12px; }
+.ct-validation code,.ct-replay code { overflow-wrap:anywhere; }
+.ct-validation > article { margin:18px 0; }
+.ct-workspace [hidden] { display:none!important; }
+@media(max-width:640px){.ct-compare-form,.ct-replay-arms{grid-template-columns:minmax(0,1fr)}.ct-compare-toolbar{align-items:stretch}.ct-validation,.ct-replay{min-width:0}.ct-replay-arms h3{overflow-wrap:anywhere}}

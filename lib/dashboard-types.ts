@@ -119,7 +119,7 @@ export type DashboardBrokerBalance = { accountNo: string | null; cashBuyingPower
 export type DashboardRunSummary = { runId: string; startedAt: string | null; stoppedAt: string | null; finalEquityUsd: number; returnPct: number; trades: number };
 
 export type DashboardState = {
-  ctRules?: Array<{id:string;spec:import("./ct-spec.ts").CTSpec;hash:string;contract:import("./ct-spec.ts").CTContract}>;
+  ctRules?: Array<{book?:import("./ct-book.ts").CTBookRecord;components?:import("./ct-components.ts").CTComponentRecord[];id:string;spec:import("./ct-spec.ts").CTSpec;hash:string;contract:import("./ct-spec.ts").CTContract}>;
   ctProgress?: Record<string,number>;
   version: 1;
   /** Registry snapshot at start; newly generated strategies activate on the next run. */
@@ -200,8 +200,8 @@ export type TradingDashboardView = {
 export type TradingDashboardResponse = {
   /** Which book these dashboards belong to: the 전략 slot rules or the 급등주 rules. */
   book?: "relay" | "surge" | "ct-stock" | "ct-crypto";
-  currency?: "USD" | "KRW";
-  broker?: "Toss" | "Upbit";
+  currency?: "USD" | "KRW" | "USDT";
+  broker?: "Toss" | "Upbit" | "Binance";
   timezone?: string;
   now: string;
   dashboards: { live: TradingDashboardView; paper: TradingDashboardView };

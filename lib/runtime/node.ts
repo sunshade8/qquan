@@ -7,7 +7,7 @@ try {
 import { LocalDatabase } from "./local-sqlite.ts";
 const database = new LocalDatabase();
 export const env = new Proxy({} as Record<string, unknown>, {
-  get: (_target, key) => (key === "DB" ? database : process.env[String(key)]),
+  get: (_target, key) => (key === "DB" ? database : key === "QQUAN_RUNTIME" ? "node" : process.env[String(key)]),
 });
 export function waitUntil(work: Promise<unknown>) {
   void work.catch((error) =>

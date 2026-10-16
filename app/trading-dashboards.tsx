@@ -28,11 +28,12 @@ const STOP_STEPS: Array<{ phase: StopPhase; label: string }> = [
 ];
 const EXIT_TEXT: Record<string, string> = { stop: "손절", target: "목표", slot_end: "시간 청산", shutdown: "정지 청산" };
 
-const MoneyContext=createContext<"USD"|"KRW">("USD");
+const MoneyContext=createContext<"USD"|"KRW"|"USDT">("USD");
 function useMoney(){const currency=useContext(MoneyContext);return (value:number|null|undefined,signed=false)=>formatMoney(value,signed,currency);}
-function formatMoney(value: number | null | undefined, signed = false,currency:"USD"|"KRW"="USD") {
+function formatMoney(value: number | null | undefined, signed = false,currency:"USD"|"KRW"|"USDT"="USD") {
   if (value === null || value === undefined || !Number.isFinite(value)) return "—";
   const sign = value < 0 ? "−" : signed && value > 0 ? "+" : "";
+  if (currency === "USDT") return `${sign}${Math.abs(value).toLocaleString("ko-KR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT`;
   return `${sign}${currency==="KRW"?"₩":"$"}${Math.abs(value).toLocaleString("ko-KR", { minimumFractionDigits: currency==="KRW"?0:2, maximumFractionDigits: currency==="KRW"?0:2 })}`;
 }
 
@@ -151,7 +152,7 @@ function StartDialog({ mode, book, data, onClose, onConfirm, busy }: { mode: Das
   const usd=useMoney();
   const [phrase, setPhrase] = useState("");
   const live = mode === "live";
-  return <Modal compact eyebrow={live ? "LIVE ORDERS" : "PAPER TRADING"} title={`${MODE_TITLE[mode]} 시작`} subtitle={data.broker==="Upbit"?"Upbit KRW 현물 · 소수 수량 · KST 24시간":MODE_SUB[mode]} onClose={onClose}
+  return <Modal compact eyebrow={live ? "LIVE ORDERS" : "PAPER TRADING"} title={`${MODE_TITLE[mode]} 시작`} subtitle={data.broker==="Upbit"?"Upbit KRW 현물 · 소수 수량 · KST 24시간":data.broker==="Binance"?"Binance Spot USDT · 소수 수량 · UTC 일 경계":MODE_SUB[mode]} onClose={onClose}
     footer={<><span>{live ? "실제 돈으로 주문이 나갑니다." : "주문은 나가지 않습니다."}</span><div className="trading-dialog-actions"><button className="ghost" onClick={onClose}>취소</button><button className={live ? "danger" : "primary"} disabled={busy || (live && phrase !== LIVE_CONFIRM)} onClick={() => onConfirm(phrase)}>{busy ? <RefreshCw size={13} className="spin" /> : <Play size={13} />}시작</button></div></>}>
     <dl className="trading-dialog-facts">
       <div><dt>시작 자본</dt><dd>{usd(data.capitalUsd)}</dd></div>
@@ -364,7 +365,7 @@ function DashboardPanel({ view, data, now, busy, book, onStart, onStop, onBackte
       <div>
         <span className={`trading-status ${view.status}`}><i />{STATUS_TEXT[view.status]}{view.status === "stopping" && phaseIndex >= 0 ? ` · ${phaseIndex + 1}/3 ${STOP_STEPS[phaseIndex].label}` : ""}</span>
         <h2>{MODE_TITLE[view.mode]}</h2>
-        <p>{data.broker==="Upbit"?(view.mode==="live"?"Upbit 계좌 · 실제 KRW 주문":"Upbit 실시간 호가 · 가상 체결"):MODE_SUB[view.mode]} · {BOOK_COPY[book].source} · 운용 예산 {usd(view.initialCapitalUsd)}{view.startedAt ? ` · 시작 ${clock(view.startedAt)}` : ""}{view.lastTickAt ? ` · 마지막 틱 ${ago(view.lastTickAt, now)}` : ""}</p>
+        <p>{data.broker==="Upbit"?(view.mode==="live"?"Upbit 계좌 · 실제 KRW 주문":"Upbit 실시간 호가 · 가상 체결"):data.broker==="Binance"?(view.mode==="live"?"Binance 계좌 · 실제 USDT 주문(기본 잠금)":"Binance 실시간 호가 · 가상 체결"):MODE_SUB[view.mode]} · {BOOK_COPY[book].source} · 운용 예산 {usd(view.initialCapitalUsd)}{view.startedAt ? ` · 시작 ${clock(view.startedAt)}` : ""}{view.lastTickAt ? ` · 마지막 틱 ${ago(view.lastTickAt, now)}` : ""}</p>
       </div>
       <div className="trading-actions">
         <button className="start" disabled={busy || view.status !== "stopped" || blocked} onClick={onStart} title={blocked ? view.readiness.reasons.join("\n") : undefined}><Play size={14} />시작</button>
@@ -429,7 +430,7 @@ function DashboardPanel({ view, data, now, busy, book, onStart, onStop, onBackte
       <section>
         <h3>날짜별 수익(률)</h3>
         {view.daily.length ? <div className="lab-table-wrap trading-scroll"><table className="lab-table">
-          <thead><tr><th>날짜 ({data.currency==="KRW"?"KST":"ET"})</th><th>시작</th><th>종료</th><th>손익</th><th>수익률</th><th>거래</th></tr></thead>
+          <thead><tr><th>날짜 ({data.currency==="KRW"?"KST":data.currency==="USDT"?"UTC":"ET"})</th><th>시작</th><th>종료</th><th>손익</th><th>수익률</th><th>거래</th></tr></thead>
           <tbody>{[...view.daily].reverse().map((day) => <tr key={day.date}>
             <td>{day.date}</td><td>{usd(day.startEquityUsd)}</td><td>{usd(day.equityUsd)}</td>
             <td className={tone(day.pnlUsd)}>{usd(day.pnlUsd, true)}</td><td className={tone(day.returnPct)}>{pct(day.returnPct)}</td><td>{day.trades}</td>
@@ -510,6 +511,7 @@ const BOOK_COPY: Record<TradingBookId, { source: string; empty: string; backtest
 };
 
 export function TradingDashboards({ book = "relay" }: { book?: TradingBookId } = {}) {
+  const [selectedVersions,setSelectedVersions]=useState<string[]>([]);
   const [data, setData] = useState<TradingDashboardResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [mode, setMode] = useState<DashboardMode>(book.startsWith("ct-")?"paper":"live");
@@ -565,7 +567,7 @@ export function TradingDashboards({ book = "relay" }: { book?: TradingBookId } =
     setBusy(true);
     setActionError(null);
     try {
-      const response = await fetch("/api/trading", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, mode, confirm, book }) });
+      const response = await fetch("/api/trading", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, mode, confirm, book,...(book.startsWith("ct-")&&selectedVersions.length?{strategyIds:selectedVersions}:{}) }) });
       const payload = await response.json() as TradingDashboardResponse & { error?: string };
       if (!response.ok) throw new Error(payload.error ?? `HTTP ${response.status}`);
       setData(payload);
@@ -588,6 +590,7 @@ export function TradingDashboards({ book = "relay" }: { book?: TradingBookId } =
   const view = data.dashboards[mode];
   const usd=(v:number|null|undefined,signed=false)=>formatMoney(v,signed,data.currency??"USD");
   return <MoneyContext.Provider value={data.currency??"USD"}><section className="trading-dashboards">
+    {book.startsWith("ct-")&&view.status==="stopped"?<fieldset className="ui-card pad"><legend>운용 패키지 · 동결된 버전 선택</legend>{view.strategies.map(s=><label key={s.id} style={{display:"block"}}><input type="checkbox" checked={selectedVersions.includes(s.id)} onChange={e=>setSelectedVersions(ids=>e.target.checked?[...ids,s.id]:ids.filter(id=>id!==s.id))}/> {s.name}</label>)}<p className="ui-sub">선택한 순서로 충돌을 해결하고 하나의 계좌 위험 한도를 공유합니다. 기본 보수적 프로파일은 동시 포지션 1개입니다. 선택하지 않으면 가장 최근 등록 버전을 사용합니다.</p></fieldset>:null}
     <div className="trading-tabs" role="tablist" aria-label="트레이딩 대시보드">
       {(["live", "paper"] as const).map((item) => {
         const dashboard = data.dashboards[item];

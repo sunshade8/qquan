@@ -2,6 +2,21 @@
 
 확인일: 2026-10-16 (Asia/Seoul). 이 문서는 구현 지침과 조사 결과이며, 아래 기능이 이미 앱에 구현되었다는 뜻은 아니다. 사용자 결정은 **새 코인 연구·리플레이·모의·실전의 거래소를 Binance로 통일하고, 롱/숏·레버리지·상품/마진/포지션 모드를 지원 범위 안에서 선택**하는 것이다. 현물·롱 전용으로 제한하지 않는다.
 
+## 앱 구현 상태 (2026-10-16 CT 통합 구현 기준)
+
+| 기능/상품 | 구현 | 데이터 | 계정 권한 | 자동 테스트 | 실제 읽기 | 모의/테스트넷 | 실전 | 남은 제약 |
+|---|---|---|---|---|---|---|---|---|
+| 서명·필터·백오프 (`lib/binance-api.ts`) | 됨 | — | — | HMAC 벡터, Decimal 필터, µs kline, depth gap, 429/418 | 됨 | — | — | — |
+| Spot 연구·리플레이 | 됨 | 1분 snapshot | 읽기 OK | 됨 | 됨 | 모의: Binance 호가 가상 체결 | 잠금(`BINANCE_TRADING_DISABLED`) | 테스트넷 키 없음 → 실체결·user stream 미검증 |
+| Spot 실주문 어댑터 (`lib/binance-broker.ts`) | 어댑터(기존 대시보드 주문 장부·clientOrderId 경유). 상품별 주문 의도 장부 `lib/ct-order-intents-store.ts`는 작성만 됐고 호출처·테스트 없음 | — | `enableSpotAndMarginTrading=true` | fixture(잠금 시 네트워크 전 거부) | — | 미확인 | 잠금 | 테스트넷 자격증명 |
+| Cross/Isolated Margin | 회계(차입·이자) 단위 | 없음 | `enableMargin=false` | 단위 | 계좌 읽기 OK | — | 차단 | 권한·역사 차입 자료 |
+| USDⓈ-M | 회계·positionSide 파라미터·mark 위험 차단 | 없음(mark/funding 이력 미수집) | `enableFutures=true` | 단위 | 계좌·bracket·mark·funding 읽기 OK | — | 차단 | 상품 데이터·리플레이 연결 |
+| COIN-M | inverse PnL 단위 | 없음 | 읽기 OK | 단위 | 계좌·bracket 읽기 OK | — | 차단 | 상품 데이터·리플레이 연결 |
+| Options | premium·정산 단위 | 없음 | 계좌 401 | 단위 | 공개만 | — | 차단 | 권한·chain 이력 |
+| Portfolio Margin/Pro | 없음 | 없음 | 401/400 | — | 실패 | — | 차단 | 계좌 모드·권한 |
+
+"차단"은 연구 시작과 실전 모두 서버가 거부한다는 뜻이다(`assertCTCapability`). 읽기 스모크: `scripts/research/binance-read-smoke.ts`(키 값·금액은 출력하지 않음, 금융 변경 0건). 아래 절의 "기존 실행기에 아직 Binance 어댑터가 없다"는 조사 시점 기록이며, 지금은 Spot 어댑터가 있고 기본 잠금이다.
+
 ## 자격증명과 현재 확인 범위
 
 - 프로젝트의 Git 제외 파일 `.dev.vars`에 `BINANCE_API_KEY`, `BINANCE_API_SECRET`을 저장했다. 파일 권한 0600, Git 추적 안 됨. 값은 이 문서에 없다.

@@ -34,6 +34,9 @@ import {
   trialPassed,
   type CTJob,
 } from "./ct-progress";
+import type { CTCapability } from "@/lib/ct-capabilities";
+import { ctDailyMetrics } from "@/lib/ct-experiment-stats";
+import { CTValidation, CTConnectionStatus } from "./ct-validation";
 import { ResearchPicker } from "./ct-picker";
 
 export { CT_PHASES };
@@ -75,9 +78,12 @@ const quietFor = (ms: number) =>
 
 /** 동결 규칙 최종 평가 요약. */
 function FinalMetrics({ result }: { result: CTResult }) {
+  const metrics=ctDailyMetrics(result.daily);
   return (
     <div className="ui-metrics">
       <div className="ui-metric"><span>최종 일평균 순수익</span><b className={tone(dayMean(result))}>{pct(dayMean(result), 3)}</b><small>{result.daily.length}일 · 기준 0% 초과</small></div>
+      <div className="ui-metric"><span>수익일 비율</span><b>{metrics.positiveDayPct.toFixed(1)}%</b><small>무거래일 포함</small></div>
+      <div className="ui-metric"><span>일간 샤프(연율화)</span><b>{metrics.sharpe?.toFixed(2)??"정의 불가"}</b></div>
       <div className="ui-metric"><span>최종 순수익</span><b className={tone(result.netReturnPct)}>{pct(result.netReturnPct)}</b><small>비용 {money(result.costs)}</small></div>
       <div className="ui-metric"><span>거래 수</span><b>{result.tradeCount ?? result.trades.length}</b><small>무거래 {result.emptyDays}일</small></div>
       <div className="ui-metric"><span>최대 낙폭</span><b>{result.maxDrawdownPct.toFixed(2)}%</b></div>
@@ -99,6 +105,7 @@ function SliceTable({ trial }: { trial: CTTrial }) {
     ["일평균 순수익", (r) => <span className={tone(dayMean(r))}>{pct(dayMean(r), 3)}</span>],
     ["순수익", (r) => <span className={tone(r.netReturnPct)}>{pct(r.netReturnPct)}</span>],
     ["수익 일 비율", (r) => r.daily.length ? `${((r.daily.filter((d) => d.returnPct > 0).length / r.daily.length) * 100).toFixed(0)}%` : "—"],
+    ["일간 샤프(연율화)",(r)=>ctDailyMetrics(r.daily,trial.spec.market==="stock"?252:365).sharpe?.toFixed(2)??"정의 불가"],
     ["최악의 날", (r) => r.daily.length ? pct(Math.min(...r.daily.map((d) => d.returnPct))) : "—"],
     ["거래 수", (r) => r.tradeCount ?? r.trades.length],
     ["무거래 일수", (r) => r.emptyDays],
@@ -657,6 +664,11 @@ function TradeEvidence({
 }
 
 export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
+  const [products,setProducts]=useState<CTCapability[]>([]),[product,setProduct]=useState("spot"),[selectionMode,setSelectionMode]=useState("manual");
+  useEffect(()=>{fetch("/api/invest/ct/experiments").then(r=>r.json() as Promise<{capabilities:CTCapability[]}>).then(p=>setProducts(p.capabilities)).catch(()=>setProducts([]));},[]);
+  const [tab,setTab]=useState("research");
+  useEffect(()=>{const read=()=>setTab(new URLSearchParams(location.search).get("ctTab")??"research");read();window.addEventListener("popstate",read);return()=>window.removeEventListener("popstate",read);},[]);
+  const selectTab=(next:string)=>{setTab(next);const u=new URL(location.href);u.searchParams.set("ctTab",next);u.searchParams.set("ctMarket",market);history.pushState({},"",u);};
   const [market, setMarket] = useState<CTMarket>("stock"),
     [data, setData] = useState<CTResponse | null>(null),
     [selected, setSelected] = useState(""),
@@ -681,11 +693,14 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
     marketRef.current = market;
   }, [market]);
   useEffect(() => {
+    // A shared link's market wins over the stored one, with or without stored settings.
+    const linked = new URLSearchParams(location.search).get("ctMarket");
+    if (linked === "stock" || linked === "crypto") queueMicrotask(() => setMarket(linked));
     try {
       const stored = JSON.parse(localStorage.getItem("qquan.ct.v1") ?? "null");
       if (stored)
         queueMicrotask(() => {
-          if (stored.market === "stock" || stored.market === "crypto")
+          if ((stored.market === "stock" || stored.market === "crypto") && linked !== "stock" && linked !== "crypto")
             setMarket(stored.market);
           setSelected(stored.selected ?? "");
           setBrief(stored.brief ?? "");
@@ -869,6 +884,7 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
   }, [job?.id, job?.status, load, ready]);
   const generate = (reason?: string) =>
     act("research", {
+      tradeSettings:{product:market==="stock"?"stock":product,selectionMode,directions:["long"],riskPct:.5},
       requestId: crypto.randomUUID(),
       ...(reason ? { repeatReason: reason } : {}),
       market,
@@ -922,7 +938,7 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
       ) : null}
 
       <header className="ct-head">
-        <h1><ChartCandlestick size={22} strokeWidth={1.9} aria-hidden="true" />차트 트레이딩</h1>
+        <h1><ChartCandlestick size={22} strokeWidth={1.9} aria-hidden="true" />차트 트레이딩 <small className="ui-sub">v0.0</small></h1>
         <p className="ui-sub">공개 접근법 조사부터 실제 실험까지. 검증된 규칙을 모의·실전 운용으로 연결합니다.</p>
       </header>
 
@@ -934,6 +950,7 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
               aria-pressed={market === m}
               onClick={() => {
                 setMarket(m);
+                const u=new URL(location.href);u.searchParams.set("ctMarket",m);for(const key of ["experiment","day","decision"])u.searchParams.delete(key);history.pushState({},"",u);
                 setSelected("");
                 setSymbols("");
                 setCapital("");
@@ -946,10 +963,15 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
         <span className="ui-sub">
           {market === "stock"
             ? "Toss · 미국 현금 주식 · USD"
-            : "Binance BTCUSDT · USDT 현물 연구 · Upbit 실행 미지원"}
+            : "Binance · Spot · USDT"}
         </span>
       </div>
 
+      <nav className="ui-segmented ct-subtabs" aria-label="CT 작업">
+        {[["research","연구"],["validation","검증"],["operation","운용"]].map(([key,label])=><button key={key} aria-current={tab===key?"page":undefined} aria-pressed={tab===key} onClick={()=>selectTab(key)}>{label}</button>)}
+      </nav>
+      {tab==="validation"?<CTValidation key={market} market={market} runId={job?.id}/>:null}
+      <div hidden={tab!=="research"}>
       <section className="ct-start ui-card pad" aria-labelledby="ct-start-h">
         <div className="ct-start-head">
           <div>
@@ -960,9 +982,10 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
                 비용 프로필: {preview.label} v{preview.version}{preview.provisional ? " (잠정 · 호가 측정 72시간 미만)" : ""} · 왕복 {previewRoundTrip.toFixed(3)}%{preview.feeVerified ? "" : " · 수수료 공식 문서 미확인"}
               </p>
             ) : null}
+            {market==="crypto"?<div className="ct-compare-toolbar"><label>상품 <select value={product} onChange={e=>setProduct(e.target.value)}>{products.filter(p=>p.product!=="stock").map(p=><option key={p.product} value={p.product}>{p.label}</option>)}</select></label><label>거래 설정 선택 <select value={selectionMode} onChange={e=>setSelectionMode(e.target.value)}><option value="manual">직접 지정</option><option value="agent">에이전트 선택</option></select></label><span className="ui-sub">허용 방향 롱 · 거래 위험 0.5% · 총 배분 상한 25%</span>{product!=="spot"?<p className="ui-alert">{products.find(p=>p.product===product)?.reason.join(" · ")} · 현재 연구/운용 연결 미완료이며 시작을 차단합니다.</p>:null}</div>:null}
             <p className="ui-sub">기본 설정으로 시작할 수 있습니다. 생성 완료와 매매 시작은 별도입니다.</p>
           </div>
-          <button className="ui-btn primary lg" disabled={startBlocked} onClick={() => { setRepeat(null); void generate(); }}>
+          <button className="ui-btn primary lg" disabled={startBlocked||(market==="crypto"&&product!=="spot")} onClick={() => { setRepeat(null); void generate(); }}>
             {busy ? <RefreshCw size={15} className="spin" aria-hidden="true" /> : <ChartCandlestick size={15} aria-hidden="true" />}
             전략 생성
           </button>
@@ -1276,10 +1299,15 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
         </section>
       ) : null}
 
+      {ct&&ctSessionPolicy(ct.contract).book?<section className="ui-card pad"><h2 className="ui-title">부품 · 북 · 정책 7</h2><p className="ui-sub">제품 {ct.contract.semantics?.productVersion??"v0.0"} · {ct.contract.semantics?.engine??"ct-decision-1"} · traderTools {ct.contract.policy.traderTools}</p><h3>부품</h3>{ct.components?.length?<div className="ui-scroll-x"><table className="ui-table"><thead><tr><th scope="col">조건/봉</th><th scope="col">이벤트/일</th><th scope="col">기준선 대비</th><th scope="col">군집 p</th><th scope="col">학습·개발 판정</th></tr></thead><tbody>{ct.components.map(r=><tr key={r.id}><th scope="row">{r.candidate.spec.name} · {r.candidate.spec.minutes}분 · 롱</th><td>{r.training?.events??"—"} / {r.training?.days??"—"}</td><td>{r.training?.differencePct.toFixed(4)??"—"}%</td><td>{r.training?.p.toFixed(4)??"—"}</td><td>{r.duplicateOf?"중복 제외":r.grade} · {r.training?.reasons.join(" · ")}</td></tr>)}</tbody></table></div>:<p className="ui-sub">제출된 부품 없음</p>}<h3>북</h3>{ct.books?.length?ct.books.map(b=><article key={b.id}><strong>{b.id} · {b.rule.kind} {"k" in b.rule?b.rule.k:""}</strong><p>{b.componentIds.join(" · ")}</p><p>일평균 {dayMean(b.development??b.training).toFixed(4)}% · 수익일 {(b.development??b.training).positiveDayPct?.toFixed(1)??"—"}% · 낙폭 {(b.development??b.training).maxDrawdownPct.toFixed(2)}%</p><p>{b.reasons.join(" · ")||"검증 중"}</p></article>):<p className="ui-sub">학습 통과·중복 제거 후 부품 2개 이상이 필요합니다. 개발에서 재조합하지 않습니다.</p>}<button className="ui-btn" onClick={()=>selectTab("validation")}>검증에서 비교 · 판단 리플레이</button></section>:null}
+      </div>
+      <div hidden={tab!=="operation"}>
+      <CTConnectionStatus/>
       <TradingDashboards
         key={market}
         book={market === "stock" ? "ct-stock" : "ct-crypto"}
       />
+      </div>
     </div>
   );
 }

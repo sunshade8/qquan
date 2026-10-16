@@ -20,9 +20,15 @@ import type { CTCandidate, CTPlaybookSnapshot, CTResearch } from "./ct-research.
 import type { GenerationJob } from "./strategy-generation-types.ts";
 import { ctIsCalibrationHypothesis, ctMigrateCalibration } from "./ct-calibration.ts";
 
-export const CT_PLAYBOOK_GRADES = ["rejected_in_training", "screen_failed", "development_failed", "passed_final", "failed_final", "adopted_daily"] as const;
+export const CT_PLAYBOOK_GRADES = ["rejected_in_training", "screen_failed", "development_failed", "passed_final", "failed_final", "adopted_daily", "component_passed", "component_dev_failed", "component_training_failed", "book_development_failed", "book_passed_final", "book_failed_final"] as const;
 export type CTPlaybookGrade = (typeof CT_PLAYBOOK_GRADES)[number];
 export const CT_PLAYBOOK_GRADE_TEXT: Record<CTPlaybookGrade, string> = {
+  component_passed:"부품 학습·개발 통과",
+  component_dev_failed:"부품 개발 확인 실패",
+  component_training_failed:"부품 학습 게이트 실패",
+  book_development_failed:"북 개발 게이트 실패",
+  book_passed_final:"북 최종 통과",
+  book_failed_final:"북 최종 탈락",
   rejected_in_training: "학습 구간에서 기각",
   screen_failed: "학습 게이트 탈락",
   development_failed: "개발 구간 탈락",
@@ -185,6 +191,8 @@ export function ctPlaybookRows(job: Pick<GenerationJob, "id" | "ownerId"> & { ct
       }),
     });
   }
+  for(const r of ct.components??[])if(r.training)rows.push({...base,id:`${job.id}:${r.id}`,timeframe:`${r.candidate.spec.minutes}m`,...ctCandidateIdea(r.candidate.spec.name,r.candidate.hypothesis.mechanism,r.candidate.spec),evidence_kind:"component",evidence_ref:r.id,grade:r.grade==="component_passed"?"component_passed":r.grade==="component_dev_failed"?"component_dev_failed":"component_training_failed",reason:r.duplicateOf?"학습 이벤트 중복 제외":r.training.reasons.join(" · ")||r.whyNotAlone,measured_from:c.fromMs,measured_to:r.development?c.developmentToMs:c.trainingToMs,detail:JSON.stringify({trainingEvents:r.training.events,trainingDays:r.training.days,trainingDifferencePct:r.training.differencePct,trainingP:r.training.p})});
+  for(const row of rows)if(row.evidence_kind==="candidate"&&ct.books?.some(b=>b.id===row.evidence_ref))row.grade=ct.finalConsumed&&ct.selectedId===row.evidence_ref?(ct.passed?"book_passed_final":"book_failed_final"):"book_development_failed";
   return rows;
 }
 
@@ -362,7 +370,7 @@ export async function ctPlaybookSnapshot(ownerId: string, contract: CTContract, 
   await backfillPlaybook();
   const db = ctDb();
   const rows = await db
-    .prepare("SELECT * FROM ct_playbook WHERE market=? AND (owner_id=? OR owner_id='') AND run_id<>? ORDER BY (timeframe<>'daily') DESC, recorded_at DESC, id LIMIT 400")
+    .prepare("SELECT * FROM ct_playbook WHERE market=? AND (owner_id=? OR owner_id='') AND run_id<>'7a4354f4-ae1e-49ba-9f1b-9d5e33734498' AND run_id<>? ORDER BY (timeframe<>'daily') DESC, recorded_at DESC, id LIMIT 400")
     .bind(contract.market, ownerId, runId)
     .all<PlaybookRow>();
   const seen = new Set<string>();
@@ -381,7 +389,7 @@ export async function ctPlaybookSnapshot(ownerId: string, contract: CTContract, 
     entries.push(view);
   }
   const runs = await db
-    .prepare("SELECT timeframe,hypothesis_tests FROM ct_playbook_runs WHERE market=? AND (owner_id=? OR owner_id='') AND run_id<>?")
+    .prepare("SELECT timeframe,hypothesis_tests FROM ct_playbook_runs WHERE market=? AND (owner_id=? OR owner_id='') AND run_id<>'7a4354f4-ae1e-49ba-9f1b-9d5e33734498' AND run_id<>?")
     .bind(contract.market, ownerId, runId)
     .all<{ timeframe: string; hypothesis_tests: number }>();
   const minute = runs.results.filter((r) => r.timeframe !== "daily");
@@ -405,13 +413,13 @@ export async function ctPlaybookSnapshot(ownerId: string, contract: CTContract, 
  */
 export async function ctDistinctPriorTests(ownerId: string, market: string, runId: string, own?: string[]) {
   const db = ctDb();
-  const priorRuns = "SELECT run_id FROM ct_playbook_runs WHERE market=? AND (owner_id=? OR owner_id='') AND timeframe<>'daily' AND run_id<>?";
+  const priorRuns = "SELECT run_id FROM ct_playbook_runs WHERE market=? AND (owner_id=? OR owner_id='') AND timeframe<>'daily' AND run_id<>'7a4354f4-ae1e-49ba-9f1b-9d5e33734498' AND run_id<>?";
   const signed = await db
     .prepare(`SELECT DISTINCT j.key AS sig FROM strategy_generation_runs r, json_each(r.payload,'$.ct.tests.signatures') j WHERE r.id IN (${priorRuns})`)
     .bind(market, ownerId, runId)
     .all<{ sig: string }>();
   const unsigned = await db
-    .prepare(`SELECT COALESCE(SUM(hypothesis_tests),0) AS n FROM ct_playbook_runs WHERE market=? AND (owner_id=? OR owner_id='') AND timeframe<>'daily' AND run_id<>? AND run_id NOT IN (SELECT r.id FROM strategy_generation_runs r, json_each(r.payload,'$.ct.tests.signatures') j)`)
+    .prepare(`SELECT COALESCE(SUM(hypothesis_tests),0) AS n FROM ct_playbook_runs WHERE market=? AND (owner_id=? OR owner_id='') AND timeframe<>'daily' AND run_id<>'7a4354f4-ae1e-49ba-9f1b-9d5e33734498' AND run_id<>? AND run_id NOT IN (SELECT r.id FROM strategy_generation_runs r, json_each(r.payload,'$.ct.tests.signatures') j)`)
     .bind(market, ownerId, runId)
     .first<{ n: number }>();
   const prior = new Set(signed.results.map((r) => r.sig));
@@ -436,7 +444,7 @@ export async function ctPlaybookList(ownerId: string, market: string, contract?:
   return {
     entries: rows.results.map((r) => ({ ...ctPlaybookView(r, against), source: r.source })),
     runs: runs.results.map((r) => ({ runId: r.run_id.startsWith("seed:") ? r.run_id : r.run_id.slice(0, 8), tests: r.hypothesis_tests, timeframe: r.timeframe, note: r.note, at: new Date(r.recorded_at).toISOString() })),
-    cumulativeTests: runs.results.filter((r) => r.timeframe !== "daily").reduce((s, r) => s + r.hypothesis_tests, 0),
+    cumulativeTests: runs.results.filter((r) => r.timeframe !== "daily" && r.run_id !== "7a4354f4-ae1e-49ba-9f1b-9d5e33734498").reduce((s, r) => s + r.hypothesis_tests, 0),
   };
 }
 

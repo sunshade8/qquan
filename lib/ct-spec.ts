@@ -242,7 +242,7 @@ export const ctSpecSchema = z
   });
 export type CTSpec = z.infer<typeof ctSpecSchema>;
 export type CTCondition = z.infer<typeof ctConditionSchema>;
-export const CT_POLICY = Object.freeze({
+export const CT_POLICY_V6 = Object.freeze({
   minTrades: 20,
   maxDrawdownPct: 15,
   minNetReturnPct: 0,
@@ -291,6 +291,7 @@ export const CT_POLICY = Object.freeze({
   lessonMaxInputChars: 60_000,
   lessonMaxOutputTokens: 8000,
 });
+export const CT_POLICY = Object.freeze({ ...CT_POLICY_V6, traderTools: 7 });
 /**
  * The policy a NEW contract is frozen with. Always CT_POLICY — except for verification: QQUAN_CT_POLICY_VERSION=1 freezes it with the
  * stage-3 policy (tool version 1, 32 images) so the same-board refusal against runs made under that policy can be exercised on real
@@ -299,10 +300,11 @@ export const CT_POLICY = Object.freeze({
 export function ctPolicyForNewContract(): CTContract["policy"] {
   const override = typeof process !== "undefined" ? process.env?.QQUAN_CT_POLICY_VERSION : undefined;
   // 5 = bar overview, 4 = free bars, 3 = stage 5: each exactly as frozen before the next version: every field of today's policy, only the tool version differs.
-  if (override === "3" || override === "4" || override === "5") return { ...CT_POLICY, traderTools: Number(override) };
+  if (override === "6") return CT_POLICY_V6;
+  if (override === "3" || override === "4" || override === "5") return { ...CT_POLICY_V6, traderTools: Number(override) };
   if (override === "1" || override === "2") {
     // An earlier-stage contract carries none of the stage-5 fields, exactly as it would have been frozen then.
-    const { lessonReserveUsd: _a, lessonMaxInputChars: _b, lessonMaxOutputTokens: _c, ...earlier } = CT_POLICY;
+    const { lessonReserveUsd: _a, lessonMaxInputChars: _b, lessonMaxOutputTokens: _c, ...earlier } = CT_POLICY_V6;
     void _a; void _b; void _c;
     return override === "1" ? { ...earlier, traderTools: 1, sessionMaxCharts: 32 } : { ...earlier, traderTools: 2 };
   }
@@ -340,7 +342,8 @@ export function ctSessionPolicy(contract: Pick<CTContract, "policy">) {
     /** Stage 3+: the trader tools, the playbook and the self-rebuttal exist only on contracts that carry the flag. */
     traderTools: (p.traderTools ?? 0) >= 1,
     /** 0 = stage-2 tools, 1 = stage-3 trader tools (frozen bytes), 2 = stage-4 tools, brief and request options, 3 = stage 5 (lessons, coverage, lessonChecks), 4 = free bars, 5 = bar overview, 6 = time-free blind sets. */
-    toolsVersion: (p.traderTools ?? 0) as 0 | 1 | 2 | 3 | 4 | 5 | 6,
+    toolsVersion: (p.traderTools ?? 0) as 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7,
+    book: (p.traderTools ?? 0) >= 7,
     /** Free bars: a candidate and a measurement choose their own bar over the contract's one-minute data. */
     freeBars: (p.traderTools ?? 0) >= 4,
     /** Bar overview: the stable block holds the cost hurdle and label base rate on every allowed bar (not a test). */
@@ -367,6 +370,8 @@ export function ctSelectionLabel(contract: Pick<CTContract, "market" | "selectio
   return contract.selection;
 }
 export type CTContract = {
+  tradeSettings?: import("zod").infer<typeof import("./ct-capabilities.ts").ctTradeSettingsSchema>;
+  semantics?: { schema: "ct-contract-2"; engine: "ct-decision-1"; accounting: "ct-accounting-1"; router: "ct-router-1"; productVersion: "v0.0" };
   market: CTMarket;
   symbols: string[];
   minutes: 1 | 5 | 15 | 60;

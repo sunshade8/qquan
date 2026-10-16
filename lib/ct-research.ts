@@ -1,3 +1,4 @@
+import { ctTradeSettingsSchema } from "./ct-capabilities.ts";
 import { z } from "zod";
 import { ctBarChoices, ctFreedom, ctRuleText, ctSessionPolicy, ctSpecSchema, type CTContract, type CTSpec } from "./ct-spec.ts";
 import type { CTBlindSet, CTControlMode, CTLabelParams } from "./ct-trader-tools.ts";
@@ -13,6 +14,7 @@ import type { CTLessonsRecorded, CTLessonsSnapshot } from "./ct-lessons.ts";
 export const ctRequestSchema = z
   .object({
     requestId: z.string().uuid(),
+    tradeSettings: ctTradeSettingsSchema.optional(),
     market: z.enum(["stock", "crypto"]).default("stock"),
     brief: z.string().max(1500).default(""),
     symbols: z.array(z.string().max(20)).min(1).max(4).optional(),
@@ -165,7 +167,10 @@ export const ctSubmissionSchemaStage5 = z
       .optional(),
   })
   .strict();
-export type CTSubmission = z.infer<typeof ctSubmissionSchemaStage5>;
+export const ctSubmissionSchemaBook = ctSubmissionSchemaStage5.extend({
+  components: z.array(ctCandidateDraftSchema.extend({whyNotAlone:z.string().min(10).max(1500)})).max(8),
+});
+export type CTSubmission = z.infer<typeof ctSubmissionSchemaBook>;
 export type CTSource = {
   id: string;
   url: string;
@@ -228,6 +233,7 @@ export type CTSession = {
   blinds?: number;
   /** Messages persisted in ct_session_messages (append-only, seq 0..messages-1). */
   messages: number;
+  initialSignatures?: string[];
   /** The "submit now" instruction has been sent. */
   finalNotice?: boolean;
   submission?: {
@@ -239,6 +245,8 @@ export type CTSession = {
     /** Stage 5: per candidate, the family the server computed and the explanation for a dead family (an entry for every candidate that had one). */
     lessonChecks?: Array<CTLessonCheck & { candidateIndex: number }>;
     /** Stage 4: hypotheses whose only evidence was a blind set; the server moved them out of rejectedHypotheses (they are calibration records). */
+    components?: number;
+    acceptedComponents?: number;
     calibrationRefs?: Array<{ blindId: string; hypothesis: string; result: string }>;
   };
   endReason?: string;
@@ -335,6 +343,7 @@ export type CTResearch = {
     | "design"
     | "experiment"
     | "reflect"
+    | "book"
     | "risk_review"
     | "final"
     | "evidence_review"
@@ -352,6 +361,11 @@ export type CTResearch = {
   /** Submitted candidates waiting for the training gate / experiment, in submission order. */
   queue?: Array<{ id: string; hash: string; session?: number; candidate: CTCandidate }>;
   trials: CTTrial[];
+  scopedMemory?: import("./ct-scoped-memory.ts").CTScopedMemory[];
+  emptySessions?: number;
+  components?: import("./ct-components.ts").CTComponentRecord[];
+  books?: import("./ct-book.ts").CTBookRecord[];
+  trainingPriority?: string[];
   screened?: CTScreened[];
   /** Candidates submitted after de-duplication; counted against policy.maxCandidates. */
   submitted?: number;
@@ -588,10 +602,13 @@ const SYS7_BLIND = `A blind set may only use times you have not looked at in an 
 if (!SYS5_WORKFLOW.includes(SYS4_BLIND)) throw new Error("stage-4 blind sentence moved");
 const SYS7_WORKFLOW = SYS5_WORKFLOW.replace(SYS4_BLIND, SYS7_BLIND);
 export const CT_DESIGNER_SYSTEM = [SYS3_INTRO, SYS_SUCCESS, SYS_COSTS, SYS_EXIT_STRUCTURE, SYS7_WORKFLOW, SYS3_GUARD, SYS5_LESSONS, SYS7_BARS, SYS7_OVERVIEW, SYS_LANGUAGE, SYS_LEVELS, SYS_EXITS, SYS5_TOOLS, SYS_DATA].join("\n\n");
+export const CT_DESIGNER_SYSTEM_BOOK = CT_DESIGNER_SYSTEM + `
+
+A measurement that beats its time-of-day baseline before costs but not the round-trip cost is a COMPONENT, not a rejection. Submit it in components with the same spec, hypothesis, mapping, selfRebuttal and whyNotAlone. Components are signals, never registrable strategies. Up to 8 unique components per run; every component counts as a test. The server tests day-cluster uncertainty, months, concentration and development, freezes at most 3 vote/confluence books on TRAINING only and charges actual fills once. Funding, interest and all product costs still accrue. Do not stop just because no single rule clears costs. An empty first session enters reflection when limits permit; a second empty submission needs two new measured signatures, except after finalNotice/budget exhaustion. Respect all budget/time/session limits. noEdgeReason must explain whether components were found and why their gate fails. Use unused coverage cells and non-dead families, reconsider pre-cost baseline winners. Never select, optimize or rank from development/final results, reviewer conclusions, or another scope's memory. Memory requires matching instrument/product/direction/period/risk and information available at this cursor; unknown is not wildcard. Submit only supported capability settings within the owner's bounds. Research cannot enable orders or change account settings.`;
 /** The brief a contract runs under: time-free blind / bar-overview / free-bar / stage 5 / 4 / 3 trader briefs by tools version, the stage-2 brief otherwise (all but the newest frozen byte for byte, so cached prefixes of older runs survive). */
 export const ctDesignerSystem = (contract: Pick<CTContract, "policy">) => {
   const v = ctSessionPolicy(contract).toolsVersion;
-  return v >= 6 ? CT_DESIGNER_SYSTEM : v === 5 ? CT_DESIGNER_SYSTEM_OVERVIEW : v === 4 ? CT_DESIGNER_SYSTEM_STAGE6 : v === 3 ? CT_DESIGNER_SYSTEM_STAGE5 : v === 2 ? CT_DESIGNER_SYSTEM_STAGE4 : v === 1 ? CT_DESIGNER_SYSTEM_STAGE3 : CT_DESIGNER_SYSTEM_STAGE2;
+  return v >= 7 ? CT_DESIGNER_SYSTEM_BOOK : v === 6 ? CT_DESIGNER_SYSTEM : v === 5 ? CT_DESIGNER_SYSTEM_OVERVIEW : v === 4 ? CT_DESIGNER_SYSTEM_STAGE6 : v === 3 ? CT_DESIGNER_SYSTEM_STAGE5 : v === 2 ? CT_DESIGNER_SYSTEM_STAGE4 : v === 1 ? CT_DESIGNER_SYSTEM_STAGE3 : CT_DESIGNER_SYSTEM_STAGE2;
 };
 
 /** The contract as the designer needs it: boundaries, costs and gates. Stable across sessions. */
@@ -600,6 +617,7 @@ function contractView(contract: CTContract) {
   const s = ctSessionPolicy(contract);
   return {
     market: contract.market,
+    ...(s.book?{tradeSettings:contract.tradeSettings}:{}),
     symbols: contract.symbols,
     barMinutes: contract.minutes,
     // Free bars: barMinutes above is the data; each rule and measurement chooses its own bar from these.
@@ -682,6 +700,7 @@ export function ctSessionContext(ct: CTResearch, brief: string, hurdle: CTCostHu
   const s = ctSessionPolicy(ct.contract);
   const stable = JSON.stringify({
     contract: contractView(ct.contract),
+    ...(s.book?{scopedMemory:ct.scopedMemory??[],memoryRule:"Exact scope, training-only, availableAt checked; legacy unknown dimensions never match."}:{}),
     costHurdle: hurdle,
     // traderTools 5: the cost hurdle and label base rate on every allowed bar (server measured, not a test, free).
     ...(s.barOverview && barOverview ? { barOverview } : {}),
@@ -699,7 +718,7 @@ export function ctSessionContext(ct: CTResearch, brief: string, hurdle: CTCostHu
     },
     // Earlier runs' rules as text: their ids stay citable in memoryIds, their JSON is not needed.
     // A rule measured on a window that overlaps this run's development/final shows no number (ctMemory marks it).
-    memory: ct.memory.map((m) => ({
+    memory: (s.book ? [] : ct.memory).map((m) => ({
       id: m.id,
       rule: ctRuleText(m.rules),
       ...(m.netReturnPct === null ? { developmentNetReturnPct: "비공개(이 연구의 개발·최종 구간과 겹침)" } : { developmentNetReturnPct: r4(m.netReturnPct) }),
@@ -707,9 +726,9 @@ export function ctSessionContext(ct: CTResearch, brief: string, hurdle: CTCostHu
     })),
     // Stage 4: what the designer's eye did in blind sets before, and what earlier runs already measured on this very data.
     ...(ct.calibration ? { eyeCalibration: ct.calibration } : {}),
-    ...(ct.measured ? { alreadyMeasured: ct.measured } : {}),
+    ...(!s.book && ct.measured ? { alreadyMeasured: ct.measured } : {}),
     // Stage 3: what earlier runs on this market tried and how it ended, and how many tests that took.
-    ...(ct.playbook
+    ...(!s.book && ct.playbook
       ? {
           playbook: {
             note: "시장 단위 누적 기억 · 메커니즘과 결과 등급 · 수치는 이 연구의 개발·최종 구간과 겹치지 않는 측정에만 · 최종 구간 성과는 어떤 경우에도 없음 · daily 항목은 단타(1분봉)와 직접 비교 불가",
@@ -721,7 +740,7 @@ export function ctSessionContext(ct: CTResearch, brief: string, hurdle: CTCostHu
         }
       : {}),
     // Stage 5: one sentence per idea family on why it did not work here, and the count-only map of what no earlier run touched.
-    ...(ct.lessons ? { lessons: { note: ct.lessons.note, deadFamilies: ct.lessons.deadFamilies, entries: ct.lessons.entries }, coverage: ct.lessons.coverage } : {}),
+    ...(!s.book && ct.lessons ? { lessons: { note: ct.lessons.note, deadFamilies: ct.lessons.deadFamilies, entries: ct.lessons.entries }, coverage: ct.lessons.coverage } : {}),
   });
   const entries = [
     ...ct.trials.map((t) => ({ kind: "trial" as const, t })),
@@ -739,7 +758,7 @@ export function ctSessionContext(ct: CTResearch, brief: string, hurdle: CTCostHu
         rejectedHypotheses: s.submission?.rejectedHypotheses ?? [],
         candidates: entries
           .filter((e) => (e.kind === "trial" ? e.t.session : e.t.session) === s.index)
-          .map(candidateRecord),
+          .map(e => ctSessionPolicy(ct.contract).book ? { id:e.t.id, rule:ctRuleText(e.kind === "trial" ? e.t.spec : e.t.candidate.spec), training:ctBrief(e.t.training) } : candidateRecord(e)),
         ended: s.endReason ?? s.status,
       }),
     );
@@ -756,6 +775,7 @@ export function ctSessionContext(ct: CTResearch, brief: string, hurdle: CTCostHu
         ? "cost_hurdle과 플레이북부터 읽고, 거래할 가치가 있던 순간(label_moves)을 먼저 본 뒤 그 직전의 차이를 찾으세요."
         : "cost_hurdle부터 읽고 시작하세요.",
     `사용자 연구 방향: ${brief?.trim() ? brief : "(없음 · 자유 탐색)"}`,
+    ...(s.book&&session.kind==="reflect"?["미사용 커버리지 칸과 새로운 기법 계열을 측정하세요. 비용 전 기준선은 이겼지만 단독 비용은 못 넘은 측정을 부품으로 다시 보세요. 직전 noEdgeReason과 학습 기각 가설은 history에 있습니다. 새 0/0에는 이 실행에 없던 가설 서명 2개 이상이 필요합니다."]:[]),
     "끝낼 때는 반드시 submit_candidates를 호출하세요.",
   ].join("\n");
   return {

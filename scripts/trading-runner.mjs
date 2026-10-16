@@ -57,6 +57,7 @@ const GENERATORS = [
   { name: "전략", path: "/api/strategy-generation" },
   { name: "급등주", path: "/api/invest/surge" },
   { name: "CT", path: "/api/invest/ct" },
+  { name: "CT 비교", path: "/api/invest/ct/experiments" },
 ];
 
 async function advance(generator) {

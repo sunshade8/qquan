@@ -346,8 +346,10 @@ function resolveMarketSession(now = new Date()): MarketSession {
   return { code: "closed", label: "장 마감", time, zone, schedule: businessDay && minutes < 240 ? "프리마켓 04:00 ET" : "다음 거래일 04:00 ET" };
 }
 
-export function QuantWorkspace() {
-  const [view, setView] = useState<View>("market");
+export function QuantWorkspace({initialView="market"}:{initialView?:"market"|"invest"}) {
+  const [view, setView] = useState<View>(initialView);
+  useEffect(()=>{const restore=()=>{if(new URLSearchParams(location.search).has("ctTab"))setView("invest");};restore();window.addEventListener("popstate",restore);return()=>window.removeEventListener("popstate",restore);},[]);
+  const navigateView=(next:View)=>{if(next!=="invest"){const u=new URL(location.href);for(const key of ["ctTab","ctMarket","experiment","day","decision"])u.searchParams.delete(key);window.history.pushState({},"",u);}setView(next);};
   const [symbol, setSymbol] = useState("NASDAQ:NVDA");
   const [symbolDraft, setSymbolDraft] = useState("NASDAQ:NVDA");
   const [interval, setInterval] = useState("D");
@@ -689,10 +691,10 @@ export function QuantWorkspace() {
   return (
     <main className="terminal-shell">
       <aside className="rail" aria-label="Primary navigation">
-        <button className="rail-brand" aria-label="QQuant market" onClick={() => setView("market")}>Q</button>
+        <button className="rail-brand" aria-label="QQuant market" onClick={() => navigateView("market")}>Q</button>
         <nav>
           {navItems.map((item) => (
-            <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)} aria-label={item.label} title={item.label}>
+            <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => navigateView(item.id)} aria-label={item.label} title={item.label}>
               <item.icon size={19} strokeWidth={1.8} />
               <span>{item.label}</span>
               {item.id === "news" && newsActivity && <em className="rail-task-dot" title={newsActivity.detail}>{newsActivity.progress ?? "ON"}</em>}
@@ -832,7 +834,7 @@ export function QuantWorkspace() {
           </div>
         )}
 
-        {view === "invest" && <InvestWorkspace onPrepareData={()=>setView("settings")} />}
+        {view === "invest" && <InvestWorkspace initialFeature={initialView==="invest"?"ct":undefined} onPrepareData={()=>setView("settings")} />}
 
         {view === "backtest" && <BacktestWorkspace focusStrategyId={focusStrategyId} onAskLab={askLab} />}
 

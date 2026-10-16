@@ -1,0 +1,192 @@
+{
+  "at": "2026-10-16T08:01:42.413Z",
+  "financialMutations": 0,
+  "liveLocked": true,
+  "testnetCredentialPresent": false,
+  "checks": [
+    {
+      "product": "spot",
+      "op": "time",
+      "status": "ok"
+    },
+    {
+      "product": "spot",
+      "op": "exchangeInfo",
+      "status": "ok",
+      "symbols": 3729
+    },
+    {
+      "product": "spot",
+      "op": "account",
+      "status": "ok"
+    },
+    {
+      "product": "spot",
+      "op": "commission",
+      "status": "ok"
+    },
+    {
+      "product": "spot",
+      "op": "permissions",
+      "status": "ok",
+      "enableReading": true,
+      "enableSpotAndMarginTrading": true,
+      "enableFutures": true,
+      "enableMargin": false,
+      "enablePortfolioMarginTrading": false
+    },
+    {
+      "product": "spot",
+      "op": "portfolio",
+      "status": "http_401",
+      "code": -2015,
+      "reason": "Binance HTTP 401 / code -2015"
+    },
+    {
+      "product": "spot",
+      "op": "portfolioPro",
+      "status": "http_400",
+      "code": -21001,
+      "reason": "Binance HTTP 400 / code -21001"
+    },
+    {
+      "product": "margin-cross",
+      "op": "time",
+      "status": "ok"
+    },
+    {
+      "product": "margin-cross",
+      "op": "exchangeInfo",
+      "status": "ok",
+      "symbols": 3729
+    },
+    {
+      "product": "margin-cross",
+      "op": "account",
+      "status": "ok"
+    },
+    {
+      "product": "margin-cross",
+      "op": "commission",
+      "status": "ok"
+    },
+    {
+      "product": "margin-isolated",
+      "op": "time",
+      "status": "ok"
+    },
+    {
+      "product": "margin-isolated",
+      "op": "exchangeInfo",
+      "status": "ok",
+      "symbols": 3729
+    },
+    {
+      "product": "margin-isolated",
+      "op": "account",
+      "status": "ok"
+    },
+    {
+      "product": "margin-isolated",
+      "op": "commission",
+      "status": "ok"
+    },
+    {
+      "product": "usdm",
+      "op": "time",
+      "status": "ok"
+    },
+    {
+      "product": "usdm",
+      "op": "exchangeInfo",
+      "status": "ok",
+      "symbols": 927
+    },
+    {
+      "product": "usdm",
+      "op": "account",
+      "status": "ok"
+    },
+    {
+      "product": "usdm",
+      "op": "commission",
+      "status": "ok"
+    },
+    {
+      "product": "usdm",
+      "op": "brackets",
+      "status": "ok"
+    },
+    {
+      "product": "usdm",
+      "op": "mark",
+      "status": "ok"
+    },
+    {
+      "product": "usdm",
+      "op": "funding",
+      "status": "ok"
+    },
+    {
+      "product": "coinm",
+      "op": "time",
+      "status": "ok"
+    },
+    {
+      "product": "coinm",
+      "op": "exchangeInfo",
+      "status": "ok",
+      "symbols": 30
+    },
+    {
+      "product": "coinm",
+      "op": "account",
+      "status": "ok"
+    },
+    {
+      "product": "coinm",
+      "op": "commission",
+      "status": "ok"
+    },
+    {
+      "product": "coinm",
+      "op": "brackets",
+      "status": "ok"
+    },
+    {
+      "product": "coinm",
+      "op": "mark",
+      "status": "ok"
+    },
+    {
+      "product": "coinm",
+      "op": "funding",
+      "status": "ok"
+    },
+    {
+      "product": "options",
+      "op": "time",
+      "status": "ok"
+    },
+    {
+      "product": "options",
+      "op": "exchangeInfo",
+      "status": "ok",
+      "symbols": null
+    },
+    {
+      "product": "options",
+      "op": "account",
+      "status": "http_401",
+      "code": -2015,
+      "reason": "Binance HTTP 401 / code -2015"
+    },
+    {
+      "product": "options",
+      "op": "commission",
+      "status": "http_401",
+      "code": -2015,
+      "reason": "Binance HTTP 401 / code -2015"
+    }
+  ]
+}

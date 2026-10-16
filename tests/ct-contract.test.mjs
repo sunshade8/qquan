@@ -197,7 +197,7 @@ test("development summaries carry per-quarter mean daily returns and the positiv
 /* ------------------------------------------------------------------ stage 4: board signature */
 
 import { ctBoardSignature, ctNormalizeBrief, CTBoardRepeatError } from "../lib/ct-board.ts";
-import { CT_POLICY, ctSelectionLabel } from "../lib/ct-spec.ts";
+import { CT_POLICY_V6 as CT_POLICY, ctSelectionLabel } from "../lib/ct-spec.ts";
 // One dispatcher counts every outbound call (the model-access check is a call); the client caches the fetch it first saw.
 let outbound = 0;
 globalThis.fetch = async () => {

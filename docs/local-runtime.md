@@ -58,6 +58,13 @@ npm run data:bridge
 로그는 `~/.qquan/logs/data-bridge.log`에 저장할 수 있다. 재부팅 후 bridge를 다시 실행해야 한다.
 OS 로그인 서비스는 설치하지 않는다.
 
+CT 비교 실험(검증 탭)은 Sites에서 `ct_control` 작업으로 같은 bridge를 탄다(`ct-control-v1`).
+bridge는 이 capability를 알리는 실행기만 받으며, 작업의 owner가 로컬 `QQUAN_OWNER_ID`와 같을 때만
+`LOCAL_CONTROL_URL`(기본 `http://127.0.0.1:3000`, 루프백 주소만 허용)의
+`/api/invest/ct/experiments`에 `list/get/create/advance/pause/resume/cancel`만 전달한다.
+그래서 Sites에서 비교 실험을 보려면 로컬 앱(`npm run local`)과 bridge가 함께 떠 있어야 하고
+`QQUAN_OWNER_ID`가 설정돼 있어야 한다. 비교 계산과 시장 데이터·Binance 키는 로컬에 남는다.
+
 ## 사용자 데이터 위치
 
 기본 `~/.qquan`, 변경은 비밀이 아닌 `QQUAN_DATA_DIR=/절대/경로`로 한다. 앱과 모든 runner/CLI에 같은 값을 사용한다. 소스 checkout이나 `.output`, `dist` 안에 두지 않는다.

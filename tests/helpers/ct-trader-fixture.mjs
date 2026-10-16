@@ -1,7 +1,7 @@
 // A synthetic 1-minute market with a planted, labelled move: every 200 minutes a 20-bar
 // contraction (almost no range) is followed by a +0.9% jump over 15 bars; elsewhere price
 // jitters. Used by the stage-3 trader tools tests (labels, contrast, charts, diagnosis).
-import { CT_ENGINE, CT_POLICY } from "../../lib/ct-spec.ts";
+import { CT_ENGINE, CT_POLICY_V6 as CT_POLICY } from "../../lib/ct-spec.ts";
 import { ctRng } from "../../lib/ct-trader-tools.ts";
 
 export const MINUTE = 60_000;

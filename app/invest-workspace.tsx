@@ -26,12 +26,13 @@ const FEATURES = [
 
 const STORAGE_KEY = "qquant.invest.feature";
 
-export function InvestWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
-  const [feature, setFeature] = useState<InvestFeature>("strategy");
+export function InvestWorkspace({onPrepareData,initialFeature="strategy"}:{onPrepareData?:()=>void;initialFeature?:InvestFeature}) {
+  const [feature, setFeature] = useState<InvestFeature>(initialFeature);
 
   // Remember which feature was open; the 전략 board's own polling makes an
   // accidental reset expensive to look at.
   useEffect(() => {
+    if(new URLSearchParams(location.search).has("ctTab")){queueMicrotask(()=>setFeature("ct"));return;}
     let stored: string | null = null;
     try {
       stored = window.localStorage.getItem(STORAGE_KEY);

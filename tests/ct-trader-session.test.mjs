@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 import { register } from "node:module";
 import { ctState } from "./helpers/ct-fixture.mjs";
 import { plantedMarket, plantedContract, MINUTE } from "./helpers/ct-trader-fixture.mjs";
-import { ctHash, executableCT, CT_ENGINE, CT_POLICY, ctSessionPolicy } from "../lib/ct-spec.ts";
+import { ctHash, executableCT, CT_ENGINE, CT_POLICY_V6 as CT_POLICY, ctSessionPolicy } from "../lib/ct-spec.ts";
 import { STAGE3_POLICY, STAGE4_POLICY } from "./helpers/ct-policies.mjs";
 import { ctRunLabels, ctLabelMovesReport, ctLabelMovesSchema, ctLabelMovesSchemaBars } from "../lib/ct-trader-tools.ts";
 import { CT_DESIGNER_SYSTEM, CT_DESIGNER_SYSTEM_STAGE2, CT_DESIGNER_SYSTEM_STAGE3, CT_DESIGNER_SYSTEM_STAGE4, ctDesignerSystem } from "../lib/ct-research.ts";
@@ -86,12 +86,12 @@ test("the stage-2 brief is byte-identical, contracts decide which brief and tool
   assert.notEqual(CT_DESIGNER_SYSTEM, CT_DESIGNER_SYSTEM_STAGE3);
   const old = { policy: { ...CT_POLICY, traderTools: undefined, sessionMaxTurns: undefined, sessionMaxToolCalls: undefined, sessionMaxCharts: undefined, sessionMaxBlindSets: undefined } };
   assert.equal(ctDesignerSystem(old), CT_DESIGNER_SYSTEM_STAGE2);
-  assert.deepEqual(ctSessionPolicy(old), { maxTurns: 12, maxToolCalls: 24, maxScreens: 6, maxSessions: 3, maxCharts: 0, maxBlindSets: 0, traderTools: false, toolsVersion: 0, freeBars: false, barOverview: false, timeFreeBlind: false, lessons: false, lessonReserveUsd: 0, lessonMaxInputChars: 60000, lessonMaxOutputTokens: 8000, blindSize: null });
+  assert.deepEqual(ctSessionPolicy(old), { maxTurns: 12, maxToolCalls: 24, maxScreens: 6, maxSessions: 3, maxCharts: 0, maxBlindSets: 0, traderTools: false, toolsVersion: 0, freeBars: false, barOverview: false, timeFreeBlind: false, book:false, lessons: false, lessonReserveUsd: 0, lessonMaxInputChars: 60000, lessonMaxOutputTokens: 8000, blindSize: null });
   // Stage 3 contracts (traderTools = 1) keep 32 images and their own brief; stage 4 (= 2) has 48 images and 16–32-chart blind sets.
-  assert.deepEqual(ctSessionPolicy({ policy: STAGE3_POLICY }), { maxTurns: 16, maxToolCalls: 40, maxScreens: 6, maxSessions: 3, maxCharts: 32, maxBlindSets: 2, traderTools: true, toolsVersion: 1, freeBars: false, barOverview: false, timeFreeBlind: false, lessons: false, lessonReserveUsd: 0, lessonMaxInputChars: 60000, lessonMaxOutputTokens: 8000, blindSize: null });
-  assert.deepEqual(ctSessionPolicy({ policy: STAGE4_POLICY }), { maxTurns: 16, maxToolCalls: 40, maxScreens: 6, maxSessions: 3, maxCharts: 48, maxBlindSets: 2, traderTools: true, toolsVersion: 2, freeBars: false, barOverview: false, timeFreeBlind: false, lessons: false, lessonReserveUsd: 0, lessonMaxInputChars: 60000, lessonMaxOutputTokens: 8000, blindSize: { min: 16, default: 24, max: 32 } });
+  assert.deepEqual(ctSessionPolicy({ policy: STAGE3_POLICY }), { maxTurns: 16, maxToolCalls: 40, maxScreens: 6, maxSessions: 3, maxCharts: 32, maxBlindSets: 2, traderTools: true, toolsVersion: 1, freeBars: false, barOverview: false, timeFreeBlind: false, book:false, lessons: false, lessonReserveUsd: 0, lessonMaxInputChars: 60000, lessonMaxOutputTokens: 8000, blindSize: null });
+  assert.deepEqual(ctSessionPolicy({ policy: STAGE4_POLICY }), { maxTurns: 16, maxToolCalls: 40, maxScreens: 6, maxSessions: 3, maxCharts: 48, maxBlindSets: 2, traderTools: true, toolsVersion: 2, freeBars: false, barOverview: false, timeFreeBlind: false, book:false, lessons: false, lessonReserveUsd: 0, lessonMaxInputChars: 60000, lessonMaxOutputTokens: 8000, blindSize: { min: 16, default: 24, max: 32 } });
   // Stage 5 adds the lessons and withholds their reserve; the session limits are the stage-4 ones. Free bars (4) change only the bar choice; the bar overview (5) only the stable block and brief; time-free blind sets (6) only the blind charts and their controls.
-  assert.deepEqual(ctSessionPolicy({ policy: CT_POLICY }), { maxTurns: 16, maxToolCalls: 40, maxScreens: 6, maxSessions: 3, maxCharts: 48, maxBlindSets: 2, traderTools: true, toolsVersion: 6, freeBars: true, barOverview: true, timeFreeBlind: true, lessons: true, lessonReserveUsd: 0.05, lessonMaxInputChars: 60000, lessonMaxOutputTokens: 8000, blindSize: { min: 16, default: 24, max: 32 } });
+  assert.deepEqual(ctSessionPolicy({ policy: CT_POLICY }), { maxTurns: 16, maxToolCalls: 40, maxScreens: 6, maxSessions: 3, maxCharts: 48, maxBlindSets: 2, traderTools: true, toolsVersion: 6, freeBars: true, barOverview: true, timeFreeBlind: true, book:false, lessons: true, lessonReserveUsd: 0.05, lessonMaxInputChars: 60000, lessonMaxOutputTokens: 8000, blindSize: { min: 16, default: 24, max: 32 } });
   assert.match(CT_DESIGNER_SYSTEM, /selfRebuttal/);
   assert.match(CT_DESIGNER_SYSTEM, /label_moves[\s\S]*contrast_moves[\s\S]*grade_blind[\s\S]*diagnose_trades/);
 });

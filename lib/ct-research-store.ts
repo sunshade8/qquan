@@ -1,3 +1,7 @@
+import { ctCapabilities } from "./ct-capabilities.ts";
+import { ctScopedMemorySnapshot,recordCTScopedMemory } from "./ct-scoped-memory-store.ts";
+import { ctMeasureComponent, ctDeduplicateComponents, type CTComponentRecord } from "./ct-components.ts";
+import { ctFreezeBooks, replayCTBook, assertCTBookRegistration } from "./ct-book.ts";
 import { queryLocalMarket } from "./local-market-data.ts";
 import { CT_CALENDAR_VERSION, ctStockSession } from "./ct-sessions.ts";
 import { fetchCTSource } from "./ct-source-network.ts";
@@ -57,6 +61,7 @@ import {
   ctSessionContext,
   ctSubmissionSchema,
   ctSubmissionSchemaStage5,
+  ctSubmissionSchemaBook,
   validateCTCandidate,
   type CTCandidate,
   type CTLessonCheck,
@@ -167,6 +172,10 @@ export async function ensureCTSchema() {
 /** Shared by paid-run creation and the read-only data preflight. */
 export async function prepareCTContract(input: unknown): Promise<CTContract> {
   const request = ctRequestSchema.parse(input);
+  if(request.tradeSettings){
+    const expected=request.market==="crypto"?"spot":"stock",cap=ctCapabilities().find(c=>c.product===request.tradeSettings!.product);
+    if(!cap||request.tradeSettings.product!==expected)throw new Error(cap?.reason.join(" · ")||"시장·상품 불일치 · 알 수 없는 상품");
+  }
   const symbols =
     request.symbols ??
     (request.market === "stock" ? ["NVDA"] : ["BTCUSDT"]);
@@ -212,6 +221,8 @@ export async function prepareCTContract(input: unknown): Promise<CTContract> {
     costs: priced.costs,
     costProfile: priced.costProfile,
     policy: ctPolicyForNewContract(),
+    ...(ctPolicyForNewContract().traderTools===7?{tradeSettings:request.tradeSettings??{product:request.market==="crypto"?"spot" as const:"stock" as const,selectionMode:"manual" as const,directions:["long" as const],riskPct:.5}}:{}),
+    ...(ctPolicyForNewContract().traderTools===7?{semantics:{schema:"ct-contract-2" as const,engine:"ct-decision-1" as const,accounting:"ct-accounting-1" as const,router:"ct-router-1" as const,productVersion:"v0.0" as const}}:{}),
     engine: CT_ENGINE,
     createdAt: new Date().toISOString(),
     // Market-specific wording: a default coin run used to be labelled "NVDA 단일 종목 / Binance BTCUSDT".
@@ -762,10 +773,11 @@ export const CT_SESSION_TOOLS: Anthropic.Tool[] = CT_SESSION_TOOLS_FREEBARS.map(
       return t;
   }
 });
+export const CT_SESSION_TOOLS_BOOK: Anthropic.Tool[] = CT_SESSION_TOOLS.map(t => t.name === "submit_candidates" ? { ...t, description: t.description + " Submit components (0–8) with candidate fields and whyNotAlone even when no standalone rule clears costs. Components are signals; the server freezes books on training only. An empty reflection requires two new measured signatures unless finalNotice or budget exhaustion.", input_schema: jsonSchema(ctSubmissionSchemaBook) } : t);
 /** The tool set a contract runs under (stage 2: four tools; stage 3: trader tools, frozen; stage 4: control groups, big blind sets, frozen; stage 5: lessonChecks, frozen; free bars: barMinutes, frozen; time-free blind sets (6); the bar overview (5) changed no tool). */
 export const ctSessionTools = (contract: Pick<CTContract, "policy">) => {
   const v = ctSessionPolicy(contract).toolsVersion;
-  return v >= 6 ? CT_SESSION_TOOLS : v === 5 ? CT_SESSION_TOOLS_FREEBARS : v === 4 ? CT_SESSION_TOOLS_FREEBARS : v === 3 ? CT_SESSION_TOOLS_STAGE5 : v === 2 ? CT_SESSION_TOOLS_STAGE4 : v === 1 ? CT_SESSION_TOOLS_STAGE3 : CT_SESSION_TOOLS_STAGE2;
+  return v >= 7 ? CT_SESSION_TOOLS_BOOK : v === 6 ? CT_SESSION_TOOLS : v === 5 ? CT_SESSION_TOOLS_FREEBARS : v === 4 ? CT_SESSION_TOOLS_FREEBARS : v === 3 ? CT_SESSION_TOOLS_STAGE5 : v === 2 ? CT_SESSION_TOOLS_STAGE4 : v === 1 ? CT_SESSION_TOOLS_STAGE3 : CT_SESSION_TOOLS_STAGE2;
 };
 
 type SessionMessage = Anthropic.MessageParam;
@@ -845,8 +857,9 @@ export async function advanceCTResearch(
     c = ct.contract,
     started = Date.now();
   const done = (reason: string, passed = false) => {
+    const phases = ["data","sources","read","approaches","design","experiment","reflect","book","risk_review","final","evidence_review","done"];
+    ct.endReason = ctSessionPolicy(c).book ? `${phases.indexOf(ct.phase)+1}/12 ${ct.phase} · ${reason} · 예산 $${Math.max(0,job.budgetUsd-job.costUsd).toFixed(2)} 남음` : reason;
     ct.phase = "done";
-    ct.endReason = reason;
     ct.passed = passed;
     job.status = "completed";
   };
@@ -980,6 +993,7 @@ export async function advanceCTResearch(
           { market: c.market, trainingToMs: c.trainingToMs, toMs: c.toMs, ownerScope: true },
           () => ctLessonsSnapshot(job.ownerId, c, job.id, (ct.playbook?.entries ?? []).map((e) => e.id)),
         );
+      if(ctSessionPolicy(c).book){ct.scopedMemory=await ctScopedMemorySnapshot(job.ownerId,c);delete ct.measured;}
       ct.phase = "sources";
       return;
     }
@@ -1076,10 +1090,10 @@ export async function advanceCTResearch(
         throw new Error("동결 시장 데이터 해시 불일치");
       return (loaded = data);
     };
-    const computed = async <T>(work: () => T) => {
+    const computed = async <T>(work: () => T | Promise<T>) => {
       const at = Date.now();
       try {
-        return work();
+        return await work();
       } finally {
         ct.computeMs += Date.now() - at;
       }
@@ -1092,7 +1106,8 @@ export async function advanceCTResearch(
       to: number,
       options: { costMultiplier?: number; delayBars?: number; stopScale?: number } = {},
     ) => {
-      const hash = await ctHash(executableCT(spec));
+      const selectedBook=kind.startsWith("final")?ct.books?.find(b=>b.id===ct.selectedId):undefined;
+      const hash = selectedBook?.hash ?? await ctHash(executableCT(spec));
       const replayInput = {
         hash,
         kind,
@@ -1121,7 +1136,7 @@ export async function advanceCTResearch(
         const compute = Date.now();
         let result: CTResult;
         try {
-          result = replayCT(spec, data, c, from, to, hash, {
+          result = selectedBook ? replayCTBook(selectedBook,ct.components??[],data,c,from,to,{...options,deadline:deadline()}) : replayCT(spec, data, c, from, to, hash, {
             ...options,
             deadline:
               compute + Math.max(1, c.policy.maxComputeMs - ct.computeMs),
@@ -1201,6 +1216,7 @@ export async function advanceCTResearch(
           toolCalls: 0,
           screens: 0,
           messages: 0,
+          ...(policy.book ? {initialSignatures:Object.keys(ct.tests?.signatures??{})} : {}),
         };
         // A revision may inspect its parent's actual training trades.
         for (const t of ct.trials) anchor(...t.training.trades.filter((x) => x.entryAt < c.trainingToMs).map((x) => x.entryAt));
@@ -1282,7 +1298,7 @@ export async function advanceCTResearch(
       }
       const results: Anthropic.ToolResultBlockParam[] = [];
       let accepted: string[] | null = null;
-      let submission: z.infer<typeof ctSubmissionSchemaStage5> | null = null;
+      let submission: z.infer<typeof ctSubmissionSchemaBook> | null = null;
       let lessonChecksOf: Array<CTLessonCheck & { candidateIndex: number }> = [];
       let duplicates = 0;
       for (const use of uses) {
@@ -1624,7 +1640,7 @@ export async function advanceCTResearch(
             }
             answer({ ...out, ...(screenId ? { screenId } : {}), freedom: ctFreedom(spec), multipleTesting: ctTestLedger(ct) });
           } else if (use.name === "submit_candidates") {
-            const parsed = (policy.lessons ? ctSubmissionSchemaStage5 : ctSubmissionSchema).parse(use.input) as z.infer<typeof ctSubmissionSchemaStage5>;
+            const parsed = (policy.book ? ctSubmissionSchemaBook : policy.lessons ? ctSubmissionSchemaStage5 : ctSubmissionSchema).parse(use.input) as z.infer<typeof ctSubmissionSchemaBook>;
             const left = c.policy.maxCandidates - submittedCount(ct);
             if (parsed.candidates.length > left)
               throw new Error(`남은 후보 제출 한도는 ${left}개입니다.`);
@@ -1652,9 +1668,26 @@ export async function advanceCTResearch(
                 fresh.push({ candidate, hash, index: i });
               }
             }
+            const freshComponents: CTComponentRecord[] = [];
+            if(policy.book) {
+              const seenComponents=new Set((ct.components??[]).map(r=>r.hash));
+              for(const draft of parsed.components) {
+                const {whyNotAlone,...fields}=draft;
+                const candidate:CTCandidate={...fields,evidenceVersion:CT_EVIDENCE_VERSION};
+                validateCTSpec(candidate.spec,c,ctEvidenceIds(ct));validateCTCandidate(candidate,ct);
+                const hash=await ctHash(executableCT(candidate.spec));
+                if(seenComponents.has(hash)){duplicates++;continue;}
+                seenComponents.add(hash);freshComponents.push({id:`component:${hash.slice(0,16)}`,hash,candidate,whyNotAlone,session:session.index,grade:"pending"});
+              }
+              if((ct.components?.length??0)+freshComponents.length>8)throw new Error("실행 전체 부품 한도 8개");
+              const newSignatures=Object.keys(ct.tests?.signatures??{}).filter(k=>!session.initialSignatures?.includes(k)).length;
+              const headroom=job.budgetUsd*(1-c.policy.reserveFraction)-policy.lessonReserveUsd-job.costUsd;
+              if(!fresh.length&&!freshComponents.length&&(ct.emptySessions??0)>0&&newSignatures<2&&!session.finalNotice&&headroom>0)
+                throw new Error("0/0 재제출에는 이 실행에서 측정하지 않은 새 가설 서명 2개가 필요합니다. 미사용 커버리지와 비용 전 기준선 우위를 부품으로 측정하세요.");
+            }
             // Stage 5: a candidate in an idea family the lessons call dead must say why the lesson does not apply. The server works out the family itself.
             const lessonChecks: Array<CTLessonCheck & { candidateIndex: number }> = [];
-            if (policy.lessons) {
+            if (policy.lessons && !policy.book) {
               const missing: string[] = [];
               parsed.candidates.forEach((draft, i) => {
                 const families = ctCandidateFamilies(draft);
@@ -1698,6 +1731,10 @@ export async function advanceCTResearch(
               ct.queue.push({ id, hash: f.hash, session: session.index, candidate: f.candidate });
               await tool(job, token, "compile_strategy", { candidate: f.candidate, contractHash: await ctHash(c) }, async () => f.candidate);
             }
+            if(policy.book) {
+              (ct.components??=[]).push(...freshComponents);
+              for(const r of freshComponents)ctRecordTest(ct,"component:"+ctTestSignature(r.candidate.spec.stages, Boolean(r.candidate.spec.entry.entryWindows?.length), r.candidate.spec.minutes));
+            }
             accepted = fresh.map((f) => f.hash);
             submission = parsed;
             lessonChecksOf = lessonChecks;
@@ -1721,6 +1758,7 @@ export async function advanceCTResearch(
         session.submission = {
           candidates: submission.candidates.length,
           accepted: accepted.length,
+          ...(policy.book ? {components:submission.components.length,acceptedComponents:(ct.components??[]).filter(r=>r.session===session.index).length} : {}),
           duplicates,
           noEdgeReason: submission.noEdgeReason,
           // Stage 5: the server fills each rejected hypothesis' family from the very text and structure its playbook row will carry.
@@ -1731,7 +1769,14 @@ export async function advanceCTResearch(
           ...(eye.length ? { calibrationRefs: eye.flatMap((h) => h.evidence.map((blindId) => ({ blindId, hypothesis: h.hypothesis, result: h.result }))) } : {}),
         };
         ct.duplicateCount += duplicates;
-        if (accepted.length) ct.phase = "experiment";
+        if(policy.book) {
+          const count=accepted.length+(session.submission.acceptedComponents??0);
+          ct.emptySessions=count?0:(ct.emptySessions??0)+1;
+          if(count)ct.phase="experiment";
+          else if(ct.emptySessions>=2)done("두 세션 연속 후보·부품 없음 · 최종 기간 미개봉");
+          else ct.phase="reflect";
+        }
+        else if (accepted.length) ct.phase = "experiment";
         else if (!submission.candidates.length)
           done("설계자 판단: 비용 후 우위 미발견 · 통과 전략 없음 · 최종 기간 미개봉");
         else ct.phase = "reflect";
@@ -1759,7 +1804,8 @@ export async function advanceCTResearch(
       // Development is used only as a pass/fail gate; among passing rules the best daily mean is frozen.
       const passing = ct.trials
         .filter((t) => !t.reasons.length)
-        .sort((a, b) => ctMeanDaily(b.development) - ctMeanDaily(a.development));
+        .sort((a, b) => ctSessionPolicy(c).book ? (ct.trainingPriority??[]).indexOf(a.id)-(ct.trainingPriority??[]).indexOf(b.id) : ctMeanDaily(b.development) - ctMeanDaily(a.development));
+      if(ctSessionPolicy(c).book&&(ct.components??[]).some(r=>r.grade==="pending")){ct.phase="book";return;}
       if (passing.length) {
         ct.selectedId = passing[0].id;
         ct.frozenHash = passing[0].hash;
@@ -1769,7 +1815,7 @@ export async function advanceCTResearch(
       }
       const last = ct.trials.slice(-c.policy.stagnation);
       const stagnant =
-        last.length === c.policy.stagnation &&
+        !ctSessionPolicy(c).book && last.length === c.policy.stagnation &&
         last.every(
           (t) =>
             t.development.netReturnPct <=
@@ -1823,6 +1869,7 @@ export async function advanceCTResearch(
           if (!ct.queue!.length) afterQueue();
           return;
         }
+        if(ctSessionPolicy(c).book)(ct.trainingPriority??=[]).push(item.id);
         const development = await replay(
             candidate.spec,
             "development",
@@ -1906,10 +1953,44 @@ export async function advanceCTResearch(
       afterQueue();
       return;
     }
+    if(ct.phase === "book") {
+      const all=ct.components??[],data=await bars();
+      for(const r of all)if(!r.training){r.training=await computed(()=>ctMeasureComponent(r.candidate.spec,data,c,c.fromMs,c.trainingToMs));if(r.training.reasons.length)r.grade="training_failed";await generationProgress(job,token);}
+      const eligible=ctDeduplicateComponents(all);
+      if(!ct.books) {
+        ct.books=await computed(()=>ctFreezeBooks(eligible,data,c,deadline()));
+        ct.backtests+=ct.books.length;
+        for(const b of ct.books){ctRecordTest(ct,"book:"+b.hash);(ct.trainingPriority??=[]).push(b.id);b.overlap=Object.fromEntries(eligible.map(a=>[a.id,Object.fromEntries(eligible.map(d=>{const set=new Set(a.training!.entries),intersection=d.training!.entries.filter(t=>set.has(t)).length;return [d.id,intersection/Math.max(1,Math.min(set.size,d.training!.entries.length))];}))]));}
+        await generationProgress(job,token);
+      }
+      for(const r of eligible)if(!r.development){r.development=await computed(()=>ctMeasureComponent(r.candidate.spec,data,c,c.trainingToMs,c.developmentToMs));r.grade=r.development.events>=20&&r.development.differencePct>0?"component_passed":"component_dev_failed";await generationProgress(job,token);}
+      for(const b of ct.books)if(!b.development&&!b.reasons.length) {
+        if(b.componentIds.some(id=>all.find(r=>r.id===id)?.grade!=="component_passed")){b.reasons=["동결 후 부품 개발 확인 실패 · 재조합 금지"];continue;}
+        b.development=await computed(()=>replayCTBook(b,all,data,c,c.trainingToMs,c.developmentToMs,{deadline:deadline()}));
+        b.stress=await computed(()=>replayCTBook(b,all,data,c,c.trainingToMs,c.developmentToMs,{costMultiplier:2,deadline:deadline()}));
+        b.delayed=await computed(()=>replayCTBook(b,all,data,c,c.trainingToMs,c.developmentToMs,{delayBars:1,deadline:deadline()}));
+        b.reasons=[...ctGate(b.training,c),...ctGate(b.development,c),...(!ctNetPositive(b.stress)?["비용 2배 실패"]:[]),...(!ctNetPositive(b.delayed)?["1봉 지연 실패"]:[])];
+        ct.backtests+=3;
+        b.costSharePct=(b.development.grossReturnPct??0)>0?b.development.costs/((b.development.grossReturnPct??0)/100*c.capital)*100:null;
+        b.contribution=[];
+        for(const componentId of b.componentIds){
+          if(ct.backtests>=c.policy.maxExperiments*6)throw new Error("북 진단 계산 한도");
+          const ablated={...b,componentIds:b.componentIds.filter(id=>id!==componentId)};
+          const result=await computed(()=>replayCTBook(ablated,all,data,c,c.trainingToMs,c.developmentToMs,{deadline:deadline()}));ct.backtests++;
+          const delta=(b.development.netReturnPct-result.netReturnPct)/100*c.capital;
+          b.contribution.push({componentId,netPnlDelta:delta,sharePct:b.development.netReturnPct>0?delta/(b.development.netReturnPct/100*c.capital)*100:null});
+        }
+        b.computationVariants=4+b.componentIds.length;
+        const r=all.find(r=>r.id===b.componentIds[0])!;
+        ct.trials.push({...r.candidate,id:b.id,hash:b.hash,spec:b.spec,at:b.frozenAt,designedBy:"ctDesigner",session:r.session,training:b.training,development:b.development,stress:b.stress,delayed:b.delayed,sensitivity:[],reasons:b.reasons});
+        await generationProgress(job,token);
+      }
+      afterQueue();return;
+    }
     const selected = ct.trials.find((t) => t.id === ct.selectedId);
     if (
       !selected ||
-      (await ctHash(executableCT(selected.spec))) !== ct.frozenHash
+      (ct.books?.find(b=>b.id===selected.id)?.hash ?? await ctHash(executableCT(selected.spec))) !== ct.frozenHash
     )
       throw new Error("동결 규칙 불일치");
     const roles = ctReviewRoles(selected.designedBy);
@@ -1955,6 +2036,7 @@ export async function advanceCTResearch(
         : {}),
       rejectedAtTraining: (ct.screened ?? []).map((t) => ({ id: t.id, rule: ctRuleText(t.candidate.spec), training: ctBrief(t.training), reasons: t.reasons })),
       developmentTrials: ct.trials.map((t) => ({ id: t.id, rule: ctRuleText(t.spec), development: ctBrief(t.development), reasons: t.reasons })),
+      ...(ctSessionPolicy(c).book?{book:ct.books?.find(b=>b.id===selected.id),componentTesting:{count:ct.components?.length??0,tests:ctTestLedger(ct),question:"우연히 좋아 보이는 부품 조합인가, 한 부품이 전부인가? 빼기 하나 진단은 개발 평가 후이며 설계 변경에 사용하지 않는다."}}:{}),
       mapping: selected.mapping,
     };
     const cited = new Set([...selected.spec.sourceIds, ...selected.mapping.map((m) => m.sourceId)]);
@@ -2077,6 +2159,7 @@ export async function advanceCTResearch(
     if (ct.phase === "done" && !ct.playbookRecorded) {
       try {
         ct.playbookRecorded = { at: new Date().toISOString(), entries: await recordCTPlaybook(job) };
+        await recordCTScopedMemory(job);
       } catch (error) {
         ct.tools.push({ id: await ctHash({ playbook: String(error), at: Date.now() }), name: "playbook_record", input: {}, at: new Date().toISOString(), status: "failed", error: error instanceof Error ? error.message : String(error) });
       }
@@ -2099,6 +2182,8 @@ export async function advanceCTResearch(
   }
 }
 export type CTPackage = {
+  book?: import("./ct-book.ts").CTBookRecord;
+  components?: CTComponentRecord[];
   id: string;
   runId: string;
   market: CTMarket;
@@ -2148,7 +2233,7 @@ export async function registerCT(job: GenerationJob) {
   const selected = ct.trials.find((t) => t.id === ct.selectedId);
   if (
     !selected ||
-    (await ctHash(executableCT(selected.spec))) !== ct.frozenHash ||
+    (ct.books?.find(b=>b.id===selected.id)?.hash ?? await ctHash(executableCT(selected.spec))) !== ct.frozenHash ||
     selected.reasons.length ||
     ctGate(selected.training, ct.contract).length ||
     ctGate(selected.development, ct.contract).length ||
@@ -2175,7 +2260,10 @@ export async function registerCT(job: GenerationJob) {
       )
     )
       throw new Error("필수 독립 모델 실행 증거 누락");
+  const registeredBook=ct.books?.find(b=>b.id===selected.id);
+  if(registeredBook)assertCTBookRegistration(registeredBook);
   const packet: CTPackage = {
+    ...(registeredBook?{book:registeredBook,components:ct.components}:{}),
     id: `ct-${job.id}`,
     runId: job.id,
     market: ct.contract.market,

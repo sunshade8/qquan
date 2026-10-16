@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ctCandidateSchema, ctSubmissionSchemaStage5, type CTResearch } from "./ct-research.ts";
+import { ctCandidateSchema, ctSubmissionSchemaStage5, ctSubmissionSchemaBook, type CTResearch } from "./ct-research.ts";
 // The free-bar schemas are supersets (optional barMinutes); each contract's own request schema is enforced where the tool runs.
 import { ctQuerySchemaBars as ctQuerySchema, ctReadBarsSchemaBars as ctReadBarsSchema } from "./ct-design-tools.ts";
 import {
@@ -336,7 +336,7 @@ export function assertCTTool(name: string, input: unknown, ct: CTResearch) {
   const tool = CT_TOOLS[name as keyof typeof CT_TOOLS];
   if (!tool || !(tool.phases as readonly string[]).includes(ct.phase))
     throw new Error("CT 도구 단계/권한 거부");
-  const value = tool.input.parse(input);
+  const value = name === "submit_candidates" && (ct.contract.policy.traderTools??0)>=7 ? z.object({session:z.number(),submission:ctSubmissionSchemaBook}).parse(input) : tool.input.parse(input);
   if (name === "backtest") {
     const data = value as z.infer<typeof CT_TOOLS.backtest.input>;
     const final = data.kind.startsWith("final");

@@ -24,7 +24,15 @@ async function work(task) {
   let output, error=null;
   try {
     validateInput(task.input);
-    output=JSON.stringify(await dataRPC(task.input));
+    if(task.input.action==='ct_control') {
+      if(!process.env.QQUAN_OWNER_ID || task.input.owner!==process.env.QQUAN_OWNER_ID)throw Error('로컬·Sites 연구 소유자 불일치 · 연결 설정 확인 필요');
+      const target=new URL('/api/invest/ct/experiments',process.env.LOCAL_CONTROL_URL||'http://127.0.0.1:3000');
+      if(!['127.0.0.1','localhost','[::1]'].includes(target.hostname))throw Error('로컬 제어 API만 허용');
+      const method=['list','get'].includes(task.input.operation)?'GET':'POST';
+      if(method==='GET')for(const [k,v]of Object.entries(task.input.body))if(['id','market'].includes(k))target.searchParams.set(k,String(v));
+      const result=await fetch(target,{method,headers:{'content-type':'application/json',cookie:`qquant_research_device=${task.input.owner}`},...(method==='POST'?{body:JSON.stringify({...task.input.body,action:task.input.operation})}:{}),signal:AbortSignal.timeout(90000)});
+      const packet=await result.json();if(!result.ok)throw Error(packet.error||'로컬 CT 제어 실패');output=JSON.stringify(packet);
+    }else output=JSON.stringify(await dataRPC(task.input));
     if (output.length>60_000_000) throw Error('조회 결과가 큽니다. 기간을 줄이세요.');
     if (['enqueue','resume'].includes(task.input.action)) startDataWorker();
   } catch(e) { error=e.message.slice(0,1900); }
@@ -42,7 +50,7 @@ const heartbeat=setInterval(()=>{ void send({action:'poll',heartbeatOnly:true}).
 console.log(`로컬 저장소 연결 → ${url.origin} (시장 데이터 재다운로드 없음)`);
 while (!stopping) {
   try {
-    const {task}=await send({action:'poll'});
+    const {task}=await send({action:'poll',capabilities:['ct-control-v1']});
     if (task) await work(task);
   } catch(e) { console.error(e.message); await sleep(5000); }
   if (!stopping) await sleep(1000);

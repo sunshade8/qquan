@@ -1,4 +1,6 @@
 "use client";
+import { ctSessionPolicy } from "@/lib/ct-spec";
+
 /**
  * CT 연구 진행 추적. 새 API 없이 이미 폴링하는 job/ct 데이터에서 파생한다.
  *  - LiveStatusBar: 상태, 단계, 경과, 후보, 백테스트, 비용, 러너, 제어 (연구 중에는 sticky)
@@ -60,6 +62,7 @@ export const CT_PHASES: Record<CTPhaseId, string> = {
   design: "가설·규칙 설계",
   experiment: "실제 엔진 실험",
   reflect: "실패 진단·수정",
+  book: "부품 결합·북 실험",
   risk_review: "독립 위험 검토",
   final: "동결 규칙 최종 평가",
   evidence_review: "독립 최종 검토",
@@ -73,12 +76,14 @@ const PHASE_HINT: Record<CTPhaseId, string> = {
   design: "학습 구간 측정 도구로 가설을 검증하고 규칙을 설계합니다",
   experiment: "서버 엔진으로 학습·개발·스트레스 실험을 실행합니다",
   reflect: "측정 결과를 반영한 새 설계 세션을 엽니다",
+  book: "통과한 부품을 사전 정의 규칙으로 결합해 비용 후 성과를 실험합니다",
   risk_review: "규칙을 동결하고 독립 모델이 검토합니다",
   final: "최종 구간을 한 번만 열어 동결 규칙을 평가합니다",
   evidence_review: "독립 최종 검토와 서버 수치 게이트를 확인합니다",
   done: "연구가 종료되었습니다",
 };
-export const PHASE_IDS = Object.keys(CT_PHASES) as CTPhaseId[];
+export const PHASE_IDS = Object.keys(CT_PHASES).filter(id=>id!=="book") as CTPhaseId[];
+export const ctPhaseIds = (ct:CTResearch) => ctSessionPolicy(ct.contract).book ? Object.keys(CT_PHASES) as CTPhaseId[] : PHASE_IDS;
 const LOOP: ReadonlySet<CTPhaseId> = new Set(["design", "experiment", "reflect"]);
 
 export const STATUS_LABEL: Record<string, string> = {
@@ -133,6 +138,7 @@ function reached(phase: CTPhaseId, ct: CTResearch) {
     case "read": return ct.sources.length > 0;
     case "approaches": return Boolean(ct.approaches?.length);
     case "design": case "experiment": case "reflect": return ct.trials.length > 0 || Boolean(ct.pending) || Boolean(ct.sessions?.length);
+    case "book": return Boolean(ct.books?.length) || Boolean(ct.components?.some((r) => r.training));
     case "risk_review": return Boolean(ct.riskReview) || Boolean(ct.frozenHash);
     case "final": return Boolean(ct.final) || Boolean(ct.finalConsumed);
     case "evidence_review": return Boolean(ct.finalReview);
@@ -141,15 +147,29 @@ function reached(phase: CTPhaseId, ct: CTResearch) {
 }
 export function deriveSteps(job: CTJob) {
   const { ct } = job;
-  const cur = PHASE_IDS.indexOf(ct.phase);
-  return PHASE_IDS.map((id, i): { id: CTPhaseId; state: StepState } => {
+  const ids=ctPhaseIds(ct), cur = ids.indexOf(ct.phase);
+  return ids.map((id, i): { id: CTPhaseId; state: StepState } => {
     if (ct.phase === "done") return { id, state: id === "done" ? "done" : reached(id, ct) ? "done" : "skipped" };
-    if (i < cur) return { id, state: "done" };
+    if (i < cur) return { id, state: ctSessionPolicy(ct.contract).book&&!reached(id,ct)?"skipped":"done" };
     if (i > cur) return { id, state: "pending" };
     if (job.status === "failed") return { id, state: "failed" };
     if (job.status === "cancelled") return { id, state: "stopped" };
     return { id, state: "active" };
   });
+}
+/** Why the book step ended where it did: no component, all failed training, too few after dedupe, or every frozen book failed. */
+export function ctBookOutcome(ct: CTResearch): string | null {
+  if (!ctSessionPolicy(ct.contract).book) return null;
+  const all = ct.components ?? [];
+  if (!all.length) return "제출된 부품 0개";
+  const measured = all.filter((r) => r.training);
+  if (!measured.length) return `부품 ${all.length}개 · 학습 측정 대기`;
+  const passed = measured.filter((r) => r.grade !== "training_failed");
+  if (!passed.length) return `부품 ${measured.length}개 모두 학습 게이트 탈락 · 북 미생성`;
+  const kept = passed.filter((r) => !r.duplicateOf);
+  if (!ct.books?.length) return kept.length < 2 ? `학습 통과 ${passed.length}개 · 중복 제거 후 ${kept.length}개 · 북 최소 2개 미달` : "북 동결 대기";
+  const open = ct.books.filter((b) => !b.reasons.length).length;
+  return open ? `북 ${ct.books.length}개 중 ${open}개 게이트 통과` : `북 ${ct.books.length}개 모두 탈락`;
 }
 export const revisionCount = (ct: CTResearch) => ct.trials.filter((t) => t.parentId).length;
 
@@ -214,8 +234,8 @@ export function LiveStatusBar({ job, runnerOnline, busy, onAct }: StatusProps) {
   const now = useNow(1000, job.status === "running");
   const end = job.status === "running" ? now : Date.parse(job.updatedAt);
   const elapsed = end - Date.parse(job.createdAt);
-  const stepIndex = PHASE_IDS.indexOf(ct.phase) + 1;
-  const total = PHASE_IDS.length;
+  const ids=ctPhaseIds(ct), stepIndex = ids.indexOf(ct.phase) + 1;
+  const total = ids.length;
   const costRatio = job.budgetUsd > 0 ? job.costUsd / job.budgetUsd : 0;
   const costWarn = costRatio >= 0.8;
   const tone = statusTone(job.status);
@@ -307,6 +327,7 @@ export function PhaseStepper({ job }: { job: CTJob }) {
                 <span className="ct-step-name">{CT_PHASES[id]}</span>
                 {state === "active" ? <span className="ct-step-hint">{PHASE_HINT[id]}</span> : null}
                 {state === "skipped" ? <span className="ct-step-hint">{ct.passed ? "해당 없음" : "통과 후보가 없어 실행하지 않음"}</span> : null}
+                {id === "book" && state === "done" && ctBookOutcome(ct) ? <span className="ct-step-hint">{ctBookOutcome(ct)}</span> : null}
                 {state === "active" && job.status === "running" ? <span className="ct-step-bar" aria-hidden="true" /> : null}
                 {first && ct.trials.length > 0 ? (
                   <span className="ct-step-loop"><Repeat size={11} aria-hidden="true" />후보 {ct.trials.length} · 수정 {rev}회차</span>

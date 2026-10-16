@@ -1,3 +1,4 @@
+import { BinanceAPI,binanceKline,binanceSetting } from "./binance-api.ts";
 import { ctStockSession } from "./ct-sessions.ts";
 import { env } from "cloudflare:workers";
 import { fetchTossMinuteCandles } from "@/lib/market-data";
@@ -152,6 +153,15 @@ export async function ctRecentBars(
   /** Calendar days of local one-minute history behind today's candles (60/240/1440-minute conditions need weeks). */
   warmupDays = 7,
 ) {
+  if(contract.market==="crypto"&&contract.currency==="USDT") {
+    const client=new BinanceAPI("spot",binanceSetting("BINANCE_NETWORK")==="testnet"?"testnet":"mainnet"),out:CTBar[]=[];
+    const since=nowMs-Math.max(2,warmupDays)*86400000;
+    for(let cursor=since;cursor<nowMs;) {
+      const response=await client.read("klines",{symbol,interval:"1m",startTime:Math.floor(cursor),endTime:Math.floor(nowMs-1),limit:1000}) as unknown as unknown[][];
+      if(!response.length)break;const page=response.map(r=>binanceKline(r));out.push(...page.filter(b=>b.endMs<=nowMs));const next=page.at(-1)!.endMs;if(next<=cursor)throw new Error("Binance 데이터 커서 정체");cursor=next;
+    }
+    return aggregateCT(out,contract.minutes,contract.market,nowMs);
+  }
   let before = nowMs;
   const rows: CTBar[] = [];
   if (contract.market === "stock" && contract.dataSnapshot) {
