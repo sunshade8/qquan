@@ -25,6 +25,8 @@ freellmapi의 Anthropic 호환 `/v1/messages`를 Anthropic SDK(`baseURL`)로 호
 
 ## 모델 배치 (`lib/t-free-models.ts`)
 
+> **2026-10-17 변경: 모든 역할이 라우터의 `auto`만 쓴다**(`lib/t-generation-models.ts` `currentPlacements`/`placementChain`). LiveBench로 고른 `gemini-3.8-flash`를 고집하다가 그 모델 하나의 무료 한도가 바닥나 설계 턴이 429로 계속 대기했는데, 같은 시각 `auto`는 다른 모델(gemini-3.5-flash-lite)로 응답했다. 이제 라우터가 호출마다 한도가 남은 모델을 고르고, 실제 사용 모델(`x-routed-via`)이 호출 기록 `calls[].model`에 남는다. 아래 LiveBench 배치 규칙은 참고용으로만 남아 있다. 검토자가 설계자와 같은 모델일 수 있다(화면에 명시).
+
 모델 목록은 매번 라우터의 `/v1/models`에서 읽는다(5분 캐시, 화면의 "모델 다시 불러오기"). 키가 없는 모델(`needsKey`)은 제외한다. 배치는 LiveBench 2.0(2026-10-14) 점수로 한다.
 
 | 역할 | 기준(LiveBench 가중) |

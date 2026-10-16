@@ -1,4 +1,4 @@
-import { FREE_ROUTER_AUTO, familyOf, placeModels, type CatalogEntry, type FreeRole, type Placement } from "./t-free-models.ts";
+import { FREE_ROUTER_AUTO, familyOf, type CatalogEntry, type FreeRole, type Placement } from "./t-free-models.ts";
 
 /**
  * T roles. Same role names and meaning as CT's, but every call goes to a free-tier model through freellmapi.
@@ -25,21 +25,20 @@ export type GenerationRole = FreeRole;
 export type CTRole = FreeRole;
 export const CT_ROLES = Object.keys(CT_MODELS) as CTRole[];
 
-let placements: Placement[] = [];
-/** Installs the placement chosen from the live catalog; rows keep their label and virtual rate. */
-export function applyPlacements(next: Placement[]) {
-  placements = next;
-  for (const p of next) RESEARCH_MODELS[p.role] = { ...RESEARCH_MODELS[p.role], model: p.model, provider: p.family };
+/**
+ * Every T role calls the router's `auto` (owner, 2026-10-17): pinning a LiveBench-ranked model (gemini-3.8-flash)
+ * kept a run waiting on that one model's free quota while `auto` still answered. The router picks a model with
+ * quota left on each call; the model it used is recorded per call (`x-routed-via`). placeModels stays as reference.
+ */
+const AUTO_PLACEMENTS: Placement[] = (Object.keys(CT_MODELS) as FreeRole[]).map((role) => ({ role, model: FREE_ROUTER_AUTO, family: "Router", score: null, chain: [] }));
+export function currentPlacements() { return AUTO_PLACEMENTS; }
+export function placementChain(_role: GenerationRole) {
+  void _role;
+  return [FREE_ROUTER_AUTO];
 }
-export function currentPlacements() { return placements; }
-export function placementChain(role: GenerationRole) {
-  const p = placements.find((x) => x.role === role);
-  return p ? [p.model, ...p.chain] : [FREE_ROUTER_AUTO];
-}
-export function placeFromCatalog(catalog: CatalogEntry[]) {
-  const next = placeModels(catalog);
-  applyPlacements(next);
-  return next;
+export function placeFromCatalog(_catalog: CatalogEntry[]) {
+  void _catalog;
+  return AUTO_PLACEMENTS;
 }
 
 export function researchModel(role: GenerationRole, _failures = 0) {

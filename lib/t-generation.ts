@@ -36,7 +36,7 @@ import {
  */
 type ResearchRuntime = { token: string; onUsage: (meter: ResearchMeter) => void };
 const runtimes = new WeakMap<GenerationJob, ResearchRuntime>();
-type PaidResult<T> = { data: T; costUsd: number; sources?: Array<{ url: string; title: string }>; searchCalls?: number; reasoningTokens?: number | null };
+type PaidResult<T> = { data: T; costUsd: number; model?: string; sources?: Array<{ url: string; title: string }>; searchCalls?: number; reasoningTokens?: number | null };
 type CallLimits = ReturnType<typeof researchCallLimits>;
 /**
  * The most a call of `role` may bring the run's total to (reserve included). Design and strategy search keep a review reserve
@@ -131,6 +131,8 @@ async function paidCall<T>(
         persistedAt = Date.now();
       }
     });
+    // T calls `auto`; record the model the router actually used (x-routed-via).
+    if (result.model) call.model = result.model;
     call.sources = result.sources;
     call.searchCalls = result.searchCalls;
     call.reasoningTokens = result.reasoningTokens;

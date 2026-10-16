@@ -75,7 +75,9 @@ function ModelPlacement() {
               </tbody>
             </table>
           </div>
-          {data.independence.sameCompany ? (
+          {data.placements.every((p) => p.model === "auto") ? (
+            <p className="ui-sub" role="note">모든 역할이 라우터의 <code>auto</code>를 씁니다. 호출마다 한도가 남은 모델을 라우터가 고르고, 실제 사용 모델은 호출 기록에 남습니다. 그래서 검토자가 설계자와 같은 모델일 수 있어 CT만큼 독립적이지는 않습니다.</p>
+          ) : data.independence.sameCompany ? (
             <p className="ui-sub" role="note">검토자가 설계자와 같은 회사 계열입니다(지금 쓸 수 있는 키가 한 계열뿐). 모델은 달라서 같은 모델의 자기 검토는 아니지만, CT만큼 독립적이지는 않습니다. 다른 회사의 제공자 키를 freellmapi에 추가하면 다음 연구부터 자동으로 갈라집니다.</p>
           ) : (
             <p className="ui-sub" role="note">설계자와 검토자가 서로 다른 회사 계열입니다.</p>
