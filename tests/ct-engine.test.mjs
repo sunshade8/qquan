@@ -338,11 +338,13 @@ test("CT detector cache returns the same signals as uncached detection", () => {
   }
   assert.ok(signals > 0);
 });
-test("CT research is fixed to 1-minute bars and accepts Binance USDT crypto symbols", async () => {
+test("CT research takes 1/5/15/60-minute bars and accepts Binance USDT crypto symbols", async () => {
   const { ctRequestSchema } = await import("../lib/ct-research.ts");
   const base = { requestId: "00000000-0000-4000-8000-000000000000" };
   assert.doesNotThrow(() => ctRequestSchema.parse({ ...base, minutes: 1 }));
-  assert.throws(() => ctRequestSchema.parse({ ...base, minutes: 15 }));
+  // 2026-10-16: no longer fixed to one-minute bars (tests/ct-bar-minutes.test.mjs).
+  assert.doesNotThrow(() => ctRequestSchema.parse({ ...base, minutes: 15 }));
+  assert.throws(() => ctRequestSchema.parse({ ...base, minutes: 3 }));
   const c = { ...contract(), symbols: ["BTCUSDT"], minutes: 1, currency: "USDT" };
   const s = { ...spec(), symbols: ["BTCUSDT"], minutes: 1 };
   s.exit.maxHoldBars = 390;

@@ -828,26 +828,30 @@ export function ctDate(ms: number, market: CTContract["market"], timezone?:strin
   if(timezone === "UTC") return new Date(ms).toISOString().slice(0,10);
   return dateFormats[market].format(new Date(ms));
 }
-export function ctSessionClosing(ms: number) {
+/** True when a bar of `barMinutes` closing at `ms` is the session's last tradable bar (it closes one bar before the bell). */
+export function ctSessionClosing(ms: number, barMinutes = 1) {
   const session = ctStockSession(ctDate(ms, "stock"));
   if (!session) return true;
   const [hour, minute] = session.close.split(":").map(Number),
     time = stockClock.format(new Date(ms)).split(":").map(Number);
-  return time[0] * 60 + time[1] >= hour * 60 + minute - 1;
+  return time[0] * 60 + time[1] >= hour * 60 + minute - barMinutes;
 }
 const DAY_MS = 86_400_000;
-/** True when a bar closing at `ms` is the last tradable bar of its UTC day (one minute before 00:00 UTC = 09:00 KST). */
-export function ctCryptoDayClosing(ms: number) {
-  return (((ms % DAY_MS) + DAY_MS) % DAY_MS) >= DAY_MS - 60_000;
+/** True when a bar of `barMinutes` closing at `ms` is the last tradable bar of its UTC day (one bar before 00:00 UTC = 09:00 KST). */
+export function ctCryptoDayClosing(ms: number, barMinutes = 1) {
+  return (((ms % DAY_MS) + DAY_MS) % DAY_MS) >= DAY_MS - barMinutes * 60_000;
 }
 /**
  * Whether the trading day ends with the bar closing at `ms`: the one rule backtest, paper and
  * live share. Stocks always close at the NYSE session end. Crypto closes at 00:00 UTC only for
  * ct-pattern-2 — ct-pattern-1 crypto is continuous and results saved under it must not move.
+ * ct-pattern-2+ skips the day's final bar whatever its size (5/15/60-minute research, 2026-10-16);
+ * ct-pattern-1 stock packages keep the historical one-minute rule.
  */
-export function ctDayClosing(spec: Pick<CTSpec, "engine">, market: CTMarket, ms: number) {
-  if (market === "stock") return ctSessionClosing(ms);
-  return spec.engine !== CT_ENGINE_V1 && ctCryptoDayClosing(ms);
+export function ctDayClosing(spec: Pick<CTSpec, "engine"> & Partial<Pick<CTSpec, "minutes">>, market: CTMarket, ms: number) {
+  const bar = spec.engine === CT_ENGINE_V1 ? 1 : (spec.minutes ?? 1);
+  if (market === "stock") return ctSessionClosing(ms, bar);
+  return spec.engine !== CT_ENGINE_V1 && ctCryptoDayClosing(ms, bar);
 }
 /** End of the trading day containing the bar that closes at `ms`; null outside a session. */
 export function ctDayEndMs(market: CTMarket, ms: number): number | null {
@@ -857,7 +861,7 @@ export function ctDayEndMs(market: CTMarket, ms: number): number | null {
   return session ? easternWallTimeToEpoch(date, session.close) : null;
 }
 /** Forced exit on the day's last bar: at that bar's close. Stocks keep the historical reason "session". */
-export function ctForcedExit(spec: Pick<CTSpec, "engine">, market: CTMarket, bar: CTBar) {
+export function ctForcedExit(spec: Pick<CTSpec, "engine"> & Partial<Pick<CTSpec, "minutes">>, market: CTMarket, bar: CTBar) {
   return ctDayClosing(spec, market, bar.endMs)
     ? { price: bar.close, reason: market === "stock" ? "session" : "day_end" }
     : null;
@@ -885,7 +889,7 @@ export function ctInEntryWindow(windows: Array<{ fromMinute: number; toMinute: n
  * many minutes before the day ends. `ms` is the decision time (the signal bar's close). ct-pattern-1
  * crypto has no day end, so nothing changes there.
  */
-export function ctEntryBlocked(spec: Pick<CTSpec, "engine" | "entry">, market: CTMarket, ms: number, ignoreWindows = false) {
+export function ctEntryBlocked(spec: Pick<CTSpec, "engine" | "entry"> & Partial<Pick<CTSpec, "minutes">>, market: CTMarket, ms: number, ignoreWindows = false) {
   if (ctDayClosing(spec, market, ms)) return true;
   if (!ignoreWindows && spec.entry.entryWindows?.length && !ctInEntryWindow(spec.entry.entryWindows, market, ms)) return true;
   const minutes = spec.entry.noEntryBeforeDayEndMinutes ?? 0;

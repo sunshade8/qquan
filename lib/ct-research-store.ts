@@ -177,6 +177,8 @@ export async function prepareCTContract(input: unknown): Promise<CTContract> {
     )
   )
     throw new Error("미국 현금 주식·비레버리지 ETF 종목 범위를 확인하세요.");
+  if (request.market === "stock" && request.minutes === 60)
+    throw new Error("주식 연구 봉 주기는 1/5/15분입니다(60분봉은 09:30 개장 격자와 맞지 않음).");
   const toMs = Math.floor((Date.now() - 86400000) / 86400000) * 86400000,
     fromMs = toMs - request.days * 86400000;
   if (request.market === "stock") {
@@ -191,8 +193,8 @@ export async function prepareCTContract(input: unknown): Promise<CTContract> {
     calendarVersion:
       request.market === "stock" ? CT_CALENDAR_VERSION : "continuous-1",
     symbols,
-    // Research always replays 1-minute bars so trades are timed at minute resolution.
-    minutes: 1,
+    // The bar the rule is written and replayed in. 1 times trades at minute resolution; 5/15/60 trade on coarser bars (2026-10-16).
+    minutes: request.minutes ?? 1,
     fromMs,
     trainingToMs: fromMs + Math.floor(request.days * 0.6) * 86400000,
     developmentToMs: fromMs + Math.floor(request.days * 0.8) * 86400000,

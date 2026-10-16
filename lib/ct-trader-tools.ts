@@ -168,7 +168,7 @@ const weekdayOf = (ms: number, contract: Pick<CTContract, "market" | "timezone">
   WEEKDAYS[new Date(`${ctDate(ms, contract.market, contract.timezone)}T00:00:00Z`).getUTCDay()];
 /** Range of the 60 bars before bar e as percent (null without a contiguous history). */
 function priorRange60(rows: CTBar[], e: number) {
-  if (e < 60 || rows[e].startMs - rows[e - 60].startMs !== 60 * MINUTE) return null;
+  if (e < 60 || rows[e].startMs - rows[e - 60].startMs !== 60 * (rows[e].endMs - rows[e].startMs)) return null;
   let high = -Infinity,
     low = Infinity;
   for (let k = e - 60; k < e; k++) {

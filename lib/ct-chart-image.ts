@@ -6,6 +6,8 @@
  *   middle today's 5-minute bars with VWAP, the opening range (first 30 minutes) and the previous
  *          day's high / low / close
  *   right  the 90 minutes before the anchor in 1-minute bars with volume
+ * A contract on 5/15/60-minute bars draws the middle panel in max(5, bar)-minute bars and the right
+ * panel as the last 90 base bars (2026-10-16); one-minute charts are unchanged byte for byte.
  *
  * Rules that keep the picture honest:
  *   - nothing after the anchor is drawn (only bars COMPLETED by the anchor's close)
@@ -42,6 +44,8 @@ export type CTChartData = {
   h1: ChartBar[];
   m5: ChartBar[];
   m1: ChartBar[];
+  /** Base bar minutes when the contract trades 5/15/60-minute bars (m5 then holds max(5, barMinutes)-minute bars, m1 the base bars); absent for one-minute data. */
+  barMinutes?: number;
   /** VWAP at the end of each 5m / 1m bar, same length as m5 / m1. */
   vwap5: number[];
   vwap1: number[];
@@ -86,27 +90,31 @@ export function ctChartData(rowsAll: ChartBar[], at: number, contract: Pick<CTCo
     return vol > 0 ? pv / vol : b.close;
   });
   // 5-minute bars of today: only groups of five consecutive 1-minute bars all closed by the anchor.
+  // Coarser research bars (5/15/60 minutes): the middle panel shows max(5, bar)-minute bars, the right one the base bars.
+  const barMin = (rows[last].endMs - rows[last].startMs) / MINUTE,
+    midMin = Math.max(5, barMin),
+    perGroup = midMin / barMin;
   const m5: ChartBar[] = [],
     vwap5: number[] = [];
   const groups = new Map<number, number[]>();
   today.forEach((b, k) => {
-    const g = Math.floor((b.startMs - dayStart) / (5 * MINUTE));
+    const g = Math.floor((b.startMs - dayStart) / (midMin * MINUTE));
     (groups.get(g) ?? groups.set(g, []).get(g)!).push(k);
   });
   for (const [g, ks] of [...groups].sort((a, b) => a[0] - b[0])) {
-    if (ks.length !== 5) continue;
+    if (ks.length !== perGroup) continue;
     const bars = ks.map((k) => today[k]);
     if (bars.some((b, n) => n > 0 && b.startMs !== bars[n - 1].endMs)) continue;
     m5.push({
-      startMs: dayStart + g * 5 * MINUTE,
-      endMs: dayStart + (g + 1) * 5 * MINUTE,
+      startMs: dayStart + g * midMin * MINUTE,
+      endMs: dayStart + (g + 1) * midMin * MINUTE,
       open: bars[0].open,
-      close: bars[4].close,
+      close: bars[perGroup - 1].close,
       high: Math.max(...bars.map((b) => b.high)),
       low: Math.min(...bars.map((b) => b.low)),
       volume: bars.reduce((s, b) => s + b.volume, 0),
     });
-    vwap5.push(vwapAt[ks[4]]);
+    vwap5.push(vwapAt[ks[perGroup - 1]]);
   }
   const m1 = rows.slice(Math.max(0, last - 89));
   const m1Vwap = m1.map((b) => {
@@ -118,7 +126,7 @@ export function ctChartData(rowsAll: ChartBar[], at: number, contract: Pick<CTCo
   const orEnd = dayStart + 30 * MINUTE;
   if (at >= orEnd) {
     const or = today.filter((b) => b.endMs <= orEnd);
-    if (or.length === 30 && or[0].startMs === dayStart) openingRange = { high: Math.max(...or.map((b) => b.high)), low: Math.min(...or.map((b) => b.low)), endMs: orEnd };
+    if (30 % barMin === 0 && or.length === 30 / barMin && or[0].startMs === dayStart) openingRange = { high: Math.max(...or.map((b) => b.high)), low: Math.min(...or.map((b) => b.low)), endMs: orEnd };
   }
   // Previous day from the completed daily series of the recent history.
   const recent = rows.slice(Math.max(0, last - 4320));
@@ -141,6 +149,7 @@ export function ctChartData(rowsAll: ChartBar[], at: number, contract: Pick<CTCo
     dayStart,
     dayEnd,
     maxEndMs,
+    ...(barMin > 1 ? { barMinutes: barMin } : {}),
     h1,
     m5,
     m1,
@@ -428,7 +437,7 @@ export function ctChartSvg(data: CTChartData, font: Font, number: number, contra
   svg += candlePanel(
     p,
     panels[1],
-    "5m · today",
+    `${Math.max(5, data.barMinutes ?? 1)}m · today`,
     data.m5,
     base,
     data.dayStart,
@@ -439,11 +448,11 @@ export function ctChartSvg(data: CTChartData, font: Font, number: number, contra
     null,
   );
   // 1 minute panel with volume.
-  const m1From = data.m1[0]?.startMs ?? data.at - 90 * MINUTE;
+  const m1From = data.m1[0]?.startMs ?? data.at - 90 * (data.barMinutes ?? 1) * MINUTE;
   svg += candlePanel(
     p,
     { ...panels[2], h: 290 },
-    "1m · last 90 min",
+    data.barMinutes ? `${data.barMinutes}m · last 90 bars` : "1m · last 90 min",
     data.m1,
     base,
     m1From,

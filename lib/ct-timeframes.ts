@@ -1,6 +1,6 @@
 /**
  * Completed 60 / 240 / 1440-minute bars for ct-pattern-2 conditions, built once from the
- * one-minute bars and looked up by index. Nothing here peeks past `nowMs`: a bar exists only
+ * base bars (one-minute, or the 5/15/60-minute bars a research contract chose) and looked up by index. Nothing here peeks past `nowMs`: a bar exists only
  * when every one of its minutes is present, and `higherCount` counts bars closed by then.
  *
  * Grids (the only place the market matters):
@@ -83,8 +83,9 @@ export function buildHigherSeries(
     groupBucket = 0;
   const flush = () => {
     if (!group.length) return;
-    const minutesInGroup = (groupEnd - groupStart) / 60_000;
-    let complete = group.length === minutesInGroup;
+    // Complete = the base bars tile the bucket exactly. With one-minute bars this is "every minute present";
+    // 5/15/60-minute research bars (2026-10-16) tile it with fewer, longer bars.
+    let complete = group[0].startMs === groupStart && group[group.length - 1].endMs === groupEnd;
     for (let i = 1; complete && i < group.length; i++) complete = group[i].startMs === group[i - 1].endMs;
     if (complete) {
       const bar: CTBar = {

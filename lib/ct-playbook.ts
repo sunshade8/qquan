@@ -88,6 +88,11 @@ export function ctRunTests(ct: CTResearch) {
   return { hypotheses: sigs.size, calls: ct.queries?.length ?? 0 };
 }
 
+/**
+ * The bar size a run is filed under ("1m", "5m", "15m", "60m"). Every intraday bar size counts toward the
+ * market's cumulative tests (they mine the same history); only the daily seeds ("daily") stay apart.
+ */
+export const ctPlaybookTimeframe = (contract: Pick<CTContract, "minutes">) => `${contract.minutes}m`;
 /** The playbook rows a finished run contributes. Deterministic ids: recording twice changes nothing. */
 export function ctPlaybookRows(job: Pick<GenerationJob, "id" | "ownerId"> & { ct?: CTResearch }, now = Date.now()): PlaybookRow[] {
   const ct = job.ct;
@@ -98,7 +103,7 @@ export function ctPlaybookRows(job: Pick<GenerationJob, "id" | "ownerId"> & { ct
     run_id: job.id,
     market: c.market,
     symbols: JSON.stringify(c.symbols),
-    timeframe: "1m",
+    timeframe: ctPlaybookTimeframe(c),
     comparable: 1,
     cost_profile: costProfileOf(c),
     engine: c.engine,
@@ -186,7 +191,7 @@ export function ctPlaybookRunRow(job: Pick<GenerationJob, "id" | "ownerId"> & { 
     owner_id: job.ownerId,
     market: c.market,
     symbols: JSON.stringify(c.symbols),
-    timeframe: "1m",
+    timeframe: ctPlaybookTimeframe(c),
     hypothesis_tests: tests.hypotheses,
     tool_calls: tests.calls,
     measured_from: c.fromMs,
@@ -350,7 +355,7 @@ export async function ctPlaybookSnapshot(ownerId: string, contract: CTContract, 
   await backfillPlaybook();
   const db = ctDb();
   const rows = await db
-    .prepare("SELECT * FROM ct_playbook WHERE market=? AND (owner_id=? OR owner_id='') AND run_id<>? ORDER BY (timeframe='1m') DESC, recorded_at DESC, id LIMIT 400")
+    .prepare("SELECT * FROM ct_playbook WHERE market=? AND (owner_id=? OR owner_id='') AND run_id<>? ORDER BY (timeframe<>'daily') DESC, recorded_at DESC, id LIMIT 400")
     .bind(contract.market, ownerId, runId)
     .all<PlaybookRow>();
   const seen = new Set<string>();
@@ -372,7 +377,7 @@ export async function ctPlaybookSnapshot(ownerId: string, contract: CTContract, 
     .prepare("SELECT timeframe,hypothesis_tests FROM ct_playbook_runs WHERE market=? AND (owner_id=? OR owner_id='') AND run_id<>?")
     .bind(contract.market, ownerId, runId)
     .all<{ timeframe: string; hypothesis_tests: number }>();
-  const minute = runs.results.filter((r) => r.timeframe === "1m");
+  const minute = runs.results.filter((r) => r.timeframe !== "daily");
   const rawTests = minute.reduce((s, r) => s + r.hypothesis_tests, 0);
   return {
     entries,
@@ -380,8 +385,8 @@ export async function ctPlaybookSnapshot(ownerId: string, contract: CTContract, 
     cumulativeTests: options.distinctTests ? (await ctDistinctPriorTests(ownerId, contract.market, runId)).total : rawTests,
     priorRuns: minute.length,
     omitted,
-    ...(runs.results.some((r) => r.timeframe !== "1m")
-      ? { dailyTests: runs.results.filter((r) => r.timeframe !== "1m").reduce((s, r) => s + r.hypothesis_tests, 0) }
+    ...(runs.results.some((r) => r.timeframe === "daily")
+      ? { dailyTests: runs.results.filter((r) => r.timeframe === "daily").reduce((s, r) => s + r.hypothesis_tests, 0) }
       : {}),
   };
 }
@@ -393,13 +398,13 @@ export async function ctPlaybookSnapshot(ownerId: string, contract: CTContract, 
  */
 export async function ctDistinctPriorTests(ownerId: string, market: string, runId: string, own?: string[]) {
   const db = ctDb();
-  const priorRuns = "SELECT run_id FROM ct_playbook_runs WHERE market=? AND (owner_id=? OR owner_id='') AND timeframe='1m' AND run_id<>?";
+  const priorRuns = "SELECT run_id FROM ct_playbook_runs WHERE market=? AND (owner_id=? OR owner_id='') AND timeframe<>'daily' AND run_id<>?";
   const signed = await db
     .prepare(`SELECT DISTINCT j.key AS sig FROM strategy_generation_runs r, json_each(r.payload,'$.ct.tests.signatures') j WHERE r.id IN (${priorRuns})`)
     .bind(market, ownerId, runId)
     .all<{ sig: string }>();
   const unsigned = await db
-    .prepare(`SELECT COALESCE(SUM(hypothesis_tests),0) AS n FROM ct_playbook_runs WHERE market=? AND (owner_id=? OR owner_id='') AND timeframe='1m' AND run_id<>? AND run_id NOT IN (SELECT r.id FROM strategy_generation_runs r, json_each(r.payload,'$.ct.tests.signatures') j)`)
+    .prepare(`SELECT COALESCE(SUM(hypothesis_tests),0) AS n FROM ct_playbook_runs WHERE market=? AND (owner_id=? OR owner_id='') AND timeframe<>'daily' AND run_id<>? AND run_id NOT IN (SELECT r.id FROM strategy_generation_runs r, json_each(r.payload,'$.ct.tests.signatures') j)`)
     .bind(market, ownerId, runId)
     .first<{ n: number }>();
   const prior = new Set(signed.results.map((r) => r.sig));
@@ -412,7 +417,7 @@ export async function ctPlaybookList(ownerId: string, market: string, contract?:
   await backfillPlaybook();
   const db = ctDb();
   const rows = await db
-    .prepare("SELECT * FROM ct_playbook WHERE market=? AND (owner_id=? OR owner_id='') ORDER BY (timeframe='1m') DESC, recorded_at DESC, id LIMIT 500")
+    .prepare("SELECT * FROM ct_playbook WHERE market=? AND (owner_id=? OR owner_id='') ORDER BY (timeframe<>'daily') DESC, recorded_at DESC, id LIMIT 500")
     .bind(market, ownerId)
     .all<PlaybookRow>();
   const runs = await db
@@ -424,7 +429,7 @@ export async function ctPlaybookList(ownerId: string, market: string, contract?:
   return {
     entries: rows.results.map((r) => ({ ...ctPlaybookView(r, against), source: r.source })),
     runs: runs.results.map((r) => ({ runId: r.run_id.startsWith("seed:") ? r.run_id : r.run_id.slice(0, 8), tests: r.hypothesis_tests, timeframe: r.timeframe, note: r.note, at: new Date(r.recorded_at).toISOString() })),
-    cumulativeTests: runs.results.filter((r) => r.timeframe === "1m").reduce((s, r) => s + r.hypothesis_tests, 0),
+    cumulativeTests: runs.results.filter((r) => r.timeframe !== "daily").reduce((s, r) => s + r.hypothesis_tests, 0),
   };
 }
 

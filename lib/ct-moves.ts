@@ -79,7 +79,7 @@ export function dayInfo(bars: CTBar[], market: CTMarket): DayInfo {
   }
   return { key, endMs, startMs };
 }
-/** Index of the last bar whose close is at least one minute before the day ends (the engine's final tradable bar). */
+/** Index of the last bar whose close is at least one bar before the day ends (the engine's final tradable bar). */
 export function dayLastIndex(bars: CTBar[], day: DayInfo) {
   const n = bars.length,
     last = new Int32Array(n).fill(-1);
@@ -90,7 +90,7 @@ export function dayLastIndex(bars: CTBar[], day: DayInfo) {
       continue;
     }
     if (i === n - 1 || day.key[i + 1] !== day.key[i]) current = -1;
-    if (current < 0 && bars[i].endMs <= day.endMs[i] - 60_000) current = i;
+    if (current < 0 && bars[i].endMs <= day.endMs[i] - (bars[i].endMs - bars[i].startMs)) current = i;
     last[i] = current;
   }
   return last;

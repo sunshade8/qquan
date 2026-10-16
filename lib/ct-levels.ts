@@ -1,6 +1,6 @@
 /**
- * Day-trader levels for ct-pattern-3 conditions, built once per symbol from the one-minute
- * bars and read by index — the same arrays serve a replay's every minute and a live tick.
+ * Day-trader levels for ct-pattern-3 conditions, built once per symbol from the base bars
+ * (one-minute, or the contract's 5/15/60-minute bars) and read by index — the same arrays serve a replay's every minute and a live tick.
  *
  * "Day" is the trading day the decision bar belongs to: the UTC day for crypto (00:00 UTC =
  * 09:00 KST), the regular session for stocks. Every value at time t uses only bars closed by t
@@ -97,13 +97,18 @@ export function levelIndex(levels: CTDayLevels, ms: number) {
 
 function openingRange(levels: CTDayLevels, i: number, minutes: number) {
   const first = levels.firstIdx[i];
-  if (first < 0 || !levels.intact[i] || i - first + 1 < minutes) return null;
+  if (first < 0 || !levels.intact[i]) return null;
+  // The range spans `minutes` minutes = that many base bars of one minute, fewer of 5/15/60 (the spec keeps it a multiple).
+  const barMinutes = (levels.bars[first].endMs - levels.bars[first].startMs) / 60_000;
+  if (minutes % barMinutes) return null;
+  const count = minutes / barMinutes;
+  if (i - first + 1 < count) return null;
   const key = first * 1000 + minutes;
   let range = levels.openingRanges.get(key);
   if (range === undefined) {
     let high = -Infinity,
       low = Infinity;
-    for (let k = first; k < first + minutes; k++) {
+    for (let k = first; k < first + count; k++) {
       if (levels.bars[k].high > high) high = levels.bars[k].high;
       if (levels.bars[k].low < low) low = levels.bars[k].low;
     }

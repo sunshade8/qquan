@@ -158,7 +158,7 @@ export const ctSpecSchema = z
       .array(z.string().regex(/^(?:[A-Z][A-Z0-9.-]{0,11}|KRW-[A-Z0-9]{2,12})$/))
       .min(1)
       .max(4),
-    // New research is fixed to 1-minute bars; 5/15/60 stay valid for registered packages.
+    // The bar every count in the spec is measured in. Research chooses 1/5/15/60 (stocks 1/5/15) since 2026-10-16.
     minutes: z.union([z.literal(1), z.literal(5), z.literal(15), z.literal(60)]),
     // Stages are ordered observations. Each must occur after the previous one.
     stages: z
@@ -216,6 +216,9 @@ export const ctSpecSchema = z
       if (spec.stages.some((s) => s.conditions.some((c) => c.timeframe > 12))) issue("60/240/1440분 시간대는 ct-pattern-2부터");
     }
     const conditions = spec.stages.flatMap((s) => s.conditions);
+    // 5/15/60-minute research bars (2026-10-16): the opening range must be whole bars.
+    if (conditions.some((c) => c.feature === "opening_range_position" && c.lookback % spec.minutes))
+      issue(`opening_range_position의 lookback(시가 범위 분 길이)은 봉 주기 ${spec.minutes}분의 배수여야 합니다`);
     if (spec.engine !== CT_ENGINE) {
       if (conditions.some((c) => CT_V3_FEATURES.includes(c.feature))) issue("레벨·ATR 피처는 ct-pattern-3부터");
       if (conditions.some((c) => c.unit !== undefined || c.atrLookback !== undefined || c.atrTimeframe !== undefined)) issue("unit·atrLookback·atrTimeframe은 ct-pattern-3부터");
@@ -493,6 +496,9 @@ export function validateCTSpec(
       throw new Error("청산 ATR 관찰 구간이 한도를 넘습니다");
   }
   if (spec.engine !== contract.engine) throw new Error("CT 명세 엔진이 동결 계약과 다릅니다.");
+  // Stock bars sit on the epoch grid; 60-minute ones would straddle the 09:30 open. ct-pattern-1 packages keep theirs.
+  if (contract.market === "stock" && spec.engine !== CT_ENGINE_V1 && spec.minutes === 60)
+    throw new Error("주식 연구 봉 주기는 1/5/15분(60분봉은 09:30 개장 격자와 맞지 않음)");
   if (contract.market === "stock" && spec.exit.maxHoldBars > 390)
     throw new Error("주식 최대 보유는 390봉(한 세션)");
   if (contract.market === "stock" && spec.entry.entryWindows?.some((w) => w.toMinute > 389))

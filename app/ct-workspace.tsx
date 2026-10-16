@@ -49,6 +49,11 @@ type CTResponse = {
   costPreview?: { label: string; version: number; provisional: boolean; feeVerified: boolean; perSymbol: Array<{ symbol: string; roundTripPct: number }> };
 };
 const CRYPTO_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
+type CTBarMinutes = 1 | 5 | 15 | 60;
+const CT_BAR_CHOICES: Record<CTMarket, CTBarMinutes[]> = { stock: [1, 5, 15], crypto: [1, 5, 15, 60] };
+/** A stored or chosen bar size, kept only when the market offers it (1 otherwise). */
+const barFor = (market: CTMarket, value: unknown): CTBarMinutes =>
+  CT_BAR_CHOICES[market].find((n) => n === value) ?? 1;
 function download(value: unknown, name: string) {
   const url = URL.createObjectURL(
     new Blob([JSON.stringify(value, null, 2)], { type: "application/json" }),
@@ -430,7 +435,7 @@ const PlaybookPanel = memo(function PlaybookPanel({ market }: { market: CTMarket
           <small className="ui-num">{data ? `${data.entries.length}개 항목 · 이전 단타 연구 가설 검정 ${data.cumulativeTests}회` : "불러오는 중"}</small>
         </summary>
         <div className="ui-disclosure-body ui-korean">
-          <p className="ui-sub">연구가 끝날 때마다 기각·탈락·통과한 아이디어를 시장별로 쌓습니다. 설계자는 이 목록(메커니즘과 결과 등급)을 보고 시작하고, 최종 구간 성과 수치는 어디에도 저장되지 않습니다. 일봉 항목은 단타(1분봉)와 직접 비교할 수 없습니다.</p>
+          <p className="ui-sub">연구가 끝날 때마다 기각·탈락·통과한 아이디어를 시장별로 쌓습니다. 설계자는 이 목록(메커니즘과 결과 등급)을 보고 시작하고, 최종 구간 성과 수치는 어디에도 저장되지 않습니다. 일봉 항목은 단타(1/5/15/60분봉)와 직접 비교할 수 없습니다.</p>
           {error ? <p role="alert" className="ct-error">{error}</p> : null}
           <div className="ui-segmented" role="tablist" aria-label="플레이북 보기">
             <button role="tab" aria-selected={view === "items"} onClick={() => setView("items")}>항목 <span className="ui-num">{data?.entries.length ?? 0}</span></button>
@@ -439,7 +444,7 @@ const PlaybookPanel = memo(function PlaybookPanel({ market }: { market: CTMarket
           {view === "lessons" ? <LessonsTab model={lessonsModel} onEvidence={openEvidence} /> : null}
           <div className="ct-playbook-filters" hidden={view !== "items"}>
             <label>등급 <select value={grade} onChange={(e) => setGrade(e.target.value)}><option value="all">전체</option>{Object.entries(GRADE_TEXT).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label>
-            <label>주기 <select value={timeframe} onChange={(e) => setTimeframe(e.target.value)}><option value="all">전체</option><option value="1m">1분봉(단타)</option><option value="daily">일봉(직접 비교 불가)</option></select></label>
+            <label>주기 <select value={timeframe} onChange={(e) => setTimeframe(e.target.value)}><option value="all">전체</option><option value="1m">1분봉(단타)</option><option value="5m">5분봉(단타)</option><option value="15m">15분봉(단타)</option><option value="60m">60분봉(단타)</option><option value="daily">일봉(직접 비교 불가)</option></select></label>
             <label>검색 <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="메커니즘·구조·사유" /></label>
           </div>
           {view === "items" && data?.calibration?.length ? (
@@ -667,6 +672,8 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
     [budget, setBudget] = useState(8),
     [capital, setCapital] = useState(""),
     [days, setDays] = useState(""),
+    // The bar the rule trades on (minutes). Stocks 1/5/15; 60 is crypto only.
+    [bar, setBar] = useState<CTBarMinutes>(1),
     [repeat, setRepeat] = useState<{ message: string; previous: Array<{ id: string; at: string; status: string; endReason: string | null }> } | null>(null),
     [repeatReason, setRepeatReason] = useState(""),
     [ready, setReady] = useState(false),
@@ -693,6 +700,7 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
           setBudget([8, 16, 24].includes(stored.budget) ? stored.budget : 8);
           setCapital(stored.capital ?? "");
           setDays(stored.days ?? "");
+          setBar(barFor(stored.market === "crypto" ? "crypto" : "stock", stored.bar));
         });
     } catch {
       /* Storage is optional. */
@@ -712,12 +720,13 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
           budget,
           capital,
           days,
+          bar,
         }),
       );
     } catch {
       /* Storage is optional. */
     }
-  }, [ready, market, selected, brief, symbols, budget, capital, days]);
+  }, [ready, market, selected, brief, symbols, budget, capital, days, bar]);
   const load = useCallback(async () => {
     if (loading.current) return;
     loading.current = true;
@@ -884,6 +893,7 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
         : {}),
       ...(capital ? { capital: Number(capital) } : {}),
       ...(days ? { days: Number(days) } : {}),
+      minutes: bar,
     });
   const reportError = useCallback((m: string) => setError(m), []);
   const latestTrial = ct?.trials.at(-1);
@@ -897,7 +907,7 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
   const chosenSymbols = symbols.trim() ? symbols.trim().toUpperCase().split(/[,\s]+/).filter(Boolean) : [market === "stock" ? "NVDA" : "BTCUSDT"];
   const summary = [
     chosenSymbols.join(", "),
-    "1분봉",
+    `${bar}분봉`,
     `${days || 365}일`,
     `예산 $${budget}`,
     capital ? `자본 ${Number(capital).toLocaleString("ko-KR")}` : "기본 자본",
@@ -937,6 +947,7 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
                 setSelected("");
                 setSymbols("");
                 setCapital("");
+                setBar((b) => barFor(m, b));
               }}
             >
               {m === "stock" ? "주식" : "코인"}
@@ -1040,7 +1051,7 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
           </div>
         ) : null}
         <details className="ui-disclosure ct-options">
-          <summary>선택 설정<small>연구 방향, 종목, 예산, 자본</small></summary>
+          <summary>선택 설정<small>연구 방향, 종목, 봉 주기, 예산, 자본</small></summary>
           <div className="ui-disclosure-body">
             <div className="ct-form">
               <label className="ui-field ct-form-wide">
@@ -1073,6 +1084,14 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
                   />
                 </label>
               )}
+              <label className="ui-field">
+                <span>봉 주기</span>
+                <select value={bar} onChange={(e) => setBar(barFor(market, Number(e.target.value)))}>
+                  {CT_BAR_CHOICES[market].map((n) => (
+                    <option key={n} value={n}>{n}분봉</option>
+                  ))}
+                </select>
+              </label>
               <label className="ui-field">
                 <span>연구 기간 (일)</span>
                 <input

@@ -31,6 +31,7 @@ import {
 import {
   backfillPlaybook,
   ctPlaybookRows,
+  ctPlaybookTimeframe,
   ctPlaybookView,
   ctStripNumbers,
   CT_PLAYBOOK_GRADES,
@@ -162,7 +163,7 @@ export function ctCoverageFrom(input: CTCoverageInput): CTCoverage {
   };
 }
 
-const PRIOR_RUNS = "SELECT run_id FROM ct_playbook_runs WHERE market=? AND (owner_id=? OR owner_id='') AND timeframe='1m' AND run_id<>?";
+const PRIOR_RUNS = "SELECT run_id FROM ct_playbook_runs WHERE market=? AND (owner_id=? OR owner_id='') AND timeframe<>'daily' AND run_id<>?";
 const parse = <T>(text: string | null): T | null => {
   if (!text) return null;
   try {
@@ -387,6 +388,8 @@ export function ctValidateLessons(
     ownerId: string;
     market: string;
     runId: string;
+    /** The run's bar size as the playbook records it ("1m", "15m"); default "1m". */
+    timeframe?: string;
     /** Every comparable row of the market including this run's. */
     rows: PlaybookRow[];
     /** Ids of the rows this run contributed (new evidence). */
@@ -450,7 +453,7 @@ export function ctValidateLessons(
       id: `${ctx.runId}:${ctx.market}:${l.family}`,
       owner_id: ctx.ownerId,
       market: ctx.market,
-      timeframe: "1m",
+      timeframe: ctx.timeframe ?? "1m",
       run_id: ctx.runId,
       family: l.family,
       verdict,
@@ -616,6 +619,7 @@ export async function ctDistillRun(
       ownerId: job.ownerId,
       market,
       runId: job.id,
+      timeframe: ctPlaybookTimeframe(ct.contract),
       rows: [...runRows, ...prior.filter((p) => !runRows.some((r) => r.id === p.id))],
       newIds: new Set(runRows.map((r) => r.id)),
       current,
