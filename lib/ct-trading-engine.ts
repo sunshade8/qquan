@@ -22,6 +22,7 @@ import {
   ctEntryBlocked,
   ctExitPlan,
   ctRiskPct,
+  ctBarsAt,
   type CTBar,
 } from "./ct-engine.ts";
 import { CT_ENGINE_V1, ctHash, executableCT } from "./ct-spec.ts";
@@ -327,7 +328,8 @@ export async function tickCTDashboard(
       throw new Error("거래 시작 규칙 추적 누락");
     const quote = await deps.broker.quote(trade.symbol);
     trade.markPrice = quote.price;
-    const bars = await deps.bars(trade.symbol);
+    // Free bars: the rule's own bar built from the one-minute feed, exactly as replayCT builds it.
+    const bars = ctBarsAt(await deps.bars(trade.symbol), rule.spec.minutes);
     // The entry bar opens when the signal bar closes — the backtest's entryAt. The bar loop below judges that
     // bar and every later one, exactly as replayCT does, whatever second the fill was noticed in.
     const entryAt = trade.ctSignal.decidedAt;
@@ -431,7 +433,7 @@ export async function tickCTDashboard(
   for (const rule of rules) {
     for (const symbol of rule.spec.symbols) {
       if (!(await deps.entryAllowed(symbol))) continue;
-      const bars = await deps.bars(symbol),
+      const bars = ctBarsAt(await deps.bars(symbol), rule.spec.minutes),
         last = bars.at(-1);
       if (!last || last.endMs < now - rule.spec.minutes * 60000 - 60000)
         continue;

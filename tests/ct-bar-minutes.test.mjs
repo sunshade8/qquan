@@ -1,12 +1,15 @@
-// 5/15/60-minute research bars (2026-10-16): research is no longer fixed to one-minute bars.
-// Every count in a spec is measured in the contract's bar; the one-minute behaviour must not move.
+// Free bars (traderTools 4, 2026-10-16): the contract holds one-minute data; each candidate and each measurement
+// chooses the bar it runs on, and the ledger counts the bar. One-minute behaviour must not move.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { register } from "node:module";
 import { buildHigherSeries } from "../lib/ct-timeframes.ts";
-import { ctFeature, replayCT, ctDayClosing, ctCryptoDayClosing, ctSessionClosing, ctEntryBlocked } from "../lib/ct-engine.ts";
+import { ctFeature, replayCT, ctDayClosing, ctCryptoDayClosing, ctSessionClosing, ctEntryBlocked, ctBarsAt } from "../lib/ct-engine.ts";
 import { buildDayLevels } from "../lib/ct-levels.ts";
-import { validateCTSpec, CT_ENGINE, CT_ENGINE_V1 } from "../lib/ct-spec.ts";
+import { validateCTSpec, ctTestSignature, ctBarAllowed, CT_ENGINE, CT_ENGINE_V1 } from "../lib/ct-spec.ts";
+import { ctParseSignature } from "../lib/ct-families.ts";
+import { ctQueryReturns } from "../lib/ct-design-tools.ts";
+import { ctRunLabels, ctLabelMovesSchemaBars } from "../lib/ct-trader-tools.ts";
 import { ctChartData } from "../lib/ct-chart-image.ts";
 import { walk, stockWalk, contractFor } from "./helpers/ct-golden-cases.mjs";
 
@@ -52,14 +55,35 @@ const spec = (minutes, over = {}) => ({
   assumptions: ["bar size fixture"],
   ...over,
 });
-const contract = (minutes, market = "crypto") => ({ ...contractFor(market, DAY0, 10), engine: CT_ENGINE, minutes });
+/** A contract whose data is `minutes` bars. traderTools 4 = free bars; 3 = stage 5 (the spec must match the data). */
+const contract = (minutes, market = "crypto", traderTools = 4) => {
+  const c = contractFor(market, DAY0, 10);
+  return { ...c, engine: CT_ENGINE, minutes, policy: { ...c.policy, traderTools } };
+};
 
-test("research request: the bar size is a choice (1/5/15/60, default 1)", async () => {
-  const { ctRequestSchema } = await import("../lib/ct-research.ts");
-  const base = { requestId: "00000000-0000-4000-8000-000000000000" };
-  assert.equal(ctRequestSchema.parse(base).minutes, 1);
-  for (const minutes of [1, 5, 15, 60]) assert.equal(ctRequestSchema.parse({ ...base, minutes }).minutes, minutes);
-  assert.throws(() => ctRequestSchema.parse({ ...base, minutes: 3 }));
+test("free bars: a candidate chooses its bar over one-minute data; stage-5 contracts and other sizes are refused", () => {
+  const free = contract(1);
+  for (const m of [1, 5, 15, 60]) assert.doesNotThrow(() => validateCTSpec(spec(m), free, ["g"]), `crypto ${m}`);
+  assert.throws(() => validateCTSpec(spec(15), contract(1, "crypto", 3), ["g"]), /주기/);
+  assert.throws(() => validateCTSpec({ ...spec(3) }, free, ["g"]));
+  assert.equal(ctBarAllowed(free, 15), true);
+  assert.equal(ctBarAllowed(contract(1, "stock"), 60), false);
+  assert.equal(ctBarAllowed(contract(1, "stock"), 15), true);
+  assert.equal(ctBarAllowed(contract(1, "crypto", 3), 15), false);
+  // A contract frozen on 15-minute data (ct-pattern-1 packages) cannot rebuild other bars from it.
+  assert.equal(ctBarAllowed(contract(15), 5), false);
+});
+
+test("ctBarsAt: complete minutes on the clock grid, a missing minute drops its bar, cached, one-minute input passes through", () => {
+  const m1 = walk(5, at(0, 0, 3), 200, 100, 0.0006, (s) => s === at(0, 1, 7));
+  const m15 = ctBarsAt(m1, 15);
+  assert.deepEqual(m15, agg(m1, 15));
+  assert.equal(m15[0].startMs, at(0, 0, 15), "the partial first quarter-hour is not a bar");
+  assert.equal(m15.some((b) => b.startMs === at(0, 1)), false, "the quarter-hour with a missing minute is not a bar");
+  assert.equal(ctBarsAt(m1, 15), m15, "same array object on a second call");
+  assert.equal(ctBarsAt(m1, 1), m1);
+  assert.equal(ctBarsAt(m15, 15), m15);
+  assert.throws(() => ctBarsAt(m15, 5));
 });
 
 test("day end: the last tradable bar closes one bar before the day ends, whatever the bar size", () => {
@@ -126,8 +150,11 @@ test("opening range on 15-minute bars covers the same minutes as on one-minute b
 });
 
 test("backtest on 15-minute bars: next-bar entries, counts in bars, never across the UTC day", () => {
-  const m15 = agg(walk(31, at(0), 5 * 1440), 15);
+  const m1 = walk(31, at(0), 5 * 1440),
+    m15 = agg(m1, 15);
   const r = replayCT(spec(15), { BTCUSDT: m15 }, contract(15), at(0), at(5), "h");
+  // The same rule over the contract's one-minute data builds the same bars itself: the same result.
+  assert.deepEqual(replayCT(spec(15), { BTCUSDT: m1 }, contract(1), at(0), at(5), "h"), r);
   assert.ok(r.trades.length >= 3);
   for (const t of r.trades) {
     assert.equal((t.entryAt - DAY0) % (15 * MIN), 0, "entries on the 15-minute grid");
@@ -141,15 +168,61 @@ test("backtest on 15-minute bars: next-bar entries, counts in bars, never across
   for (const t of short.trades.filter((x) => x.reason === "time")) assert.equal(t.exitAt - t.entryAt, 4 * 15 * MIN);
 });
 
-test("designer brief: one-minute contracts keep their exact bytes, coarser bars get a note", async () => {
-  const { ctDesignerSystem, ctBarNote } = await import("../lib/ct-research.ts");
-  const policy = { ...contractFor("crypto", DAY0, 10).policy, traderTools: 3 };
-  const one = ctDesignerSystem({ policy, minutes: 1 });
-  assert.equal(one, ctDesignerSystem({ policy }));
-  assert.equal(one.includes("Bar size for this run"), false);
-  const fifteen = ctDesignerSystem({ policy, minutes: 15 });
-  assert.equal(fifteen, `${one}\n\n${ctBarNote(15)}`);
-  assert.match(fifteen, /15-minute bars/);
+test("measurements on a chosen bar equal the same measurement on data of that bar", () => {
+  const m1 = walk(51, at(0), 6 * 1440),
+    m15 = agg(m1, 15);
+  const c1 = contract(1),
+    c15 = contract(15);
+  const query = { stages: [{ maxGapBars: 1, conditions: [{ feature: "return_pct", lookback: 4, offset: 0, timeframe: 1, op: "lte", value: -0.05 }] }], horizons: [4, 16], grid: { stopPcts: [0.5], targetPcts: [1] }, cooldownBars: 4 };
+  const onBar = ctQueryReturns({ ...query, barMinutes: 15 }, { BTCUSDT: m1 }, c1),
+    onData = ctQueryReturns(query, { BTCUSDT: m15 }, c15);
+  assert.ok(onBar.events > 0);
+  assert.deepEqual(onBar, onData);
+  assert.notDeepEqual(ctQueryReturns(query, { BTCUSDT: m1 }, c1).events, onBar.events, "one-minute is a different measurement");
+  const params = ctLabelMovesSchemaBars.parse({ barMinutes: 15 });
+  const a = ctRunLabels(params, { BTCUSDT: m1 }, c1),
+    b = ctRunLabels({ ...params, barMinutes: undefined }, { BTCUSDT: m15 }, c15);
+  assert.ok(a[0].events.length > 0);
+  assert.deepEqual(a[0].events, b[0].events);
+  assert.deepEqual(a[0].rows, b[0].rows);
+});
+
+test("the ledger counts the bar: another bar is another test, one-minute keys are unchanged, features still parse", async () => {
+  register("./helpers/slot-test-loader.mjs", import.meta.url);
+  const { ctLabelKey } = await import("../lib/ct-measured.ts");
+  const stages = spec(15).stages;
+  const one = ctTestSignature(stages, false),
+    fifteen = ctTestSignature(stages, false, 15);
+  assert.equal(ctTestSignature(stages, false, 1), one);
+  assert.equal(fifteen, `b15:${one}`);
+  assert.deepEqual(ctParseSignature(fifteen), ctParseSignature(one));
+  assert.equal(ctParseSignature(`diagnose|${fifteen}|hour|09`).uses.length, 1);
+  const label = { k: 3, m: 1, horizon: "day_end", costMultiplier: 1 };
+  assert.equal(ctLabelKey(label), "k3|m1|hday_end|c1");
+  assert.equal(ctLabelKey({ ...label, barMinutes: 1 }), "k3|m1|hday_end|c1");
+  assert.equal(ctLabelKey({ ...label, barMinutes: 15 }), "k3|m1|hday_end|c1|b15");
+});
+
+test("designer brief and tools: free bars get their own; stage 5 stays as it was", async () => {
+  register("./helpers/slot-test-loader.mjs", import.meta.url);
+  const research = await import("../lib/ct-research.ts");
+  const store = await import("../lib/ct-research-store.ts");
+  const free = { policy: contract(1).policy },
+    five = { policy: contract(1, "crypto", 3).policy };
+  assert.equal(research.ctDesignerSystem(five), research.CT_DESIGNER_SYSTEM_STAGE5);
+  assert.equal(research.ctDesignerSystem(free), research.CT_DESIGNER_SYSTEM);
+  assert.match(research.CT_DESIGNER_SYSTEM, /nobody told you which chart that trader reads/);
+  assert.match(research.CT_DESIGNER_SYSTEM, /never sweep them/);
+  assert.equal(research.CT_DESIGNER_SYSTEM.startsWith(research.CT_DESIGNER_SYSTEM_STAGE5.slice(0, 2000)), true);
+  assert.equal(store.ctSessionTools(five), store.CT_SESSION_TOOLS_STAGE5);
+  assert.equal(store.ctSessionTools(free), store.CT_SESSION_TOOLS);
+  const tool = (set, name) => set.find((t) => t.name === name);
+  for (const name of ["label_moves", "query_conditional_returns", "read_bars"]) {
+    assert.ok(tool(store.CT_SESSION_TOOLS, name).input_schema.properties.barMinutes, name);
+    assert.equal(tool(store.CT_SESSION_TOOLS_STAGE5, name).input_schema.properties.barMinutes, undefined, name);
+  }
+  assert.equal(tool(store.CT_SESSION_TOOLS, "view_charts"), tool(store.CT_SESSION_TOOLS_STAGE5, "view_charts"), "charts are the minute-data picture");
+  assert.deepEqual(store.CT_SESSION_TOOLS.map((t) => t.name), store.CT_SESSION_TOOLS_STAGE5.map((t) => t.name));
 });
 
 test("charts on 15-minute bars draw every panel; one-minute chart data is unchanged", () => {

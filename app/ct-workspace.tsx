@@ -49,11 +49,6 @@ type CTResponse = {
   costPreview?: { label: string; version: number; provisional: boolean; feeVerified: boolean; perSymbol: Array<{ symbol: string; roundTripPct: number }> };
 };
 const CRYPTO_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
-type CTBarMinutes = 1 | 5 | 15 | 60;
-const CT_BAR_CHOICES: Record<CTMarket, CTBarMinutes[]> = { stock: [1, 5, 15], crypto: [1, 5, 15, 60] };
-/** A stored or chosen bar size, kept only when the market offers it (1 otherwise). */
-const barFor = (market: CTMarket, value: unknown): CTBarMinutes =>
-  CT_BAR_CHOICES[market].find((n) => n === value) ?? 1;
 function download(value: unknown, name: string) {
   const url = URL.createObjectURL(
     new Blob([JSON.stringify(value, null, 2)], { type: "application/json" }),
@@ -672,8 +667,6 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
     [budget, setBudget] = useState(8),
     [capital, setCapital] = useState(""),
     [days, setDays] = useState(""),
-    // The bar the rule trades on (minutes). Stocks 1/5/15; 60 is crypto only.
-    [bar, setBar] = useState<CTBarMinutes>(1),
     [repeat, setRepeat] = useState<{ message: string; previous: Array<{ id: string; at: string; status: string; endReason: string | null }> } | null>(null),
     [repeatReason, setRepeatReason] = useState(""),
     [ready, setReady] = useState(false),
@@ -700,7 +693,6 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
           setBudget([8, 16, 24].includes(stored.budget) ? stored.budget : 8);
           setCapital(stored.capital ?? "");
           setDays(stored.days ?? "");
-          setBar(barFor(stored.market === "crypto" ? "crypto" : "stock", stored.bar));
         });
     } catch {
       /* Storage is optional. */
@@ -720,13 +712,12 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
           budget,
           capital,
           days,
-          bar,
         }),
       );
     } catch {
       /* Storage is optional. */
     }
-  }, [ready, market, selected, brief, symbols, budget, capital, days, bar]);
+  }, [ready, market, selected, brief, symbols, budget, capital, days]);
   const load = useCallback(async () => {
     if (loading.current) return;
     loading.current = true;
@@ -893,7 +884,6 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
         : {}),
       ...(capital ? { capital: Number(capital) } : {}),
       ...(days ? { days: Number(days) } : {}),
-      minutes: bar,
     });
   const reportError = useCallback((m: string) => setError(m), []);
   const latestTrial = ct?.trials.at(-1);
@@ -907,7 +897,7 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
   const chosenSymbols = symbols.trim() ? symbols.trim().toUpperCase().split(/[,\s]+/).filter(Boolean) : [market === "stock" ? "NVDA" : "BTCUSDT"];
   const summary = [
     chosenSymbols.join(", "),
-    `${bar}분봉`,
+    "봉 주기 에이전트 선택",
     `${days || 365}일`,
     `예산 $${budget}`,
     capital ? `자본 ${Number(capital).toLocaleString("ko-KR")}` : "기본 자본",
@@ -947,7 +937,6 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
                 setSelected("");
                 setSymbols("");
                 setCapital("");
-                setBar((b) => barFor(m, b));
               }}
             >
               {m === "stock" ? "주식" : "코인"}
@@ -1051,7 +1040,7 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
           </div>
         ) : null}
         <details className="ui-disclosure ct-options">
-          <summary>선택 설정<small>연구 방향, 종목, 봉 주기, 예산, 자본</small></summary>
+          <summary>선택 설정<small>연구 방향, 종목, 예산, 자본</small></summary>
           <div className="ui-disclosure-body">
             <div className="ct-form">
               <label className="ui-field ct-form-wide">
@@ -1084,14 +1073,6 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
                   />
                 </label>
               )}
-              <label className="ui-field">
-                <span>봉 주기</span>
-                <select value={bar} onChange={(e) => setBar(barFor(market, Number(e.target.value)))}>
-                  {CT_BAR_CHOICES[market].map((n) => (
-                    <option key={n} value={n}>{n}분봉</option>
-                  ))}
-                </select>
-              </label>
               <label className="ui-field">
                 <span>연구 기간 (일)</span>
                 <input

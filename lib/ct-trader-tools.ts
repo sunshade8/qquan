@@ -24,6 +24,8 @@ import {
   ctNetTradePct,
   ctOpenPosition,
   ctRoundTripCostPct,
+  ctBarsAt,
+  ctDataAt,
   ctHigherTimeframes,
   ctNeedsLevels,
   type CTBar,
@@ -34,7 +36,7 @@ import {
 import { buildDayLevels } from "./ct-levels.ts";
 import { dayInfo, describeLeaf, growTree, labelMoves, leafPath, leaves, MOVE_REASON, type DayInfo, type MoveLabels } from "./ct-moves.ts";
 import { buildHigherSeries, higherWindow, type CTHigherSeries } from "./ct-timeframes.ts";
-import { ctConditionSchema, ctIsManagedExit, ctTestSignature, type CTCondition, type CTContract, type CTManagedExit, type CTSpec } from "./ct-spec.ts";
+import { ctBarMinutesSchema, ctConditionSchema, ctIsManagedExit, ctTestSignature, type CTCondition, type CTContract, type CTManagedExit, type CTSpec } from "./ct-spec.ts";
 import { ctTimeBucket } from "./ct-design-tools.ts";
 
 const DAY_MS = 86_400_000;
@@ -108,7 +110,11 @@ export const ctLabelMovesSchema = z
     costMultiplier: z.union([z.literal(1), z.literal(2)]).default(1),
   })
   .strict();
-export type CTLabelParams = z.infer<typeof ctLabelMovesSchema>;
+/** Free bars (traderTools 4): the same request plus the bar the labels are computed on. */
+export const ctLabelMovesSchemaBars = ctLabelMovesSchema.extend({ barMinutes: ctBarMinutesSchema });
+export type CTLabelParams = z.infer<typeof ctLabelMovesSchema> & { barMinutes?: 1 | 5 | 15 | 60 };
+/** The bar a label (and every contrast on it) runs on: its own choice, else the contract's data bar. */
+export const ctLabelBar = (params: Pick<CTLabelParams, "barMinutes">, contract: Pick<CTContract, "minutes">) => params.barMinutes ?? contract.minutes;
 export const CT_CLUSTER_RULE =
   "양성 순간(진입 다음 봉 시가에서 목표가 손절보다 먼저 닿는 시점)이 연속되면 한 움직임이다: 종목별로 시간순 스캔해 첫 양성 순간 i0에서 사건을 열고, i0의 거래가 목표에 닿는 봉(i0의 청산 봉)까지 나오는 양성 순간은 같은 사건으로 묶는다. 그 다음 양성 순간부터 새 사건이다. 사건의 대표 시각은 그 사건 안 양성 순간들의 중앙값 순간의 봉 마감(진입 직전 판단 시각)이다: 첫 순간은 아직 원인이 보이기 전일 수 있고 마지막 순간은 이미 움직임 안이라서, 거래할 수 있었던 순간들의 한가운데를 쓴다.";
 
@@ -129,8 +135,9 @@ export type CTLabelRun = {
 /** Labels every training moment of every symbol; a moment whose look-ahead would pass the training end is dropped. */
 export function ctRunLabels(params: CTLabelParams, data: Record<string, CTBar[]>, contract: CTContract): CTLabelRun[] {
   const costPct = ctRoundTripCostPct(contract, params.costMultiplier);
+  const bar = ctLabelBar(params, contract);
   return contract.symbols.flatMap((symbol) => {
-    const rows = ctTrainingRows(data, symbol, contract);
+    const rows = ctTrainingRows({ [symbol]: ctBarsAt(data[symbol] ?? [], bar) }, symbol, contract);
     if (rows.length < 100) return [];
     const day = dayInfo(rows, contract.market);
     const hold = params.horizon === "day_end" ? Infinity : params.horizon;
@@ -833,6 +840,8 @@ export const CT_DIAGNOSIS_FEATURES = [
  * entries earn under other exit structures — each through ctOpenPosition + ctExitStep, the replay's own functions.
  */
 export function ctDiagnoseTrades(spec: CTSpec, result: Pick<CTResult, "trades">, data: Record<string, CTBar[]>, contract: CTContract, options: { exitModes: boolean; deadline?: number }) {
+  // Free bars: the trades were made on the rule's own bar; re-run their exits on the same bars.
+  data = ctDataAt(data, spec.minutes);
   const cost = ctRoundTripCostPct(contract);
   const trades = result.trades;
   const rowsOf = new Map<string, CTBar[]>(),
@@ -1022,12 +1031,12 @@ export function ctDiagnoseTrades(spec: CTSpec, result: Pick<CTResult, "trades">,
 export type CTDiagnosis = ReturnType<typeof ctDiagnoseTrades>;
 /** Ledger signatures of a diagnosis: one per examined stratum, keyed by the rule's feature combination. */
 export function ctDiagnosisSignatures(spec: CTSpec, diagnosis: Pick<CTDiagnosis, "strata">) {
-  const rule = ctTestSignature(spec.stages, !!spec.entry.entryWindows?.length);
+  const rule = ctTestSignature(spec.stages, !!spec.entry.entryWindows?.length, spec.minutes);
   return Object.entries(diagnosis.strata).flatMap(([dimension, rows]) => rows.filter((r) => r.trades > 0).map((r) => `diagnose|${rule}|${dimension}|${r.bucket}`));
 }
 /** Ledger signatures of a contrast run: one per feature × control quintile (and the tree's feature set). */
 export function ctContrastSignatures(request: CTContrastRequest, params: CTLabelParams, conditions: CTCondition[]) {
-  const label = `k${params.k}m${params.m}h${params.horizon}c${params.costMultiplier}`;
+  const label = `k${params.k}m${params.m}h${params.horizon}c${params.costMultiplier}${params.barMinutes && params.barMinutes > 1 ? `b${params.barMinutes}` : ""}`;
   // Stage 4: the same feature and quintile against a different control group is a different hypothesis. "time" is the
   // stage-3 control, so it keeps the stage-3 signature (and stays comparable with earlier runs' ledgers).
   const mode = request.controls && request.controls !== "time" ? `|${request.controls}` : "";

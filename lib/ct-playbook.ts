@@ -93,6 +93,7 @@ export function ctRunTests(ct: CTResearch) {
  * market's cumulative tests (they mine the same history); only the daily seeds ("daily") stay apart.
  */
 export const ctPlaybookTimeframe = (contract: Pick<CTContract, "minutes">) => `${contract.minutes}m`;
+// A run's own ledger row (ct_playbook_runs) keeps its data bar ("1m"); its candidates and rejected ideas carry their own bars.
 /** The playbook rows a finished run contributes. Deterministic ids: recording twice changes nothing. */
 export function ctPlaybookRows(job: Pick<GenerationJob, "id" | "ownerId"> & { ct?: CTResearch }, now = Date.now()): PlaybookRow[] {
   const ct = job.ct;
@@ -118,8 +119,11 @@ export function ctPlaybookRows(job: Pick<GenerationJob, "id" | "ownerId"> & { ct
       // A hypothesis whose only evidence is a blind set is a measurement of the designer's eye, not a trading idea:
       // it lives in ct_calibration (lib/ct-calibration.ts) and must never be filed (or revived by a backfill) as a rejected mechanism.
       if (ctIsCalibrationHypothesis(h.evidence, ct.blinds)) return;
+      // Free bars: a hypothesis rejected on a coarser-bar query is filed under that bar.
+      const bar = (ct.queries ?? []).find((q) => h.evidence.includes(q.queryId) && q.barMinutes)?.barMinutes;
       rows.push({
         ...base,
+        ...(bar ? { timeframe: `${bar}m` } : {}),
         id: `${job.id}:rej:${s.index}:${k}`,
         mechanism: clip(`${h.hypothesis} — ${h.mechanism}`, 400),
         structure: clip(queryFeatures(h.evidence), 300),
@@ -137,6 +141,8 @@ export function ctPlaybookRows(job: Pick<GenerationJob, "id" | "ownerId"> & { ct
   for (const t of ct.screened ?? []) {
     rows.push({
       ...base,
+      // Free bars: a candidate is filed under the bar it trades on.
+      timeframe: ctPlaybookTimeframe(t.candidate.spec),
       id: `${job.id}:scr:${t.id}`,
       ...ctCandidateIdea(t.candidate.spec.name, t.candidate.hypothesis.mechanism, t.candidate.spec),
       evidence_kind: "candidate",
@@ -162,6 +168,7 @@ export function ctPlaybookRows(job: Pick<GenerationJob, "id" | "ownerId"> & { ct
         : t.reasons.join(" · ") || "개발 구간 탈락";
     rows.push({
       ...base,
+      timeframe: ctPlaybookTimeframe(t.spec),
       id: `${job.id}:trial:${t.id}`,
       ...ctCandidateIdea(t.spec.name, t.hypothesis.mechanism, t.spec),
       evidence_kind: "candidate",

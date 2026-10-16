@@ -22,6 +22,7 @@ import {
   ctNetTradePct,
   ctOpenPosition,
   ctRoundTripCostPct,
+  ctDataAt,
   detectCT,
   validCTBar,
   type CTBar,
@@ -32,6 +33,7 @@ import { ctStockSession } from "./ct-sessions.ts";
 import { dayInfo, dayLastIndex } from "./ct-moves.ts";
 import {
   CT_ENGINE_V1,
+  ctBarMinutesSchema,
   ctConditionSchema,
   validateCTSpec,
   type CTContract,
@@ -296,7 +298,17 @@ export const ctQuerySchema = z
     exitCompare: ctExitCompareSchema.nullable().optional(),
   })
   .strict();
-export type CTQuery = z.infer<typeof ctQuerySchema>;
+/** Free bars (traderTools 4): the same query plus the bar it runs on. */
+export const ctQuerySchemaBars = ctQuerySchema.extend({ barMinutes: ctBarMinutesSchema });
+export type CTQuery = z.infer<typeof ctQuerySchema> & { barMinutes?: 1 | 5 | 15 | 60 };
+/**
+ * A query on its own bar: the data rebuilt at that bar and a contract view whose `minutes` is that bar, so the probe
+ * spec, every bar count and every horizon are in those bars. The server checks the bar is allowed (ctBarAllowed) first.
+ */
+function atBar<T extends { barMinutes?: number }>(request: T, data: Record<string, CTBar[]>, contract: CTContract): [Record<string, CTBar[]>, CTContract] {
+  const bar = request.barMinutes ?? contract.minutes;
+  return bar === contract.minutes ? [data, contract] : [ctDataAt(data, bar), { ...contract, minutes: bar as CTContract["minutes"] }];
+}
 
 /** The probe spec a query runs through detectCT and ctExit. Never registered or traded. */
 export function ctQuerySpec(
@@ -341,6 +353,7 @@ export function ctQueryEvents(
   contract: CTContract,
   options: { deadline?: number } = {},
 ) {
+  [data, contract] = atBar(query, data, contract);
   const spec = ctQuerySpec(query, contract),
     history = ctHistoryBars(spec),
     maxH = Math.max(...query.horizons);
@@ -395,6 +408,7 @@ export function ctQueryReturns(
   contract: CTContract,
   options: { deadline?: number } = {},
 ) {
+  [data, contract] = atBar(query, data, contract);
   const { events, truncated, gaps } = ctQueryEvents(query, data, contract, options);
   const dayBounded = contract.engine !== CT_ENGINE_V1;
   // ct-pattern-2: every look-ahead stops at the day's last tradable bar, like the replay's forced exit.
@@ -607,15 +621,21 @@ export type CTQueryResult = ReturnType<typeof ctQueryReturns>;
 
 /* -------------------------------------------------------------- read bars */
 
+const readBarsShape = {
+  anchors: z.array(z.number().int().nonnegative()).min(1).max(4),
+  before: z.number().int().min(0).max(240),
+  after: z.number().int().min(0).max(240),
+};
 export const ctReadBarsSchema = z
-  .object({
-    anchors: z.array(z.number().int().nonnegative()).min(1).max(4),
-    before: z.number().int().min(0).max(240),
-    after: z.number().int().min(0).max(240),
-  })
+  .object(readBarsShape)
   .strict()
   .refine((v) => v.before + v.after <= 240, "before + after ≤ 240");
-export type CTReadBars = z.infer<typeof ctReadBarsSchema>;
+/** Free bars (traderTools 4): the same request on a chosen bar; an anchor must be a close or an open of that bar. */
+export const ctReadBarsSchemaBars = z
+  .object({ ...readBarsShape, barMinutes: ctBarMinutesSchema })
+  .strict()
+  .refine((v) => v.before + v.after <= 240, "before + after ≤ 240");
+export type CTReadBars = z.infer<typeof ctReadBarsSchema> & { barMinutes?: 1 | 5 | 15 | 60 };
 
 const clocks = new Map<string, Intl.DateTimeFormat>();
 const clock = (timezone: string) => {
@@ -634,16 +654,17 @@ function anchorIndex(rows: CTBar[], at: number) {
  * clock on the first row and every 30th. The anchor row is starred. No raw prices.
  */
 export function ctReadBars(input: CTReadBars, data: Record<string, CTBar[]>, contract: CTContract) {
+  [data, contract] = atBar(input, data, contract);
   return input.anchors.map((at) => {
     const symbol = contract.symbols.find((s) => anchorIndex(data[s] ?? [], at) >= 0);
-    if (!symbol) throw new Error("기준 시각의 학습 봉 없음");
+    if (!symbol) throw new Error(contract.minutes > 1 ? `기준 시각이 ${contract.minutes}분봉의 시작·마감이 아닙니다` : "기준 시각의 학습 봉 없음");
     const rows = data[symbol];
     const i = anchorIndex(rows, at);
     const from = Math.max(0, i - input.before),
       to = Math.min(rows.length - 1, i + input.after);
     const bars = rows.slice(from, to + 1);
     if (bars[0].startMs < contract.fromMs || bars.at(-1)!.endMs > contract.trainingToMs)
-      throw new Error("CT 1분봉 열람은 학습 구간만 허용");
+      throw new Error(contract.minutes > 1 ? `CT ${contract.minutes}분봉 열람은 학습 구간만 허용` : "CT 1분봉 열람은 학습 구간만 허용");
     const base = bars[0].open;
     const median = quantile(sortNum(bars.map((b) => b.volume)), 0.5) || 1;
     const bp = (x: number) => Math.round((x / base - 1) * 10_000);

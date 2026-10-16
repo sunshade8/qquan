@@ -27,6 +27,8 @@ import type { GenerationJob } from "./strategy-generation-types.ts";
 import { researchFailure } from "./research-recovery.ts";
 import {
   CT_ENGINE,
+  ctBarAllowed,
+  ctBarChoices,
   ctPolicyForNewContract,
   ctFreedom,
   ctHash,
@@ -69,9 +71,13 @@ import {
   ctCostHurdle,
   ctQueryReturns,
   ctQuerySchema,
+  ctQuerySchemaBars,
   ctReadBars,
   ctReadBarsSchema,
+  ctReadBarsSchemaBars,
   type CTCostHurdle,
+  type CTQuery,
+  type CTReadBars,
 } from "./ct-design-tools.ts";
 import { ctDataPage, ctDb, ctResearchPageStart, loadCTData } from "./ct-data.ts";
 import { ctBoardSignature, CTBoardRepeatError, type CTBoardPrior } from "./ct-board.ts";
@@ -91,12 +97,14 @@ import {
   ctGradeBlindSchemaStage3,
   ctLabelMovesReport,
   ctLabelMovesSchema,
+  ctLabelMovesSchemaBars,
   ctRng,
   ctRunLabels,
   ctSeedOf,
   ctViewChartsSchema,
   ctViewChartsSchemaStage3,
   type CTContrastRequest,
+  type CTLabelParams,
   CT_BLIND_MIN,
   CT_BLIND_MAX,
 } from "./ct-trader-tools.ts";
@@ -177,8 +185,6 @@ export async function prepareCTContract(input: unknown): Promise<CTContract> {
     )
   )
     throw new Error("미국 현금 주식·비레버리지 ETF 종목 범위를 확인하세요.");
-  if (request.market === "stock" && request.minutes === 60)
-    throw new Error("주식 연구 봉 주기는 1/5/15분입니다(60분봉은 09:30 개장 격자와 맞지 않음).");
   const toMs = Math.floor((Date.now() - 86400000) / 86400000) * 86400000,
     fromMs = toMs - request.days * 86400000;
   if (request.market === "stock") {
@@ -193,8 +199,8 @@ export async function prepareCTContract(input: unknown): Promise<CTContract> {
     calendarVersion:
       request.market === "stock" ? CT_CALENDAR_VERSION : "continuous-1",
     symbols,
-    // The bar the rule is written and replayed in. 1 times trades at minute resolution; 5/15/60 trade on coarser bars (2026-10-16).
-    minutes: request.minutes ?? 1,
+    // Research always replays 1-minute bars so trades are timed at minute resolution.
+    minutes: 1,
     fromMs,
     trainingToMs: fromMs + Math.floor(request.days * 0.6) * 86400000,
     developmentToMs: fromMs + Math.floor(request.days * 0.8) * 86400000,
@@ -685,7 +691,8 @@ export const CT_SESSION_TOOLS_STAGE4: Anthropic.Tool[] = [
  * carry lessonChecks (per candidate: family, lessonId, differsBecause) and an optional family on each rejected hypothesis.
  */
 const stage4 = (name: string) => CT_SESSION_TOOLS_STAGE4.find((t) => t.name === name)!;
-export const CT_SESSION_TOOLS: Anthropic.Tool[] = CT_SESSION_TOOLS_STAGE4.map((t) =>
+/** FROZEN: traderTools = 3 contracts keep these bytes. */
+export const CT_SESSION_TOOLS_STAGE5: Anthropic.Tool[] = CT_SESSION_TOOLS_STAGE4.map((t) =>
   t.name !== "submit_candidates"
     ? stage4(t.name)
     : {
@@ -697,10 +704,43 @@ export const CT_SESSION_TOOLS: Anthropic.Tool[] = CT_SESSION_TOOLS_STAGE4.map((t
         input_schema: jsonSchema(ctSubmissionSchemaStage5),
       },
 );
-/** The tool set a contract runs under (stage 2: four tools; stage 3: trader tools, frozen; stage 4: control groups, big blind sets, frozen; stage 5: lessonChecks). */
+/**
+ * Free bars (traderTools = 4, 2026-10-16): the stage-5 tools with a bar choice. query_conditional_returns, read_bars and
+ * label_moves take barMinutes (their schemas gain the field); contrast_moves inherits its label's bar, screen_rule and
+ * diagnose_trades the spec's; view_charts stays the minute-data picture (1-hour, 5-minute and 1-minute panels at once).
+ */
+const stage5 = (name: string) => CT_SESSION_TOOLS_STAGE5.find((t) => t.name === name)!;
+const BAR_MEASURE =
+  " barMinutes (1/5/15/60 minutes; stocks 1/5/15; default 1) is the bar this measurement runs on, built from complete minutes of the one-minute data: every bar count in the request counts those bars and timeframe 1/3/12 means 1×/3×/12× that bar (60/240/1440 stay hours and days). The ledger counts the same structure on another bar as another test.";
+const withBar = (name: string, extra: string, schema?: z.ZodType): Anthropic.Tool => ({
+  ...stage5(name),
+  description: `${stage5(name).description}${extra}`,
+  ...(schema ? { input_schema: jsonSchema(schema) } : {}),
+});
+export const CT_SESSION_TOOLS: Anthropic.Tool[] = CT_SESSION_TOOLS_STAGE5.map((t) => {
+  switch (t.name) {
+    case "label_moves":
+      return withBar(t.name, `${BAR_MEASURE} Here "every minute" means every bar of that size, entry at the next such bar's open, and horizon counts those bars; contrast_moves on this labelId measures its features on the same bars.`, ctLabelMovesSchemaBars);
+    case "query_conditional_returns":
+      return withBar(t.name, BAR_MEASURE, ctQuerySchemaBars);
+    case "read_bars":
+      return withBar(t.name, `${BAR_MEASURE} An anchor must be a close or an open of a bar of that size.`, ctReadBarsSchemaBars);
+    case "contrast_moves":
+      return withBar(t.name, " The features are measured on the bars of the label (its barMinutes).");
+    case "screen_rule":
+      return withBar(t.name, " spec.minutes is the bar the rule trades on, your choice per rule (1/5/15/60; stocks 1/5/15): the replay builds those bars from complete minutes, and every bar count in the spec counts them.");
+    case "diagnose_trades":
+      return withBar(t.name, " The trades and their alternative exits are replayed on the rule's own bar (spec.minutes).");
+    case "submit_candidates":
+      return withBar(t.name, " Each candidate's spec.minutes is its own bar choice; candidates in one submission may use different bars.");
+    default:
+      return t;
+  }
+});
+/** The tool set a contract runs under (stage 2: four tools; stage 3: trader tools, frozen; stage 4: control groups, big blind sets, frozen; stage 5: lessonChecks, frozen; free bars: barMinutes). */
 export const ctSessionTools = (contract: Pick<CTContract, "policy">) => {
   const v = ctSessionPolicy(contract).toolsVersion;
-  return v >= 3 ? CT_SESSION_TOOLS : v === 2 ? CT_SESSION_TOOLS_STAGE4 : v === 1 ? CT_SESSION_TOOLS_STAGE3 : CT_SESSION_TOOLS_STAGE2;
+  return v >= 4 ? CT_SESSION_TOOLS : v === 3 ? CT_SESSION_TOOLS_STAGE5 : v === 2 ? CT_SESSION_TOOLS_STAGE4 : v === 1 ? CT_SESSION_TOOLS_STAGE3 : CT_SESSION_TOOLS_STAGE2;
 };
 
 type SessionMessage = Anthropic.MessageParam;
@@ -1081,6 +1121,10 @@ export async function advanceCTResearch(
 
     if (ct.phase === "design" || ct.phase === "reflect") {
       const policy = ctSessionPolicy(c);
+      // Free bars: a measurement's bar must be one this contract allows (one-minute data, ctBarChoices).
+      const checkBar = (minutes: number | undefined) => {
+        if (minutes !== undefined && !ctBarAllowed(c, minutes)) throw new Error(`barMinutes는 ${ctBarChoices(c.market).join("/")}분 중 하나입니다`);
+      };
       const sessions = (ct.sessions ??= []);
       let session = sessions.at(-1);
       if (!session || session.status !== "open") {
@@ -1217,7 +1261,8 @@ export async function advanceCTResearch(
           if (use.name !== "submit_candidates" && session.toolCalls > policy.maxToolCalls)
             throw new Error(`이 세션의 도구 호출 한도 ${policy.maxToolCalls}회를 넘었습니다. submit_candidates만 호출할 수 있습니다.`);
           if (use.name === "query_conditional_returns") {
-            const query = ctQuerySchema.parse(use.input);
+            const query = (policy.freeBars ? ctQuerySchemaBars : ctQuerySchema).parse(use.input) as CTQuery;
+            checkBar(query.barMinutes);
             const queryId = (await ctHash({ run: job.id, query })).slice(0, 16);
             const out = await tool(
               job,
@@ -1247,23 +1292,26 @@ export async function advanceCTResearch(
                 horizons: query.horizons,
                 events: out.events,
                 uniqueDays: out.uniqueDays,
-                summary: querySummary(out),
-                signature: ctTestSignature(query.stages, !!query.entryWindows?.length),
+                summary: `${query.barMinutes && query.barMinutes > 1 ? `[${query.barMinutes}분봉] ` : ""}${querySummary(out)}`,
+                signature: ctTestSignature(query.stages, !!query.entryWindows?.length, query.barMinutes),
+                ...(query.barMinutes && query.barMinutes > 1 ? { barMinutes: query.barMinutes } : {}),
               };
               ct.queries.push(record);
             }
-            ctRecordTest(ct, ctTestSignature(query.stages, !!query.entryWindows?.length));
+            ctRecordTest(ct, ctTestSignature(query.stages, !!query.entryWindows?.length, query.barMinutes));
             anchor(...out.anchors.map((a) => a.at));
             answer({ ...out, multipleTesting: ctTestLedger(ct) });
           } else if (use.name === "read_bars") {
-            const request = ctReadBarsSchema.parse(use.input);
+            const request = (policy.freeBars ? ctReadBarsSchemaBars : ctReadBarsSchema).parse(use.input) as CTReadBars;
+            checkBar(request.barMinutes);
             const out = await tool(job, token, "read_bars", { request, dataHash: ct.dataHash }, async () =>
               ctReadBars(request, await bars(), c),
             );
             answer(out.map((w) => `${w.symbol} ${w.anchor} · ${w.bars}봉 · 결측 ${w.gaps} · ${w.format}\n${w.text}`).join("\n\n"));
           } else if (use.name === "label_moves") {
             if (!policy.traderTools) throw new Error("이 연구 계약에는 label_moves가 없습니다");
-            const params = ctLabelMovesSchema.parse(use.input);
+            const params = (policy.freeBars ? ctLabelMovesSchemaBars : ctLabelMovesSchema).parse(use.input) as CTLabelParams;
+            checkBar(params.barMinutes);
             if (c.market === "stock" && params.horizon !== "day_end" && params.horizon > 390) throw new Error("주식 보유 지평은 390봉 이하입니다");
             const labelId = (await ctHash({ run: job.id, params })).slice(0, 16);
             const out = await tool(job, token, "label_moves", { params, from: c.fromMs, to: c.trainingToMs, dataHash: ct.dataHash }, async () => {
@@ -1287,7 +1335,7 @@ export async function advanceCTResearch(
             const reserve = "blindReserve" in out && out.blindReserve ? [...out.blindReserve.anchors, ...out.blindReserve.controlAnchors] : [];
             issueChartAnchors(ct, [...out.anchors, ...out.controlAnchors, ...reserve], labelId);
             anchor(...out.anchors.map((a) => a.at), ...out.controlAnchors.map((a) => a.at), ...reserve.map((a) => a.at));
-            ctRecordTest(ct, `label|k${params.k}|m${params.m}|h${params.horizon}|c${params.costMultiplier}`);
+            ctRecordTest(ct, `label|k${params.k}|m${params.m}|h${params.horizon}|c${params.costMultiplier}${params.barMinutes && params.barMinutes > 1 ? `|b${params.barMinutes}` : ""}`);
             // Stage 4: say when an earlier run already measured this exact definition on this training data (computation is free, so it is not refused).
             const previouslyMeasured = (ct.measured?.runs ?? []).flatMap((r) => r.labels.filter((l) => ctLabelKey(l.params) === ctLabelKey(params)).map((l) => ({ runId: r.run, conclusion: l.conclusion })));
             answer({ ...out, ...(policy.toolsVersion >= 2 ? { previouslyMeasured } : {}), multipleTesting: ctTestLedger(ct) });
@@ -1508,7 +1556,7 @@ export async function advanceCTResearch(
               },
             );
             anchor(...out.sampleTrades.map((t: { entryAt: number }) => t.entryAt).filter((at: number) => at < c.trainingToMs));
-            ctRecordTest(ct, ctTestSignature(spec.stages, !!spec.entry.entryWindows?.length));
+            ctRecordTest(ct, ctTestSignature(spec.stages, !!spec.entry.entryWindows?.length, spec.minutes));
             let screenId: string | undefined;
             if (policy.traderTools) {
               const hash = await ctHash(executableCT(spec));

@@ -9,7 +9,7 @@ import { ctState } from "./helpers/ct-fixture.mjs";
 import { plantedMarket, plantedContract, MINUTE } from "./helpers/ct-trader-fixture.mjs";
 import { ctHash, executableCT, CT_ENGINE, CT_POLICY, ctSessionPolicy } from "../lib/ct-spec.ts";
 import { STAGE3_POLICY, STAGE4_POLICY } from "./helpers/ct-policies.mjs";
-import { ctRunLabels, ctLabelMovesReport, ctLabelMovesSchema } from "../lib/ct-trader-tools.ts";
+import { ctRunLabels, ctLabelMovesReport, ctLabelMovesSchema, ctLabelMovesSchemaBars } from "../lib/ct-trader-tools.ts";
 import { CT_DESIGNER_SYSTEM, CT_DESIGNER_SYSTEM_STAGE2, CT_DESIGNER_SYSTEM_STAGE3, CT_DESIGNER_SYSTEM_STAGE4, ctDesignerSystem } from "../lib/ct-research.ts";
 import { assertCTTool } from "../lib/ct-tools.ts";
 import { designerRequestChars } from "../lib/designer-request-size.ts";
@@ -86,12 +86,12 @@ test("the stage-2 brief is byte-identical, contracts decide which brief and tool
   assert.notEqual(CT_DESIGNER_SYSTEM, CT_DESIGNER_SYSTEM_STAGE3);
   const old = { policy: { ...CT_POLICY, traderTools: undefined, sessionMaxTurns: undefined, sessionMaxToolCalls: undefined, sessionMaxCharts: undefined, sessionMaxBlindSets: undefined } };
   assert.equal(ctDesignerSystem(old), CT_DESIGNER_SYSTEM_STAGE2);
-  assert.deepEqual(ctSessionPolicy(old), { maxTurns: 12, maxToolCalls: 24, maxScreens: 6, maxSessions: 3, maxCharts: 0, maxBlindSets: 0, traderTools: false, toolsVersion: 0, lessons: false, lessonReserveUsd: 0, lessonMaxInputChars: 60000, lessonMaxOutputTokens: 8000, blindSize: null });
+  assert.deepEqual(ctSessionPolicy(old), { maxTurns: 12, maxToolCalls: 24, maxScreens: 6, maxSessions: 3, maxCharts: 0, maxBlindSets: 0, traderTools: false, toolsVersion: 0, freeBars: false, lessons: false, lessonReserveUsd: 0, lessonMaxInputChars: 60000, lessonMaxOutputTokens: 8000, blindSize: null });
   // Stage 3 contracts (traderTools = 1) keep 32 images and their own brief; stage 4 (= 2) has 48 images and 16–32-chart blind sets.
-  assert.deepEqual(ctSessionPolicy({ policy: STAGE3_POLICY }), { maxTurns: 16, maxToolCalls: 40, maxScreens: 6, maxSessions: 3, maxCharts: 32, maxBlindSets: 2, traderTools: true, toolsVersion: 1, lessons: false, lessonReserveUsd: 0, lessonMaxInputChars: 60000, lessonMaxOutputTokens: 8000, blindSize: null });
-  assert.deepEqual(ctSessionPolicy({ policy: STAGE4_POLICY }), { maxTurns: 16, maxToolCalls: 40, maxScreens: 6, maxSessions: 3, maxCharts: 48, maxBlindSets: 2, traderTools: true, toolsVersion: 2, lessons: false, lessonReserveUsd: 0, lessonMaxInputChars: 60000, lessonMaxOutputTokens: 8000, blindSize: { min: 16, default: 24, max: 32 } });
-  // Stage 5 adds the lessons and withholds their reserve; the session limits are the stage-4 ones.
-  assert.deepEqual(ctSessionPolicy({ policy: CT_POLICY }), { maxTurns: 16, maxToolCalls: 40, maxScreens: 6, maxSessions: 3, maxCharts: 48, maxBlindSets: 2, traderTools: true, toolsVersion: 3, lessons: true, lessonReserveUsd: 0.05, lessonMaxInputChars: 60000, lessonMaxOutputTokens: 8000, blindSize: { min: 16, default: 24, max: 32 } });
+  assert.deepEqual(ctSessionPolicy({ policy: STAGE3_POLICY }), { maxTurns: 16, maxToolCalls: 40, maxScreens: 6, maxSessions: 3, maxCharts: 32, maxBlindSets: 2, traderTools: true, toolsVersion: 1, freeBars: false, lessons: false, lessonReserveUsd: 0, lessonMaxInputChars: 60000, lessonMaxOutputTokens: 8000, blindSize: null });
+  assert.deepEqual(ctSessionPolicy({ policy: STAGE4_POLICY }), { maxTurns: 16, maxToolCalls: 40, maxScreens: 6, maxSessions: 3, maxCharts: 48, maxBlindSets: 2, traderTools: true, toolsVersion: 2, freeBars: false, lessons: false, lessonReserveUsd: 0, lessonMaxInputChars: 60000, lessonMaxOutputTokens: 8000, blindSize: { min: 16, default: 24, max: 32 } });
+  // Stage 5 adds the lessons and withholds their reserve; the session limits are the stage-4 ones. Free bars (4) change only the bar choice.
+  assert.deepEqual(ctSessionPolicy({ policy: CT_POLICY }), { maxTurns: 16, maxToolCalls: 40, maxScreens: 6, maxSessions: 3, maxCharts: 48, maxBlindSets: 2, traderTools: true, toolsVersion: 4, freeBars: true, lessons: true, lessonReserveUsd: 0.05, lessonMaxInputChars: 60000, lessonMaxOutputTokens: 8000, blindSize: { min: 16, default: 24, max: 32 } });
   assert.match(CT_DESIGNER_SYSTEM, /selfRebuttal/);
   assert.match(CT_DESIGNER_SYSTEM, /label_moves[\s\S]*contrast_moves[\s\S]*grade_blind[\s\S]*diagnose_trades/);
 });
@@ -199,6 +199,80 @@ test("a full STAGE-3 trader session (traderTools = 1 contract): labels → contr
     assert.equal(messages(created.id).length > 10, true);
   } finally {
     globalThis.fetch = original;
+    globalThis.__strategyTestHooks.realLlm = false;
+  }
+});
+
+test("free bars in a real session: label, contrast, query and read_bars on 5-minute bars; a 5-minute rule is screened and diagnosed; the ledger counts the bar", async () => {
+  const original = globalThis.fetch,
+    key = globalThis.__strategyTestEnv.ANTHROPIC_API_KEY;
+  // The SDK client is cached per key and keeps the fetch it was built with: a key of its own gives this test a client on its fetch.
+  globalThis.__strategyTestEnv.ANTHROPIC_API_KEY = "test-anthropic-free-bars";
+  globalThis.__strategyTestHooks.realLlm = true;
+  const requests = [];
+  const created = await job();
+  assert.equal(ctSessionPolicy(created.ct.contract).freeBars, true);
+  const p5 = ctLabelMovesSchemaBars.parse({ k: 3, m: 1, horizon: 8, barMinutes: 5 });
+  const label = (await ctHash({ run: created.id, params: p5 })).slice(0, 16);
+  const issued = ctLabelMovesReport(p5, ctRunLabels(p5, { BTCUSDT: bars }, contract), contract, label);
+  assert.ok(issued.anchors.length > 0);
+  const at = issued.anchors[0].at;
+  assert.equal(at % (5 * MINUTE), 0, "issued on the 5-minute grid");
+  const rule = {
+    version: 1, engine: CT_ENGINE, name: "five-minute contraction", market: "crypto", symbols: ["BTCUSDT"], minutes: 5,
+    stages: [{ label: "contraction", maxGapBars: 1, conditions: [{ feature: "range_pct", lookback: 6, offset: 0, timeframe: 1, op: "lte", value: 0.2 }] }],
+    entry: { order: "marketable_limit", validBars: 1, maxSpreadPct: 1, maxDeviationPct: 2 },
+    exit: { stopPct: 0.5, targetPct: 1.5, maxHoldBars: 24, invalidation: "stop" },
+    sizing: { riskPct: 1, allocationPct: 25, maxPositions: 1, cooldownBars: 6, participationPct: 1 },
+    sourceIds: ["verified"], assumptions: ["planted fixture rule on 5-minute bars"],
+  };
+  const screenId = (await ctHash({ run: created.id, hash: await ctHash(executableCT(rule)) })).slice(0, 16);
+  const query = { stages: [{ maxGapBars: 1, conditions: [{ feature: "range_pct", lookback: 6, offset: 0, timeframe: 1, op: "lte", value: 0.2 }] }], horizons: [6, 12], grid: null, cooldownBars: 6, barMinutes: 5 };
+  const script = [
+    [{ id: "b1", name: "label_moves", input: { k: 3, m: 1, horizon: 8, barMinutes: 5 } }],
+    [{ id: "b2", name: "contrast_moves", input: { labelId: label, features: [{ feature: "range_pct", lookback: 6, timeframe: 1 }] } }],
+    [{ id: "b3", name: "query_conditional_returns", input: query }],
+    [{ id: "b4", name: "read_bars", input: { anchors: [at], before: 12, after: 0, barMinutes: 5 } }],
+    [{ id: "b5", name: "screen_rule", input: { spec: rule } }],
+    [{ id: "b6", name: "diagnose_trades", input: { screenId } }],
+    [{ id: "b7", name: "label_moves", input: { k: 3, m: 1, horizon: 8, barMinutes: 3 } }],
+    [{ id: "b8", name: "submit_candidates", input: { candidates: [], noEdgeReason: "5분봉에서도 비용 후 우위 없음", rejectedHypotheses: [{ hypothesis: "5분 수축 뒤 돌파", mechanism: "변동성 수축 뒤 확장", evidence: [label], result: "비용 후 일평균 음수" }] } }],
+  ];
+  globalThis.fetch = async (url, options) => {
+    const body = JSON.parse(options.body);
+    // Designer turns only (a stage-5 contract also distils its lessons at the end with its own call).
+    if (!body.tools?.some((t) => t.name === "submit_candidates")) return sse(claudeTurn(`other_${requests.length}`, []));
+    requests.push({ body });
+    return sse(claudeTurn(`msg_${requests.length}`, script[requests.length - 1], { input: 40, write: requests.length === 1 ? 9000 : 300, read: requests.length === 1 ? 0 : 9000, output: 500 }));
+  };
+  try {
+    let j = await advance(created.id);
+    for (let i = 0; i < 60 && j.status === "running" && j.ct.phase !== "done"; i++) j = await advance(created.id);
+    assert.equal(j.ct.phase, "done", j.error ?? j.ct.endReason);
+    assert.equal(requests.length, 8);
+    assert.equal(requests[0].body.system[0].text, CT_DESIGNER_SYSTEM);
+    assert.ok(requests[0].body.tools.find((t) => t.name === "label_moves").input_schema.properties.barMinutes);
+    const resultOf = (id) => requests.at(-1).body.messages.flatMap((m) => (Array.isArray(m.content) ? m.content : [])).find((b) => b.type === "tool_result" && b.tool_use_id === id);
+    for (const id of ["b1", "b2", "b3", "b4", "b5", "b6"]) assert.equal(resultOf(id).is_error, undefined, `${id}: ${JSON.stringify(resultOf(id).content).slice(0, 300)}`);
+    assert.equal(resultOf("b7").is_error, true, "a 3-minute bar is not a choice");
+    const ct = j.ct;
+    assert.equal(ct.labels[label].params.barMinutes, 5);
+    assert.equal(ct.queries[0].barMinutes, 5);
+    assert.match(ct.queries[0].summary, /^\[5분봉\]/);
+    const screened = ct.screens[screenId];
+    assert.ok(screened.trades > 0, "the 5-minute rule trades on the planted market");
+    assert.ok(ct.diagnoses.length === 1);
+    const ledger = Object.keys(ct.tests.signatures);
+    assert.ok(ledger.includes("label|k3|m1|h8|c1|b5"), ledger.join(" "));
+    assert.ok(ledger.some((k) => k.startsWith("b5:range_pct|1|lte|pct")), "query and screen count the 5-minute structure");
+    assert.ok(ledger.some((k) => k.startsWith("contrast|range_pct|1|pct|q0|k3m1h8c1b5")));
+    assert.ok(ledger.some((k) => k.startsWith("diagnose|b5:")));
+    assert.ok(!ledger.some((k) => k === "range_pct|1|lte|pct"), "nothing was tested on one-minute bars");
+    const bars5 = JSON.stringify(resultOf("b4").content);
+    assert.match(bars5, /13봉/);
+  } finally {
+    globalThis.fetch = original;
+    globalThis.__strategyTestEnv.ANTHROPIC_API_KEY = key;
     globalThis.__strategyTestHooks.realLlm = false;
   }
 });

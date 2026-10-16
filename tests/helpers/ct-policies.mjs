@@ -4,4 +4,5 @@ import { CT_POLICY } from "../../lib/ct-spec.ts";
 const beforeStage5 = Object.fromEntries(Object.entries(CT_POLICY).filter(([key]) => !key.startsWith("lesson")));
 export const STAGE3_POLICY = { ...beforeStage5, traderTools: 1, sessionMaxCharts: 32 };
 export const STAGE4_POLICY = { ...beforeStage5, traderTools: 2 };
-export const STAGE5_POLICY = CT_POLICY;
+// Stage 5 = today's fields with tool version 3 (free bars came after it as tool version 4).
+export const STAGE5_POLICY = { ...CT_POLICY, traderTools: 3 };

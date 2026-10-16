@@ -8,11 +8,11 @@ import { DatabaseSync } from "node:sqlite";
 import { register } from "node:module";
 import { z } from "zod";
 import { ctState, candidate, bars, spec as specFixture } from "./helpers/ct-fixture.mjs";
-import { STAGE3_POLICY, STAGE4_POLICY } from "./helpers/ct-policies.mjs";
+import { STAGE3_POLICY, STAGE4_POLICY, STAGE5_POLICY } from "./helpers/ct-policies.mjs";
 import { CT_POLICY, ctHash, ctPolicyForNewContract, ctSessionPolicy } from "../lib/ct-spec.ts";
 import { CT_FAMILIES, ctCandidateFamilies, ctIdeaFamily, ctParseSignature, ctStructuralFamily } from "../lib/ct-families.ts";
 import { researchMaxTokens, researchModel, CT_ROLES, RESEARCH_MODELS } from "../lib/strategy-generation-models.ts";
-import { ctSessionContext, ctSubmissionSchema, ctSubmissionSchemaStage5, CT_DESIGNER_SYSTEM, CT_DESIGNER_SYSTEM_STAGE4 } from "../lib/ct-research.ts";
+import { ctSessionContext, ctSubmissionSchema, ctSubmissionSchemaStage5, CT_DESIGNER_SYSTEM_STAGE5 as CT_DESIGNER_SYSTEM, CT_DESIGNER_SYSTEM_STAGE4 } from "../lib/ct-research.ts";
 import { lessonsPanelModel, playbookAnchor } from "../lib/ct-lessons-view.ts";
 register("./helpers/slot-test-loader.mjs", import.meta.url);
 
@@ -364,10 +364,14 @@ test("the distillation's reserve: designer and reviewers cannot spend it, the di
 
 /* ------------------------------------------------------------------ policy and contracts */
 
-test("policy: a new contract carries stage 5, earlier ones are filled with nothing, QQUAN_CT_POLICY_VERSION still rebuilds them", () => {
-  assert.equal(CT_POLICY.traderTools, 3);
-  assert.equal(ctSessionPolicy({ policy: CT_POLICY }).toolsVersion, 3);
+test("policy: a new contract carries stage 5 (and free bars), earlier ones are filled with nothing, QQUAN_CT_POLICY_VERSION still rebuilds them", () => {
+  // Free bars (tool version 4) keep every stage-5 field; stage 5 itself is tool version 3.
+  assert.equal(CT_POLICY.traderTools, 4);
+  assert.equal(ctSessionPolicy({ policy: CT_POLICY }).toolsVersion, 4);
   assert.equal(ctSessionPolicy({ policy: CT_POLICY }).lessons, true);
+  assert.equal(ctSessionPolicy({ policy: STAGE5_POLICY }).toolsVersion, 3);
+  assert.equal(ctSessionPolicy({ policy: STAGE5_POLICY }).lessons, true);
+  assert.equal(ctSessionPolicy({ policy: STAGE5_POLICY }).freeBars, false);
   for (const p of [STAGE3_POLICY, STAGE4_POLICY]) {
     const s = ctSessionPolicy({ policy: p });
     assert.equal(s.lessons, false);
@@ -378,6 +382,8 @@ test("policy: a new contract carries stage 5, earlier ones are filled with nothi
   try {
     delete process.env.QQUAN_CT_POLICY_VERSION;
     assert.equal(ctPolicyForNewContract(), CT_POLICY, "default behaviour unchanged");
+    process.env.QQUAN_CT_POLICY_VERSION = "3";
+    assert.deepEqual(ctPolicyForNewContract(), STAGE5_POLICY);
     process.env.QQUAN_CT_POLICY_VERSION = "2";
     const two = ctPolicyForNewContract();
     assert.equal(two.traderTools, 2);
@@ -411,16 +417,19 @@ test("a stage-4 contract keeps its brief, tools and stable block byte for byte; 
   assert.equal(sha(CT_DESIGNER_SYSTEM_STAGE4), "bc6b18e14505fdc67827872c1f6d57f21fdb558a65736bffe04cdda9ab015ad3");
   assert.equal(sha(research.CT_SESSION_TOOLS_STAGE4), "38763047f3977d83fa767e1033f8a4c97629d5ade4d98d7be52a69ea20b34848");
   assert.equal(research.ctSessionTools({ policy: STAGE4_POLICY }), research.CT_SESSION_TOOLS_STAGE4);
-  assert.equal(research.ctSessionTools({ policy: CT_POLICY }), research.CT_SESSION_TOOLS);
+  assert.equal(research.ctSessionTools({ policy: STAGE5_POLICY }), research.CT_SESSION_TOOLS_STAGE5);
+  // Stage 5 frozen when free bars arrived (pinned from HEAD fa974b5, where it was the newest brief and tool set).
+  assert.equal(sha(CT_DESIGNER_SYSTEM), "17e702871a755a0373062a1b16dccc9128b87b10931ae779a35fca9030dbc67e");
+  assert.equal(sha(research.CT_SESSION_TOOLS_STAGE5), "ba5d3aaa933a099cb3a75f5075791c547bc8ed3c5c1caa197924c6454cb3643a");
   // The ct-pattern stage-4 submit_candidates schema is the old one; the new field exists only in stage 5's definition.
   const submit = (tools) => tools.find((t) => t.name === "submit_candidates");
   assert.equal(submit(research.CT_SESSION_TOOLS_STAGE4).input_schema.properties.lessonChecks, undefined);
-  assert.ok(submit(research.CT_SESSION_TOOLS).input_schema.properties.lessonChecks);
-  assert.ok(submit(research.CT_SESSION_TOOLS).input_schema.properties.rejectedHypotheses.items.properties.family);
+  assert.ok(submit(research.CT_SESSION_TOOLS_STAGE5).input_schema.properties.lessonChecks);
+  assert.ok(submit(research.CT_SESSION_TOOLS_STAGE5).input_schema.properties.rejectedHypotheses.items.properties.family);
   assert.equal(submit(research.CT_SESSION_TOOLS_STAGE4).input_schema.properties.rejectedHypotheses.items.properties.family, undefined);
   assert.equal(JSON.stringify(submit(research.CT_SESSION_TOOLS_STAGE4).input_schema), JSON.stringify(schemaJson(ctSubmissionSchema)));
-  assert.deepEqual(research.CT_SESSION_TOOLS.map((t) => t.name), research.CT_SESSION_TOOLS_STAGE4.map((t) => t.name));
-  for (const t of research.CT_SESSION_TOOLS.filter((x) => x.name !== "submit_candidates")) assert.equal(t, research.CT_SESSION_TOOLS_STAGE4.find((x) => x.name === t.name), "every other tool is the stage-4 object");
+  assert.deepEqual(research.CT_SESSION_TOOLS_STAGE5.map((t) => t.name), research.CT_SESSION_TOOLS_STAGE4.map((t) => t.name));
+  for (const t of research.CT_SESSION_TOOLS_STAGE5.filter((x) => x.name !== "submit_candidates")) assert.equal(t, research.CT_SESSION_TOOLS_STAGE4.find((x) => x.name === t.name), "every other tool is the stage-4 object");
   assert.notEqual(CT_DESIGNER_SYSTEM, CT_DESIGNER_SYSTEM_STAGE4);
   assert.match(CT_DESIGNER_SYSTEM, /lessonChecks/);
   assert.match(CT_DESIGNER_SYSTEM, /not a goal and not evidence of performance/);
@@ -428,7 +437,7 @@ test("a stage-4 contract keeps its brief, tools and stable block byte for byte; 
   assert.match(CT_DESIGNER_SYSTEM, /"no edge" remains a normal result/);
   assert.match(CT_DESIGNER_SYSTEM, /nextToTry is a suggestion, not an instruction/);
   // Stage 5 stable block: lessons then coverage, after the playbook, identical on a resume (it is built from the frozen snapshot).
-  const ct5 = fixture(CT_POLICY);
+  const ct5 = fixture(STAGE5_POLICY);
   ct5.lessons = { note: "n", entries: [{ id: "r:crypto:breakout", family: "breakout", verdict: "dead", cause: "no_edge_after_cost", lesson: "돌파는 비용을 넘지 못했다.", nextToTry: null, evidence: ["run1:rej:0:0"], omittedEvidence: 0 }], deadFamilies: ["breakout"], coverage: { note: "c", families: [], vocabulary: {}, exitStructure: [], emptyCells: [], basis: { ideas: 1, signatures: 1 } } };
   const a = ctSessionContext(ct5, "연구 방향", { note: "h", rows: [] }, session).stable;
   const b = ctSessionContext(structuredClone(ct5), "연구 방향", { note: "h", rows: [] }, session).stable;

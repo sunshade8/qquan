@@ -31,7 +31,9 @@ export function ctFirstSentence(text: string | null | undefined, n = 180) {
   return clip(cut > 0 ? t.slice(0, cut + 1) : t, n);
 }
 /** The key a label definition is compared by: k · m · horizon · costMultiplier. */
-export const ctLabelKey = (p: Pick<CTLabelParams, "k" | "m" | "horizon" | "costMultiplier">) => `k${p.k}|m${p.m}|h${p.horizon}|c${p.costMultiplier}`;
+/** One-minute labels keep their historical key; a label on coarser bars (free bars) is a different definition. */
+export const ctLabelKey = (p: Pick<CTLabelParams, "k" | "m" | "horizon" | "costMultiplier" | "barMinutes">) =>
+  `k${p.k}|m${p.m}|h${p.horizon}|c${p.costMultiplier}${p.barMinutes && p.barMinutes > 1 ? `|b${p.barMinutes}` : ""}`;
 
 /** One finished (or running) run's measurements of this training window, with its own conclusion. */
 export function ctMeasuredOfRun(job: Pick<GenerationJob, "id" | "createdAt">, ct: CTResearch): CTMeasuredRun | null {

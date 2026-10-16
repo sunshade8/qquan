@@ -1,12 +1,13 @@
 import { z } from "zod";
 import { ctCandidateSchema, ctSubmissionSchemaStage5, type CTResearch } from "./ct-research.ts";
-import { ctQuerySchema, ctReadBarsSchema } from "./ct-design-tools.ts";
+// The free-bar schemas are supersets (optional barMinutes); each contract's own request schema is enforced where the tool runs.
+import { ctQuerySchemaBars as ctQuerySchema, ctReadBarsSchemaBars as ctReadBarsSchema } from "./ct-design-tools.ts";
 import {
   ctContrastMovesSchema,
   ctDiagnoseTradesSchema,
   ctGradeBlindSchema,
   ctGradeBlindSchemaStage3,
-  ctLabelMovesSchema,
+  ctLabelMovesSchemaBars as ctLabelMovesSchema,
   ctViewChartsSchema,
   ctViewChartsSchemaStage3,
 } from "./ct-trader-tools.ts";
@@ -361,7 +362,7 @@ export function assertCTTool(name: string, input: unknown, ct: CTResearch) {
   }
   if (name === "read_bars") {
     const data = value as z.infer<typeof CT_TOOLS.read_bars.input>;
-    const bar = ct.contract.minutes * 60_000;
+    const bar = (data.request.barMinutes ?? ct.contract.minutes) * 60_000;
     if (
       data.dataHash !== ct.dataHash ||
       data.request.anchors.some(

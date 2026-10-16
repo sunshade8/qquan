@@ -137,7 +137,8 @@ export function ctCandidateFamilies(candidate: { spec: CTSpec; hypothesis: { mec
 const FEATURES: readonly string[] = [...CT_BASE_FEATURES, ...CT_LEVEL_FEATURES, ...CT_VOLATILITY_FEATURES];
 function parseConditions(body: string) {
   const uses: CTFeatureUse[] = [];
-  for (const stage of body.split(">"))
+  // Free bars: "b15:" marks a structure tested on 15-minute bars (ctTestSignature); the features are the same.
+  for (const stage of body.replace(/^b\d+:/, "").split(">"))
     for (const cond of stage.split("&")) {
       const [feature, timeframe, op, unit] = cond.split("|");
       if (!FEATURES.includes(feature) || !Number.isFinite(Number(timeframe))) continue;

@@ -206,13 +206,15 @@ export function traderSummary(ct: Pick<CTResearch, "labels" | "contrasts" | "cha
   };
 }
 
+/** Free-bar contracts hold one-minute data and let the designer choose each rule's bar. */
+const barText = (c: CTResearch["contract"]) => (ctSessionPolicy(c).freeBars ? "1분 데이터 · 봉 주기는 설계자 선택" : `${c.minutes}분봉`);
 /** Concrete context for the current phase, built from counts the job already has. */
 export function phaseContext(ct: CTResearch) {
   const c = ct.contract;
   const next = Math.min((ct.submitted ?? ct.trials.length) + 1, c.policy.maxCandidates);
   switch (ct.phase) {
-    case "data": return `${c.symbols.join(", ")} · ${c.minutes}분봉 · 학습/개발/최종 구간 고정`;
-    case "sources": return `${c.symbols.join(", ")} · ${c.minutes}분봉 관점으로 원문 2–6건 선정`;
+    case "data": return `${c.symbols.join(", ")} · ${barText(c)} · 학습/개발/최종 구간 고정`;
+    case "sources": return `${c.symbols.join(", ")} · ${barText(c)} 관점으로 원문 2–6건 선정`;
     case "read": return `선정 URL ${ct.search?.urls.length ?? 0}건 중 ${ct.sources.length}건 읽음`;
     case "approaches": return `확인된 원문 ${ct.sources.length}건 · 원문에 실제 있는 인용만 허용`;
     case "design":

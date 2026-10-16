@@ -116,6 +116,48 @@ export function validCTBar(b: CTBar) {
     b.low <= Math.min(b.open, b.close)
   );
 }
+const barsAtCache = new WeakMap<CTBar[], Map<number, CTBar[]>>();
+/**
+ * A candidate's bars over one-minute data (free bars, 2026-10-16): epoch-grid groups of `minutes` consecutive,
+ * complete minutes — the same rule the local store uses for `minutes: N`, so a bar with a missing minute does not
+ * exist. Stock data is regular-session only and 5/15 divide the 09:30 open. Bars that already have the size come back
+ * unchanged (one-minute specs, and packages frozen on 5/15/60-minute data). Cached per input array.
+ */
+export function ctBarsAt(bars: CTBar[], minutes: number): CTBar[] {
+  if (!bars.length) return bars;
+  const base = (bars[0].endMs - bars[0].startMs) / 60_000;
+  if (base === minutes) return bars;
+  if (base !== 1) throw new Error(`${base}분 데이터로 ${minutes}분봉을 만들 수 없습니다`);
+  let cached = barsAtCache.get(bars);
+  if (!cached) barsAtCache.set(bars, (cached = new Map()));
+  const hit = cached.get(minutes);
+  if (hit) return hit;
+  const size = minutes * 60_000,
+    out: CTBar[] = [];
+  for (let i = 0; i < bars.length; ) {
+    const at = Math.floor(bars[i].startMs / size) * size;
+    let j = i;
+    while (j < bars.length && bars[j].startMs < at + size) j++;
+    if (j - i === minutes && bars[i].startMs === at && bars.slice(i, j).every((b, k) => b.startMs === at + k * 60_000 && b.endMs === b.startMs + 60_000)) {
+      let high = -Infinity,
+        low = Infinity,
+        volume = 0;
+      for (let k = i; k < j; k++) {
+        if (bars[k].high > high) high = bars[k].high;
+        if (bars[k].low < low) low = bars[k].low;
+        volume += bars[k].volume;
+      }
+      out.push({ startMs: at, endMs: at + size, open: bars[i].open, close: bars[j - 1].close, high, low, volume });
+    }
+    i = j;
+  }
+  cached.set(minutes, out);
+  return out;
+}
+/** Every symbol's bars at `minutes` (see ctBarsAt). */
+export function ctDataAt(data: Record<string, CTBar[]>, minutes: number): Record<string, CTBar[]> {
+  return Object.fromEntries(Object.entries(data).map(([s, b]) => [s, ctBarsAt(b, minutes)]));
+}
 export function qualityCT(bars: CTBar[], minutes: number) {
   let invalid = 0,
     duplicate = 0,
@@ -943,6 +985,8 @@ export function replayCT(
   const spec = ctSpecSchema.parse(specInput),
     plan = ctExitPlan(spec),
     multiplier = options.costMultiplier ?? 1;
+  // Free bars: the candidate trades its own bar over the contract's one-minute data.
+  data = ctDataAt(data, spec.minutes);
   const result: CTResult = {
     engine: spec.engine,
     status: "no_trades",

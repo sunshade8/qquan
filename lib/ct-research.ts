@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ctFreedom, ctRuleText, ctSessionPolicy, ctSpecSchema, type CTContract, type CTSpec } from "./ct-spec.ts";
+import { ctBarChoices, ctFreedom, ctRuleText, ctSessionPolicy, ctSpecSchema, type CTContract, type CTSpec } from "./ct-spec.ts";
 import type { CTBlindSet, CTControlMode, CTLabelParams } from "./ct-trader-tools.ts";
 import type { CTCalibrationSnapshot } from "./ct-calibration.ts";
 import type { CTMeasuredBefore } from "./ct-measured.ts";
@@ -15,8 +15,9 @@ export const ctRequestSchema = z
     market: z.enum(["stock", "crypto"]).default("stock"),
     brief: z.string().max(1500).default(""),
     symbols: z.array(z.string().max(20)).min(1).max(4).optional(),
-    // The bar the rule is written and replayed in (2026-10-16: no longer fixed to 1). Stocks 1/5/15; 60 is crypto only.
-    minutes: z.union([z.literal(1), z.literal(5), z.literal(15), z.literal(60)]).default(1),
+    // The contract's data is always one-minute bars. The bar a rule trades on is the designer's choice per
+    // candidate and per measurement (traderTools 4, 2026-10-16), never the owner's; this field only rejects other values.
+    minutes: z.literal(1).optional(),
     budgetUsd: z.union([z.literal(8), z.literal(16), z.literal(24)]).default(8),
     capital: z.number().positive().max(100000000).optional(),
     // Crypto up to 3 years; stocks up to the local coverage (checked against the catalog). Default 1 year: docs/ct.md「데이터 범위」.
@@ -256,6 +257,8 @@ export type CTQueryRecord = {
   summary: string;
   /** Hypothesis-test identity (ctTestSignature); absent on queries from before the ledger. */
   signature?: string;
+  /** Free bars: the bar the query ran on when it was not one minute. */
+  barMinutes?: number;
 };
 /** label_moves result as later tools need it: the parameters recompute the labels deterministically. */
 export type CTLabelRecord = {
@@ -548,18 +551,21 @@ const SYS5_STEP1 = `1. Read the board. The context holds the cost hurdle; the pl
 const SYS5_WORKFLOW = [SYS4_WORKFLOW.split("\n")[0], SYS5_STEP1, ...SYS4_WORKFLOW.split("\n").slice(2)].join("\n");
 const SYS5_LESSONS = `Lessons and coverage: a lesson is a memory of why an idea family did not work on this board, not a goal and not evidence of performance. An empty cell in the coverage map is a possibility, never evidence that something is there. A candidate whose idea family the lessons mark dead must say, in lessonChecks (candidateIndex, family, lessonId, differsBecause of at least 20 characters), why that lesson's cause does not apply this time; the server works out each candidate's family itself and sends back an error you can fix inside this session when the explanation is missing. A lesson's nextToTry is a suggestion, not an instruction: following it enters that test in the ledger too, which makes the next positive result cheaper to find by luck. With this run's ledger and the cumulative count in view, "no edge" remains a normal result: do not add a test that brings no new information, and do not add one merely to fill an empty cell.`;
 const SYS5_TOOLS = `${SYS4_TOOLS} In submit_candidates, lessonChecks gives for each candidate the family you believe it belongs to, the lessonId it answers (or null) and differsBecause; each rejected hypothesis may name its family.`;
-export const CT_DESIGNER_SYSTEM = [SYS3_INTRO, SYS_SUCCESS, SYS_COSTS, SYS_EXIT_STRUCTURE, SYS5_WORKFLOW, SYS3_GUARD, SYS5_LESSONS, SYS_LANGUAGE, SYS_LEVELS, SYS_EXITS, SYS5_TOOLS, SYS_DATA].join("\n\n");
-/**
- * Appended only when the contract trades 5/15/60-minute bars (2026-10-16). The briefs above were written for
- * one-minute bars; this says which of their words change. One-minute contracts get the frozen bytes unchanged.
- */
-export const ctBarNote = (minutes: number) =>
-  `Bar size for this run: ${minutes}-minute bars (contract barMinutes). Read every "1-minute" or "minute bar" above as "${minutes}-minute bar": the rule, the replay, the gates and every measurement tool run on ${minutes}-minute bars built from complete minutes only. Every bar count (lookback, offset, maxGapBars, cooldownBars, maxHoldBars, timeStop.bars, horizons) counts ${minutes}-minute bars; timeframe 1/3/12 = closed ${minutes}/${minutes * 3}/${minutes * 12}-minute bars; 60/240/1440 stay hours and days. Entry is at the next ${minutes}-minute bar's open, the one-bar delay stress is one ${minutes}-minute bar, and a bar that touches both stop and target counts as the stop. The day's last tradable bar is the one that closes ${minutes} minutes before the day ends: no signal is taken at its close and an open position is closed at its close. opening_range_position.lookback is still minutes and must be a multiple of ${minutes}. Charts: the middle panel shows today's ${Math.max(5, minutes)}-minute bars and the right panel the last 90 ${minutes}-minute bars. Holding is still within one day.`;
-/** The brief a contract runs under: stage 5 / 4 / 3 trader briefs by tools version, the stage-2 brief otherwise (all frozen byte for byte, so cached prefixes of older runs survive). */
-export const ctDesignerSystem = (contract: Pick<CTContract, "policy"> & Partial<Pick<CTContract, "minutes">>) => {
+/** FROZEN: traderTools = 3 contracts keep these bytes. */
+export const CT_DESIGNER_SYSTEM_STAGE5 = [SYS3_INTRO, SYS_SUCCESS, SYS_COSTS, SYS_EXIT_STRUCTURE, SYS5_WORKFLOW, SYS3_GUARD, SYS5_LESSONS, SYS_LANGUAGE, SYS_LEVELS, SYS_EXITS, SYS5_TOOLS, SYS_DATA].join("\n\n");
+
+/* ------------------------------------------------------------------------------------------
+ * Free bars (traderTools = 4, 2026-10-16): the data is still one-minute bars, but the bar a rule trades on and the bar
+ * a measurement runs on are the designer's choice. The owner's point: we do not know which chart a profitable day trader
+ * reads, so fixing the bar in advance would only narrow the search for that trader's brain.
+ * ------------------------------------------------------------------------------------------ */
+const SYS6_BARS = `Choosing the bar: you are trying to become a day trader who makes money, and nobody told you which chart that trader reads. The data is one-minute bars; the bar a rule trades on is yours to choose for each rule — spec.minutes 1, 5, 15 or 60 (stocks 1, 5 or 15) — and label_moves, query_conditional_returns and read_bars take barMinutes so you can measure on any of them. view_charts already shows one moment on 1-hour, 5-minute and 1-minute bars at once. Look at the same idea on more than one bar before you settle, and treat the bar as part of the hypothesis: say why it fits the mechanism. A move that takes hours to unfold is mostly noise and cost on one-minute bars; a reaction that lasts a few minutes vanishes inside a 60-minute bar. The round-trip cost is the same whatever the bar, so a coarser bar lets each trade aim at a larger move, but it also means fewer trades and coarser exits (a bar that touches both the stop and the target counts as the stop). Every bar you try is another test in the ledger (the same structure on another bar is a different signature): choose bars for reasons, never sweep them to find a winner.
+How the bar changes the rule's arithmetic: bars are built from complete minutes on the clock grid (a bar with a missing minute does not exist). Every bar count — lookback, offset, maxGapBars, cooldownBars, maxHoldBars, timeStop.bars, query horizons — counts bars of spec.minutes (or of the measurement's barMinutes); timeframe 1/3/12 means 1×/3×/12× that bar, while 60/240/1440 stay hours, 4 hours and days. Entry is at the next bar's open and the one-bar delay stress is one bar of that size. The day's last tradable bar is the one that closes one bar before the day ends: no signal is taken at its close and an open position is closed at its close. entryWindows and noEntryBeforeDayEndMinutes stay in minutes; opening_range_position.lookback stays minutes and must be a multiple of the bar. Holding never crosses the day. The cost_hurdle table in the context is measured on one-minute bars (its horizons are minutes).`;
+export const CT_DESIGNER_SYSTEM = [SYS3_INTRO, SYS_SUCCESS, SYS_COSTS, SYS_EXIT_STRUCTURE, SYS5_WORKFLOW, SYS3_GUARD, SYS5_LESSONS, SYS6_BARS, SYS_LANGUAGE, SYS_LEVELS, SYS_EXITS, SYS5_TOOLS, SYS_DATA].join("\n\n");
+/** The brief a contract runs under: free-bar / stage 5 / 4 / 3 trader briefs by tools version, the stage-2 brief otherwise (all but the newest frozen byte for byte, so cached prefixes of older runs survive). */
+export const ctDesignerSystem = (contract: Pick<CTContract, "policy">) => {
   const v = ctSessionPolicy(contract).toolsVersion;
-  const brief = v >= 3 ? CT_DESIGNER_SYSTEM : v === 2 ? CT_DESIGNER_SYSTEM_STAGE4 : v === 1 ? CT_DESIGNER_SYSTEM_STAGE3 : CT_DESIGNER_SYSTEM_STAGE2;
-  return contract.minutes && contract.minutes > 1 ? `${brief}\n\n${ctBarNote(contract.minutes)}` : brief;
+  return v >= 4 ? CT_DESIGNER_SYSTEM : v === 3 ? CT_DESIGNER_SYSTEM_STAGE5 : v === 2 ? CT_DESIGNER_SYSTEM_STAGE4 : v === 1 ? CT_DESIGNER_SYSTEM_STAGE3 : CT_DESIGNER_SYSTEM_STAGE2;
 };
 
 /** The contract as the designer needs it: boundaries, costs and gates. Stable across sessions. */
@@ -570,16 +576,13 @@ function contractView(contract: CTContract) {
     market: contract.market,
     symbols: contract.symbols,
     barMinutes: contract.minutes,
+    // Free bars: barMinutes above is the data; each rule and measurement chooses its own bar from these.
+    ...(s.freeBars ? { barChoices: ctBarChoices(contract.market), barRule: "데이터는 1분봉 · 규칙(spec.minutes)과 측정(barMinutes)의 봉 주기는 설계자가 고름" } : {}),
     engine: contract.engine,
     timezone: contract.timezone,
     currency: contract.currency,
     capital: contract.capital,
-    dayEnd:
-      contract.market === "stock"
-        ? contract.minutes > 1
-          ? `정규장 종료(마지막 ${contract.minutes}분봉 직전 봉 종가 청산)`
-          : "정규장 종료(마지막 1분 전 봉 종가 청산)"
-        : "UTC 00:00 = KST 09:00 (직전 봉 종가 청산, ct-pattern-2 이상)",
+    dayEnd: contract.market === "stock" ? "정규장 종료(마지막 1분 전 봉 종가 청산)" : "UTC 00:00 = KST 09:00 (직전 봉 종가 청산, ct-pattern-2 이상)",
     costProfile: ctCostProfileText(contract, ctRoundTripCostPct(contract)),
     training: { from: iso(contract.fromMs), to: iso(contract.trainingToMs), fromMs: contract.fromMs, toMs: contract.trainingToMs },
     developmentAndFinal: "학습 구간 이후 · 설계 도구로 열람 불가 · 개발은 서버 실험 요약만 전달",

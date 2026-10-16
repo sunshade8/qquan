@@ -275,8 +275,10 @@ export const CT_POLICY = Object.freeze({
    *     calibration records and "already measured" in the stable block, summarized thinking, and the stage-4 brief.
    * 3 = stage 5 (2026-10-15): family lessons and the coverage map in the stable block, lessonChecks on submit_candidates,
    *     the lesson distillation at the end of a run (its own reserve), and the stage-5 brief.
+   * 4 = free bars (2026-10-16): the contract still holds one-minute data, but each candidate chooses the bar it trades on
+   *     (spec.minutes 1/5/15/60, stocks 1/5/15) and each measurement tool takes barMinutes; the ledger counts the bar.
    */
-  traderTools: 3,
+  traderTools: 4,
   /** Stage 5: money withheld from the designer and the reviewers at the start of a run so the lesson distillation can always run (docs/ct.md「연구 교훈」). */
   lessonReserveUsd: 0.05,
   /** Stage 5: the distillation prompt may not exceed this many characters, and its answer this many output tokens. */
@@ -290,6 +292,8 @@ export const CT_POLICY = Object.freeze({
  */
 export function ctPolicyForNewContract(): CTContract["policy"] {
   const override = typeof process !== "undefined" ? process.env?.QQUAN_CT_POLICY_VERSION : undefined;
+  // Stage 5 exactly as frozen before free bars: every field of today's policy, tool version 3.
+  if (override === "3") return { ...CT_POLICY, traderTools: 3 };
   if (override === "1" || override === "2") {
     // An earlier-stage contract carries none of the stage-5 fields, exactly as it would have been frozen then.
     const { lessonReserveUsd: _a, lessonMaxInputChars: _b, lessonMaxOutputTokens: _c, ...earlier } = CT_POLICY;
@@ -329,8 +333,10 @@ export function ctSessionPolicy(contract: Pick<CTContract, "policy">) {
     maxBlindSets: p.sessionMaxBlindSets ?? 0,
     /** Stage 3+: the trader tools, the playbook and the self-rebuttal exist only on contracts that carry the flag. */
     traderTools: (p.traderTools ?? 0) >= 1,
-    /** 0 = stage-2 tools, 1 = stage-3 trader tools (frozen bytes), 2 = stage-4 tools, brief and request options, 3 = stage 5 (lessons, coverage, lessonChecks). */
-    toolsVersion: (p.traderTools ?? 0) as 0 | 1 | 2 | 3,
+    /** 0 = stage-2 tools, 1 = stage-3 trader tools (frozen bytes), 2 = stage-4 tools, brief and request options, 3 = stage 5 (lessons, coverage, lessonChecks), 4 = free bars. */
+    toolsVersion: (p.traderTools ?? 0) as 0 | 1 | 2 | 3 | 4,
+    /** Free bars: a candidate and a measurement choose their own bar over the contract's one-minute data. */
+    freeBars: (p.traderTools ?? 0) >= 4,
     /** Stage 5: the family lessons exist only on contracts that carry the flag; earlier contracts get 0 / false. */
     lessons: (p.traderTools ?? 0) >= 3,
     lessonReserveUsd: (p.traderTools ?? 0) >= 3 ? (p.lessonReserveUsd ?? 0) : 0,
@@ -458,6 +464,18 @@ export const ctExitUsesAtr = (exit: CTSpec["exit"]) =>
   ctIsManagedExit(exit) && (exit.stop.type === "atr" || exit.target?.type === "atr" || exit.trail?.type === "atr");
 /** The most holding bars any exit allows, whichever shape. */
 export const ctMaxHoldBars = (exit: CTSpec["exit"]) => exit.maxHoldBars;
+/** Free bars: the bar a measurement runs on (minutes; default the contract's one-minute data). Checked against ctBarChoices by the server. */
+export const ctBarMinutesSchema = z
+  .union([z.literal(1), z.literal(5), z.literal(15), z.literal(60)])
+  .optional()
+  .describe("Bar size in minutes this measurement runs on (default 1). Every bar count in the request counts these bars. Stocks: 1/5/15.");
+/** Bars a free-bar candidate or measurement may choose (built from complete minutes on the epoch grid). Stock 60-minute bars would straddle the 09:30 open. */
+export const ctBarChoices = (market: CTMarket): readonly number[] => (market === "stock" ? [1, 5, 15] : [1, 5, 15, 60]);
+/** Whether a spec (or a measurement) may run on `minutes` bars under this contract: its own bar, or any free-bar choice over one-minute data. */
+export function ctBarAllowed(contract: Pick<CTContract, "market" | "minutes" | "policy">, minutes: number) {
+  if (minutes === contract.minutes) return true;
+  return ctSessionPolicy(contract).freeBars && contract.minutes === 1 && ctBarChoices(contract.market).includes(minutes);
+}
 export function validateCTSpec(
   value: unknown,
   contract: CTContract,
@@ -466,10 +484,15 @@ export function validateCTSpec(
   const spec = ctSpecSchema.parse(value);
   if (
     spec.market !== contract.market ||
-    spec.minutes !== contract.minutes ||
     spec.symbols.some((s) => !contract.symbols.includes(s))
   )
     throw new Error("CT 명세가 동결 시장·종목·주기를 벗어났습니다.");
+  if (!ctBarAllowed(contract, spec.minutes))
+    throw new Error(
+      ctSessionPolicy(contract).freeBars
+        ? `봉 주기는 ${ctBarChoices(contract.market).join("/")}분 중에서 고릅니다.`
+        : "CT 명세가 동결 시장·종목·주기를 벗어났습니다.",
+    );
   // 1/3/12-minute conditions read the contiguous recent bars (a session for stocks, 1,500 bars
   // for crypto); 60/240/1440-minute conditions may look back at most 30 days (sessions for stocks).
   const maxHistory =
@@ -550,7 +573,10 @@ export function ctRuleText(spec: CTSpec) {
   const windows = spec.entry.entryWindows?.length
     ? ` · 진입 시간 창(${spec.market === "stock" ? "개장" : "UTC 00:00"} 후 분) ${spec.entry.entryWindows.map((w) => `${w.fromMinute}–${w.toMinute}`).join(", ")}`
     : "";
+  // Free bars: a rule on coarser bars says so first (ct-pattern-1 packages on 5/15/60-minute data keep their text).
+  const bar = spec.engine !== CT_ENGINE_V1 && spec.minutes > 1 ? `[${spec.minutes}분봉 규칙 · 모든 봉 수는 ${spec.minutes}분봉 기준]\n` : "";
   return (
+    bar +
     spec.stages
       .map(
         (stage, i) =>
@@ -593,8 +619,10 @@ export function ctFreedom(spec: CTSpec) {
  * directions and units the stages combine, and whether an entry-time window is used. Thresholds,
  * lookbacks, offsets, gaps and exit numbers are tuning of the same hypothesis and share one signature.
  */
-export function ctTestSignature(stages: Array<{ conditions: CTCondition[] }>, hasWindows = false) {
+/** The ledger key of a condition structure. A bar other than one minute is a different test (prefix "b15:"); one-minute keys are unchanged. */
+export function ctTestSignature(stages: Array<{ conditions: CTCondition[] }>, hasWindows = false, minutes = 1) {
   return (
+    (minutes > 1 ? `b${minutes}:` : "") +
     stages
       .map((s) => [...new Set(s.conditions.map((c) => `${c.feature}|${c.timeframe}|${c.op}|${c.unit ?? "pct"}`))].sort().join("&"))
       .join(">") + (hasWindows ? "|W" : "")
