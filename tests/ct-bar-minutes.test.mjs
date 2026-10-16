@@ -168,6 +168,21 @@ test("backtest on 15-minute bars: next-bar entries, counts in bars, never across
   for (const t of short.trades.filter((x) => x.reason === "time")) assert.equal(t.exitAt - t.entryAt, 4 * 15 * MIN);
 });
 
+test("delay stress: a delayed entry never opens on the day's final bar (free-bar contracts); older contracts keep their results", () => {
+  const m1 = walk(61, at(0), 4 * 1440);
+  // One-bar holds and no cooldown: a signal at every hourly close, so one lands at 22:00 (delayed entry 23:00).
+  const rule = spec(60, { exit: { stopPct: 15, targetPct: 40, maxHoldBars: 1, invalidation: "stop" } });
+  const crossing = (r) => r.trades.filter((t) => Math.floor(t.entryAt / DAY) !== Math.floor((t.exitAt - 1) / DAY)).length;
+  const free = replayCT(rule, { BTCUSDT: m1 }, contract(1), at(0), at(4), "h", { delayBars: 1 });
+  assert.ok(free.trades.length > 0);
+  assert.equal(crossing(free), 0);
+  assert.ok(free.blocked.day_end > 0, "the 23:00 entry was refused");
+  assert.ok(free.trades.every((t) => t.entryAt % DAY <= DAY - 2 * HOUR), "no entry on the 23:00 bar");
+  // The same replay under a stage-5 contract is the historical behaviour (bit for bit for saved results).
+  const before = replayCT(rule, { BTCUSDT: m1 }, contract(1, "crypto", 3), at(0), at(4), "h", { delayBars: 1 });
+  assert.ok(before.trades.some((t) => t.entryAt % DAY === 23 * HOUR), "stage 5 still opens on the final bar");
+});
+
 test("measurements on a chosen bar equal the same measurement on data of that bar", () => {
   const m1 = walk(51, at(0), 6 * 1440),
     m15 = agg(m1, 15);

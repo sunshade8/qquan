@@ -2,6 +2,7 @@ import { ctFillPrice } from "./market-precision.ts";
 import { ctStockSession } from "./ct-sessions.ts";
 import Decimal from "decimal.js";
 import {
+  ctSessionPolicy,
   CT_ATR_DEFAULT_LOOKBACK,
   CT_ENGINE_V1,
   ctAtrWindow,
@@ -1106,6 +1107,8 @@ export function replayCT(
         bar = i === undefined ? null : rows[i];
       if (bar && i! >= pending.index + 1 + (options.delayBars ?? 0)) {
         const signal = pending.signal;
+        // Free-bar contracts only: older contracts' saved stress results stay bit for bit (tests/ct-pattern-2-regression).
+        const dayEnd = spec.engine !== CT_ENGINE_V1 && ctSessionPolicy(contract).freeBars ? ctDayEndMs(contract.market, bar.startMs + 1) : null;
         if (
           bar.startMs !==
           signal.decidedAt + (options.delayBars ?? 0) * spec.minutes * 60000
@@ -1113,6 +1116,12 @@ export function replayCT(
           result.missed++;
           pending = null;
           addBlock("data_gap");
+        } else if (dayEnd !== null && bar.endMs > dayEnd - spec.minutes * 60_000) {
+          // A delayed entry (the gate's one-bar delay stress) that would open on the day's final bar, after the
+          // closing bar, could never be force-closed that day and would carry past midnight: it is not taken.
+          result.missed++;
+          pending = null;
+          addBlock("day_end");
         } else {
           const impact = ctImpactPct(contract, multiplier);
           const price = ctFillPrice(
