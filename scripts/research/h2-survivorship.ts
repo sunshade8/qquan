@@ -202,6 +202,11 @@ async function pit() {
     const { kept, delisted } = sanitize(raw);
     const taken = capPerDay(kept);
     rows.push(report(label, taken, OOS));
+    if (label.startsWith("P2 ")) {
+      // post-hoc, exploratory (not in the pre-registration): P2 trades split by whether the name is on the static list
+      const inS = taken.filter((t) => static57.has(t.symbol)), outS = taken.filter((t) => !static57.has(t.symbol));
+      extra["P2 split (post-hoc)"] = { inStatic: { n: inS.length, avg: stat(inS).avg, clusterT: clustered(inS).t }, outsideStatic: { n: outS.length, avg: stat(outS).avg, clusterT: clustered(outS).t, stopRate: r3(outS.filter((t) => t.tag === "stop").length / Math.max(1, outS.length) * 100) } };
+    }
     const del = taken.filter((t) => delisted.includes(t as never));
     extra[label] = { signalTradesBeforeCap: kept.length, delistTruncatedTaken: del.length, delistTruncatedAvgNet: del.length ? r3(mean(del.map((t) => netAt(t, COST)))) : null, uniqueSymbolsTraded: new Set(taken.map((t) => t.symbol)).size, stopRate: r3(taken.filter((t) => t.tag === "stop").length / Math.max(1, taken.length) * 100) };
   }
