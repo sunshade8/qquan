@@ -15,6 +15,8 @@
 | Options | premium·정산 단위 | 없음 | 계좌 401 | 단위 | 공개만 | — | 차단 | 권한·chain 이력 |
 | Portfolio Margin/Pro | 없음 | 없음 | 401/400 | — | 실패 | — | 차단 | 계좌 모드·권한 |
 
+2026-10-17 추가(지정가 전용, `docs/ct.md`「지정가 전용 체결」): 모든 CT 주문은 지정가다. `lib/binance-orders.ts`가 `LIMIT_MAKER`(진입·목표), `LIMIT`+GTC(그 밖의 매도), `STOP_LOSS_LIMIT`(형태만), `MARKET`(비상 1회)과 USDⓈ-M `LIMIT`+`GTX` 파라미터를 필터(`PRICE_FILTER`·`LOT_SIZE`·`NOTIONAL`) 반올림으로 만든다(필수 파라미터는 Spot REST 원문, 2026-10-17 확인). `BinanceAPI.testOrder`는 `POST /api/v3/order/test`(체결 증거 아님)이고 `scripts/research/binance-limit-order-test.ts`가 쓴다. OCO 주문 목록과 선물 `algoOrder` 조건부 주문은 만들지 않았다. 수수료: 현물 Regular maker 0.100% / taker 0.100%, USDⓈ-M VIP 0 maker 0.0200% / taker 0.0500%(출처·확인일은 `docs/ct.md` 비용 프로필 표). 계정 실제 요율은 `lib/ct-account-fees.ts`(읽기 전용). 주문 의도 장부는 `ctOrderLedger`로 모의·실전 경로에 연결됐다.
+
 "차단"은 연구 시작과 실전 모두 서버가 거부한다는 뜻이다(`assertCTCapability`). 읽기 스모크: `scripts/research/binance-read-smoke.ts`(키 값·금액은 출력하지 않음, 금융 변경 0건). 아래 절의 "기존 실행기에 아직 Binance 어댑터가 없다"는 조사 시점 기록이며, 지금은 Spot 어댑터가 있고 기본 잠금이다.
 
 ## 자격증명과 현재 확인 범위

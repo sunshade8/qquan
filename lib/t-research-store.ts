@@ -132,6 +132,7 @@ import {
   type CTResult,
 } from "./t-engine.ts";
 import { ctProfileCosts } from "./t-costs.ts";
+import { ctReadAccountFees } from "./t-account-fees.ts";
 import { CT_CRYPTO_SYMBOLS, ctDatasetFor } from "./t-symbols.ts";
 export async function ensureCTSchema() {
   await ensureSchema();
@@ -203,7 +204,9 @@ export async function prepareCTContract(input: unknown): Promise<CTContract> {
   }
   const capital = request.capital ?? 1000;
   // Costs come from the exchange's profile (docs/ct.md「비용 프로필」); the numbers are frozen into the contract.
-  const priced = ctProfileCosts(request.market, symbols, capital);
+  // Coins: the fee frozen is max(official table, what this account reports) — read-only GET, never required.
+  const accountFees = request.market === "crypto" ? await ctReadAccountFees("spot", symbols[0]) : { fees: null, note: null };
+  const priced = ctProfileCosts(request.market, symbols, capital, undefined, accountFees);
   const contract: CTContract = {
     market: request.market,
     calendarVersion:
@@ -220,6 +223,7 @@ export async function prepareCTContract(input: unknown): Promise<CTContract> {
     capital,
     costs: priced.costs,
     costProfile: priced.costProfile,
+    ...(priced.execution ? { execution: priced.execution } : {}),
     policy: ctPolicyForNewContract(),
     ...(ctPolicyForNewContract().traderTools===7?{tradeSettings:request.tradeSettings??{product:request.market==="crypto"?"spot" as const:"stock" as const,selectionMode:"manual" as const,directions:["long" as const],riskPct:.5}}:{}),
     ...(ctPolicyForNewContract().traderTools===7?{semantics:{schema:"ct-contract-2" as const,engine:"ct-decision-1" as const,accounting:"ct-accounting-1" as const,router:"ct-router-1" as const,productVersion:"v0.0" as const}}:{}),

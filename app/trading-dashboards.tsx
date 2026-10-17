@@ -152,7 +152,7 @@ function StartDialog({ mode, book, data, onClose, onConfirm, busy }: { mode: Das
   const usd=useMoney();
   const [phrase, setPhrase] = useState("");
   const live = mode === "live";
-  return <Modal compact eyebrow={live ? "LIVE ORDERS" : "PAPER TRADING"} title={`${MODE_TITLE[mode]} 시작`} subtitle={data.broker==="Upbit"?"Upbit KRW 현물 · 소수 수량 · KST 24시간":data.broker==="Binance"?"Binance Spot USDT · 소수 수량 · UTC 일 경계":MODE_SUB[mode]} onClose={onClose}
+  return <Modal compact eyebrow={live ? "LIVE ORDERS" : "PAPER TRADING"} title={`${MODE_TITLE[mode]} 시작`} subtitle={data.broker==="Upbit"?"Upbit KRW 현물 · 소수 수량 · KST 24시간":data.broker==="Binance"?"Binance Spot USDT · 지정가 전용 · UTC 일 경계":MODE_SUB[mode]} onClose={onClose}
     footer={<><span>{live ? "실제 돈으로 주문이 나갑니다." : "주문은 나가지 않습니다."}</span><div className="trading-dialog-actions"><button className="ghost" onClick={onClose}>취소</button><button className={live ? "danger" : "primary"} disabled={busy || (live && phrase !== LIVE_CONFIRM)} onClick={() => onConfirm(phrase)}>{busy ? <RefreshCw size={13} className="spin" /> : <Play size={13} />}시작</button></div></>}>
     <dl className="trading-dialog-facts">
       <div><dt>시작 자본</dt><dd>{usd(data.capitalUsd)}</dd></div>
@@ -365,7 +365,7 @@ function DashboardPanel({ view, data, now, busy, book, onStart, onStop, onBackte
       <div>
         <span className={`trading-status ${view.status}`}><i />{STATUS_TEXT[view.status]}{view.status === "stopping" && phaseIndex >= 0 ? ` · ${phaseIndex + 1}/3 ${STOP_STEPS[phaseIndex].label}` : ""}</span>
         <h2>{MODE_TITLE[view.mode]}</h2>
-        <p>{data.broker==="Upbit"?(view.mode==="live"?"Upbit 계좌 · 실제 KRW 주문":"Upbit 실시간 호가 · 가상 체결"):data.broker==="Binance"?(view.mode==="live"?"Binance 계좌 · 실제 USDT 주문(기본 잠금)":"Binance 실시간 호가 · 가상 체결"):MODE_SUB[view.mode]} · {BOOK_COPY[book].source} · 운용 예산 {usd(view.initialCapitalUsd)}{view.startedAt ? ` · 시작 ${clock(view.startedAt)}` : ""}{view.lastTickAt ? ` · 마지막 틱 ${ago(view.lastTickAt, now)}` : ""}</p>
+        <p>{data.broker==="Upbit"?(view.mode==="live"?"Upbit 계좌 · 실제 KRW 주문":"Upbit 실시간 호가 · 가상 체결"):data.broker==="Binance"?(view.mode==="live"?"Binance 계좌 · 지정가 주문만(기본 잠금)":"Binance 실시간 호가 · 지정가 관통 체결(가상)"):MODE_SUB[view.mode]} · {BOOK_COPY[book].source} · 운용 예산 {usd(view.initialCapitalUsd)}{view.startedAt ? ` · 시작 ${clock(view.startedAt)}` : ""}{view.lastTickAt ? ` · 마지막 틱 ${ago(view.lastTickAt, now)}` : ""}</p>
       </div>
       <div className="trading-actions">
         <button className="start" disabled={busy || view.status !== "stopped" || blocked} onClick={onStart} title={blocked ? view.readiness.reasons.join("\n") : undefined}><Play size={14} />시작</button>

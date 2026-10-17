@@ -31,7 +31,7 @@ import TriangleAlert from "lucide-react/dist/esm/icons/triangle-alert";
 import X from "lucide-react/dist/esm/icons/x";
 import type { GenerationJob } from "@/lib/strategy-generation-types";
 import type { CTResearch, CTToolTrace, CTTrial } from "@/lib/ct-research";
-import { ctCostProfileText, ctCostsRoundTripPct } from "@/lib/ct-costs";
+import { ctCostProfileText, ctCostsRoundTripPct, ctExecutionNote } from "@/lib/ct-costs";
 import {
   agentIdOf,
   agentOf,
@@ -281,7 +281,8 @@ export function LiveStatusBar({ job, runnerOnline, busy, onAct }: StatusProps) {
         <i style={{ "--v": stepIndex / total } as React.CSSProperties} data-tone={tone === "idle" ? undefined : tone} />
       </div> : null}
       <p className="ui-sub ct-live-profile">
-        비용 {ctCostProfileText(ct.contract, ctCostsRoundTripPct(ct.contract.costs))} · 기간 {new Date(ct.contract.fromMs).toISOString().slice(0, 10)}–{new Date(ct.contract.toMs).toISOString().slice(0, 10)} · {ct.contract.symbols.join(", ")}
+        비용 {ctCostProfileText(ct.contract, ctCostsRoundTripPct(ct.contract.costs, 1, ct.contract.execution))} · 기간 {new Date(ct.contract.fromMs).toISOString().slice(0, 10)}–{new Date(ct.contract.toMs).toISOString().slice(0, 10)} · {ct.contract.symbols.join(", ")}
+        {ct.contract.execution ? <><br />체결 {ctExecutionNote(ct.contract)}</> : null}
         {ct.contract.repeat ? ` · 같은 판 ${ct.contract.repeat.n}번째 실행 · 사유: ${ct.contract.repeat.reason}` : ""}
       </p>
       {/* The text only changes when the phase or status changes, so polling never re-announces. */}

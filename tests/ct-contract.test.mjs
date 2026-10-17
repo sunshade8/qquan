@@ -45,13 +45,16 @@ const request = (over = {}) => ({ requestId: crypto.randomUUID(), market: "crypt
 test("a new coin contract takes its costs from the exchange profile and records which one", async () => {
   const c = await research.prepareCTContract(request());
   assert.equal(c.engine, CT_ENGINE);
-  assert.deepEqual(c.costProfile, { id: "binance-spot-usdt", version: 1 });
+  // 2026-10-17: v2 = limit orders only; v1 is the taker model older contracts were frozen with.
+  assert.deepEqual(c.costProfile, { id: "binance-spot-usdt", version: 2 });
   const priced = ctProfileCosts("crypto", ["BTCUSDT"], c.capital);
   assert.deepEqual(c.costs, priced.costs);
+  assert.equal(c.execution.mode, "limit");
   assert.equal(c.costs.feePct, 0.1, "official Binance spot fee, not the old 0.05% spread + 0.03% slippage guesses");
+  assert.equal(c.execution.makerFeePct, 0.1, "Spot Regular: maker = taker = 0.1%");
   assert.ok(c.costs.spreadPct < 0.01 && c.costs.slippagePct < 0.01, "BTCUSDT's measured book is far tighter than the old assumption");
   // The cost hurdle's round trip is what replayCT charges (the pure screen formula agrees with the engine).
-  assert.ok(Math.abs(ctRoundTripCostPct(c) - ctCostsRoundTripPct(c.costs)) < 1e-12);
+  assert.ok(Math.abs(ctRoundTripCostPct(c) - ctCostsRoundTripPct(c.costs, 1, c.execution)) < 1e-12);
   assert.ok(ctRoundTripCostPct(c) < 0.25 && ctRoundTripCostPct(c) > 0.199);
   assert.match(ctCostProfileText(c, ctRoundTripCostPct(c)), /Binance Spot/);
   // Doubled cost stays available and is exactly 2x the profile's fee/impact.
@@ -144,7 +147,10 @@ test("ct-pattern-1 and ct-pattern-2 contracts are told apart by engine, not by g
 
 test("replayCT charges the profile's round trip (to the tick) and cost_hurdle reports the same number", async () => {
   const { ctCostHurdle } = await import("../lib/ct-design-tools.ts");
-  const c = await research.prepareCTContract(request({ symbols: ["BTCUSDT"], days: 90 }));
+  // The v1 (taker, next-open) contract: a flat market never trades through a limit price, so the v2 model fills nothing here.
+  const takerContract = { ...(await research.prepareCTContract(request({ symbols: ["BTCUSDT"], days: 90 }))) };
+  delete takerContract.execution;
+  const c = { ...takerContract, costProfile: { id: "binance-spot-usdt", version: 1 } };
   const bars = Array.from({ length: 3 * 1440 }, (_, i) => ({
     startMs: c.fromMs + i * 60_000, endMs: c.fromMs + (i + 1) * 60_000, open: 83000, high: 83000, low: 83000, close: 83000, volume: 50,
   }));

@@ -14,6 +14,7 @@
  *
  *   node --experimental-strip-types --no-warnings scripts/research/ct-ceiling-execution.ts [--only=btc] [--period=1y]
  *   node --experimental-strip-types --no-warnings scripts/research/ct-ceiling-execution.ts --report
+ *   add --touch for the earlier touch-fills definition (sensitivity); QQUAN_ENABLE_UPBIT=true brings back the Upbit scenarios
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -39,6 +40,15 @@ const REGIME_FROM = Date.UTC(2023, 2, 1);
 /** Impact samples are frozen at this instant (the sampler keeps running). */
 const COST_CUTOFF = Date.UTC(2026, 9, 15, 7, 0);
 const K = 3, M = 1;
+/** Upbit is off (docs/prompts/binance-only-limit-orders.md): its scenarios run only with QQUAN_ENABLE_UPBIT=true. Past rows stay in the report. */
+const UPBIT_ENABLED = process.env.QQUAN_ENABLE_UPBIT === "true";
+/**
+ * Maker scenarios use the limit-only contracts' through-the-price fill rule (a bar must trade >= 1 tick THROUGH the price, a
+ * touch is not a fill). The earlier "touch fills" definition (judged in ct-ceiling-2026-10-15-execution.md, fill rate 96–99%) is
+ * the sensitivity run with --touch. Spot tick = 0.01 USDT; the perpetual's BTC/ETH/SOL ticks are 0.1/0.01/0.01.
+ */
+const TOUCH_FILLS = process.argv.includes("--touch");
+const TICK: Record<string, { spot: number; perp: number }> = { BTCUSDT: { spot: 0.01, perp: 0.1 }, ETHUSDT: { spot: 0.01, perp: 0.01 }, SOLUSDT: { spot: 0.01, perp: 0.01 } };
 const PERIODS = { "1y": { from: END - 365 * DAY, label: "1년" }, "3y": { from: Date.UTC(2023, 10, 1), label: "3년(2023-11-01~)" } } as const;
 type Period = keyof typeof PERIODS;
 const SYMBOLS = [
@@ -266,7 +276,7 @@ async function main() {
             const key = `${sc}|${side}|${strict}`;
             if (!cache.has(key)) {
               const s = SCENARIOS[sc];
-              const o: ExecutionOptions = { side, exec: s.exec, makerFeePct: s.maker, takerFeePct: s.taker, impactPct: impact[s.impact].impactPct, k: K, m: M, holdBars, funding: s.funding ? funding : undefined, strict };
+              const o: ExecutionOptions = { side, exec: s.exec, makerFeePct: s.maker, takerFeePct: s.taker, impactPct: impact[s.impact].impactPct, k: K, m: M, holdBars, funding: s.funding ? funding : undefined, strict: strict || (s.exec === "maker" && !TOUCH_FILLS), ...(s.exec === "maker" && !TOUCH_FILLS ? { tickSize: TICK[sym.symbol][path], penetrationTicks: 1 } : {}) };
               cache.set(key, labelExecution(bars, day, o));
             }
             return cache.get(key)!;
@@ -279,6 +289,7 @@ async function main() {
             }
           for (const sc of Object.keys(SCENARIOS) as ScenarioId[]) {
             if (SCENARIOS[sc].path !== path) continue;
+            if (SCENARIOS[sc].impact === "upbit" && !UPBIT_ENABLED) continue;
             for (const dir of SCENARIOS[sc].dirs) runCombo(ctx, sc, dir, hold);
           }
         }

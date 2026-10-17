@@ -168,7 +168,7 @@ export default function LocalDataSettings() {
           <p>
             {d.dataset === "stock"
               ? "Massive 실제 이용 권한에 따라 과거 범위가 거부될 수 있습니다. 5년 목표와 확보 범위를 구분합니다."
-              : "USDT 가격을 KRW로 변환하지 않습니다. 공개 지연이 있으며 Upbit 실거래와 별개입니다."}
+              : "USDT 가격을 KRW로 변환하지 않습니다. 공개 지연이 있습니다. 코인은 모두 Binance 기준입니다."}
           </p>
         </article>
       ))}

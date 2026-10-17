@@ -25,7 +25,6 @@ import { easternWallTimeToEpoch } from "./market-clock.ts";
 import {
   ctForwardReturnPct,
   ctLegCosts,
-  ctScanEntry,
   ctSimulateStopExit,
   ctThroughHit,
   ctTickOf,

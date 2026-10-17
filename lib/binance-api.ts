@@ -255,6 +255,14 @@ export class BinanceAPI {
     if (!Number.isFinite(this.skew)) throw new Error("서버 시각 오류");
     return this.skew;
   }
+  /**
+   * POST /api/v3/order/test — validates an order against the exchange's rules and filters; it is never placed and is NOT
+   * evidence of a fill. Spot only. Allowed while BINANCE_TRADING_DISABLED because it cannot change the account.
+   */
+  async testOrder(params: Record<string, string | number | boolean>) {
+    if (this.product !== "spot") throw new Error("order/test는 Spot 전용");
+    return this.request("/api/v3/order/test", params, true, "POST");
+  }
   /** Every financial mutation is locked by default, including configuration and debt changes. */
   async mutate(
     op:

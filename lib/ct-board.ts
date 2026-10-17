@@ -33,6 +33,11 @@ export async function ctBoardSignature(contract: CTContract, brief: string | und
     tools: contract.policy.traderTools ?? 0,
     costProfile: contract.costProfile ?? null,
     costs: contract.costs,
+    // Only limit-order contracts carry it (an absent key keeps every earlier signature as it was). The account reading's
+    // timestamp is not part of the board: the frozen fees, the order lifetime, the fill rule and the stop policy are.
+    ...(contract.execution
+      ? { execution: { mode: contract.execution.mode, maker: contract.execution.makerFeePct, taker: contract.execution.takerFeePct, ttl: contract.execution.entryTtlBars, pen: contract.execution.penetrationTicks, stop: contract.execution.stop } }
+      : {}),
     bounds: [contract.fromMs, contract.trainingToMs, contract.developmentToMs, contract.toMs],
     snapshots: ctSnapshotsOf(contract),
     brief: ctNormalizeBrief(brief),

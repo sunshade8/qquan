@@ -1,4 +1,7 @@
-import { binanceQuote, binanceSpotBroker } from "./binance-broker.ts";
+import { binanceCandlesSince, binanceQuote, binanceSpotBroker } from "./binance-broker.ts";
+import { paperLimitFill, paperWouldMatchNow } from "./ct-paper-fills.ts";
+import { ctOrderLedger } from "./ct-order-intents-store.ts";
+import type { CTBar } from "./ct-engine.ts";
 import { binanceSetting } from "./binance-api.ts";
 import { queryLocalMarket } from "./local-market-data.ts";
 import { saveCTTradeEvidence } from "./ct-trade-evidence.ts";
@@ -134,6 +137,8 @@ export async function ctBroker(
   book: CTBook,
   mode: DashboardMode,
   toss: () => Promise<DashboardBroker>,
+  /** One-minute candles since a time: paper limit orders are judged against them (injected by tests). */
+  candles: (symbol: string, sinceMs: number) => Promise<CTBar[]> = binanceCandlesSince,
 ) {
   if (mode === "paper") {
     const quote =
@@ -144,9 +149,36 @@ export async function ctBroker(
       mode: "paper" as const,
       quote,
       async submit(r: Parameters<DashboardBroker["submit"]>[0]) {
+        // LIMIT_MAKER is post-only: an order that would match at once is refused, like Binance's -2010.
+        if (r.orderType === "limit_maker" && paperWouldMatchNow({ side: r.side, limitPrice: r.limitPrice }, await quote(r.symbol)))
+          throw new BrokerRejection("LIMIT_MAKER가 즉시 체결될 가격 (-2010)", "-2010");
         return { brokerOrderId: `paper-${r.clientOrderId}` };
       },
       async poll(order: Parameters<DashboardBroker["poll"]>[0]) {
+        if (order.orderType && book === "ct-crypto") {
+          // Limit-only paper: the backtest's through-the-price rule on real candles (lib/ct-paper-fills.ts).
+          const q = await quote(order.symbol);
+          const fill = paperLimitFill(
+            {
+              side: order.side,
+              orderType: order.orderType,
+              limitPrice: order.limitPrice,
+              submittedAtMs: Date.parse(order.submittedAt),
+              tick: order.fillRule?.tick ?? 0.01,
+              penetrationTicks: order.fillRule?.penetrationTicks ?? 1,
+            },
+            { bid: q.bid, ask: q.ask },
+            order.orderType === "market" ? [] : await candles(order.symbol, Date.parse(order.submittedAt)),
+          );
+          if (fill)
+            return {
+              status: "filled" as const,
+              filledQuantity: order.quantity,
+              averageFillPrice: fill.price,
+              commissionUsd: new Decimal(order.quantity).mul(fill.price).mul(order.feePct ?? 0.1).div(100).toNumber(),
+            };
+          return { status: order.status === "cancel_requested" ? ("canceled" as const) : ("working" as const), filledQuantity: 0, averageFillPrice: null, commissionUsd: 0 };
+        }
         const fee = book === "ct-crypto" ? (order.symbol.startsWith("KRW-")?.05:.1) : feePerSidePct();
         return {
           status: "filled" as const,
@@ -201,6 +233,7 @@ export async function ctTick(
   const contract = state.ctRules?.[0]?.contract;
   if (!contract) throw new Error("CT 실행 스냅샷 누락");
   return tickCTDashboard(state, {
+    intents: ctOrderLedger(state.mode === "live" ? "live" : "paper"),
     now: () => Date.now(),
     id: () => crypto.randomUUID(),
     broker,

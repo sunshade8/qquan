@@ -27,6 +27,8 @@ import {
   type CTBar,
 } from "./ct-engine.ts";
 import { CT_ENGINE_V1, ctHash, executableCT } from "./ct-spec.ts";
+import { ctStopLimitPrice, ctTickOf, ctTickRound, type CTExecutionPolicy } from "./ct-limit-execution.ts";
+import type { CTLedgerOrder } from "./ct-order-intents-store.ts";
 export type CTTradingDeps = {
   now: () => number;
   id: () => string;
@@ -37,8 +39,15 @@ export type CTTradingDeps = {
   checkpoint: (state: DashboardState) => Promise<void>;
   entryAllowed: (symbol?: string) => Promise<boolean>;
   evidence?: (trade: DashboardTrade, bars: CTBar[]) => Promise<void>;
+  /** Durable order-intent ledger (lib/ct-order-intents-store.ts): written before an order leaves, settled from the answer. */
+  intents?: {
+    prepare: (order: CTLedgerOrder) => Promise<void>;
+    settle: (order: Pick<CTLedgerOrder, "id">, status: string, brokerId?: string | null, error?: string | null) => Promise<void>;
+  };
 };
 const number = (value: Decimal.Value) => new Decimal(value).toNumber();
+/** The contract's limit-only execution policy, when it has one (contracts before 2026-10-17 trade as they always did). */
+const limitOf = (rule: { contract: { execution?: CTExecutionPolicy } }) => (rule.contract.execution?.mode === "limit" ? rule.contract.execution : null);
 const remaining = (t: DashboardTrade) =>
   Math.max(0, number(new Decimal(t.boughtQuantity).minus(t.soldQuantity)));
 const terminal = (o: DashboardOrder) => !isActiveOrder(o);
@@ -73,9 +82,11 @@ export async function tickCTDashboard(
     quantity: number,
     price: number,
     purpose: DashboardOrder["purpose"],
+    kind?: DashboardOrder["orderType"],
   ) => {
     const rule = rules.find((r) => r.id === trade.strategyId);
     if (!rule) throw new Error("시작 당시 CT 규칙 없음");
+    const exec = limitOf(rule);
     if (
       state.orders.some(
         (o) => o.tradeId === trade.id && o.side === side && isActiveOrder(o),
@@ -104,8 +115,16 @@ export async function tickCTDashboard(
       side,
       purpose,
       quantity,
-      limitPrice: price,
+      limitPrice: kind === "market" ? null : price,
       referencePrice: price,
+      ...(exec && kind
+        ? {
+            orderType: kind,
+            // Maker legs (post-only entry, resting target) pay the maker fee; marketable limits and the emergency market sell the taker fee.
+            feePct: kind === "limit_maker" ? exec.makerFeePct : exec.takerFeePct,
+            fillRule: { tick: ctTickOf(exec, trade.symbol), penetrationTicks: exec.penetrationTicks },
+          }
+        : {}),
       filledQuantity: 0,
       averageFillPrice: null,
       commissionUsd: 0,
@@ -134,15 +153,18 @@ export async function tickCTDashboard(
       return;
     }
     try {
+      await deps.intents?.prepare({ id: order.id, clientOrderId: order.clientOrderId, symbol: order.symbol, side, quantity, limitPrice: order.limitPrice, orderType: kind, purpose });
       const result = await deps.broker.submit({
         clientOrderId: order.clientOrderId,
         symbol: order.symbol,
         side,
         quantity,
-        limitPrice: price,
+        limitPrice: kind === "market" ? null : price,
         referencePrice: price,
+        ...(exec && kind ? { orderType: kind } : {}),
       });
       order.brokerOrderId = result.brokerOrderId;
+      await deps.intents?.settle(order, "acknowledged", result.brokerOrderId);
       order.status = "working";
       event(
         state,
@@ -151,6 +173,7 @@ export async function tickCTDashboard(
         `${side} ${trade.symbol} ${quantity} · ${rule.hash.slice(0, 10)}`,
       );
     } catch (error) {
+      await deps.intents?.settle(order, error instanceof BrokerRejection ? "rejected" : "unknown", null, error instanceof Error ? error.message : "전송 결과 미확정").catch(() => {});
       if (error instanceof BrokerRejection) {
         order.status = "rejected";
         if (side === "buy" && trade.boughtQuantity === 0) {
@@ -236,9 +259,18 @@ export async function tickCTDashboard(
       state.cashUsd = number(new Decimal(state.cashUsd).minus(fee));
     trade.commissionUsd = number(new Decimal(trade.commissionUsd).plus(fee));
     Object.assign(order, update, { updatedAt: at });
+    if (terminal(order)) await deps.intents?.settle(order, order.status === "filled" ? "FILLED" : order.status);
+    if (order.side === "sell" && order.purpose === "target" && order.status === "filled") {
+      // A resting target that filled by itself is the exit decision.
+      trade.pendingExit ??= "target";
+      trade.ctExitReason ??= "target";
+    }
+    if (order.side === "sell" && order.purpose !== "target" && order.status === "canceled" && remaining(trade) > 1e-8 && trade.ctChase)
+      trade.ctChase = { ...trade.ctChase, k: trade.ctChase.k + 1 };
     if (order.side === "buy" && terminal(order) && trade.boughtQuantity === 0) {
       trade.status = "missed";
       trade.violations = ["신호 미체결"];
+      state.strategies[trade.strategyId].missed++;
     }
     if (order.side === "sell" && terminal(order) && remaining(trade) <= 1e-8) {
       trade.status = "closed";
@@ -278,7 +310,18 @@ export async function tickCTDashboard(
       stats.deviations += trade.compliant ? 0 : 1;
     }
     await deps.checkpoint(state);
-    if (isActiveOrder(order) && now - Date.parse(order.submittedAt) > 30000) {
+    const rule = rules.find((r) => r.id === trade.strategyId),
+      exec = rule ? limitOf(rule) : null;
+    // Limit rules: an entry lives entryTtlBars bars from the decision; a resting target lives until it fills or the
+    // position leaves another way; every other sell is re-priced lower every chaseSeconds. Earlier rules: 30 s for all.
+    const cancelAfter = !exec
+      ? now - Date.parse(order.submittedAt) > 30000
+      : order.side === "buy"
+        ? now >= (trade.ctSignal?.decidedAt ?? 0) + exec.entryTtlBars * (rule?.spec.minutes ?? 1) * 60000
+        : order.purpose === "target"
+          ? false
+          : now - Date.parse(order.submittedAt) > exec.stop.chaseSeconds * 1000;
+    if (isActiveOrder(order) && order.status !== "cancel_requested" && cancelAfter) {
       await deps.broker.cancel(order);
       order.status = "cancel_requested";
       await deps.checkpoint(state);
@@ -298,6 +341,17 @@ export async function tickCTDashboard(
     await deps.checkpoint(state);
     if (state.orders.some((o) => o.side === "buy" && isActiveOrder(o)))
       return state;
+    // A resting target would block the liquidation sell (one active sell per trade): take it down first.
+    const targets = state.orders.filter((o) => o.side === "sell" && o.purpose === "target" && isActiveOrder(o));
+    for (const order of targets)
+      if (order.brokerOrderId && order.status !== "cancel_requested") {
+        await deps.broker.cancel(order);
+        order.status = "cancel_requested";
+      }
+    if (targets.length) {
+      await deps.checkpoint(state);
+      return state;
+    }
     state.stopPhase = "liquidate";
     for (const trade of state.trades.filter((t) => remaining(t) > 1e-8)) {
       const q = await deps.broker.quote(trade.symbol);
@@ -327,13 +381,17 @@ export async function tickCTDashboard(
     const rule = rules.find((r) => r.id === trade.strategyId)!;
     if (trade.ctHash !== rule.hash || !trade.ctSignal)
       throw new Error("거래 시작 규칙 추적 누락");
+    const exec = limitOf(rule);
+    const tick = exec ? ctTickOf(exec, trade.symbol) : 0.01;
     const quote = await deps.broker.quote(trade.symbol);
     trade.markPrice = quote.price;
     // Free bars: the rule's own bar built from the one-minute feed, exactly as replayCT builds it.
     const bars = ctBarsAt(await deps.bars(trade.symbol), rule.spec.minutes);
     // The entry bar opens when the signal bar closes — the backtest's entryAt. The bar loop below judges that
     // bar and every later one, exactly as replayCT does, whatever second the fill was noticed in.
-    const entryAt = trade.ctSignal.decidedAt;
+    // Limit rules: the position's first bar is the bar the entry order filled in (the replay's `held.at`), not the bar after the signal.
+    const barMs = rule.spec.minutes * 60000;
+    const entryAt = exec && trade.entryAt ? Math.max(trade.ctSignal.decidedAt, Math.floor(Date.parse(trade.entryAt) / barMs) * barMs) : trade.ctSignal.decidedAt;
     // The position (stop/target levels and how they moved) is the one ctExitStep keeps for the backtest too.
     // A stored one continues; a missing one (older trade) is opened from the actual fill.
     const opened = trade.ctPosition ?? ctOpenPosition(rule.spec, trade.ctSignal, trade.entryPrice!, entryAt);
@@ -349,7 +407,9 @@ export async function tickCTDashboard(
       for (const bar of bars.filter(
         (b) => b.startMs >= entryAt && b.endMs > (trade.checkedThroughMs ?? 0),
       )) {
-        const step = ctExitStep(rule.spec, trade.ctSignal, trade.ctPosition!, bar);
+        const step = ctExitStep(rule.spec, trade.ctSignal, trade.ctPosition!, bar, null, exec ? { tick, penetrationTicks: exec.penetrationTicks, fillBar: bar.startMs === entryAt } : null);
+        // The resting target order does the target exit (it may have filled between ticks); the bars only judge stops and forced exits.
+        if (exec && step.exit?.reason === "target") step.exit = null;
         if(!step.exit && rule.book && !ctBookRuntime(rule.book,rule.components??[],{[trade.symbol]:bars},rule.contract,bar.endMs).target)step.exit={price:bar.close,reason:"book_signal_expired"};
         trade.ctPosition = step.position;
         trade.checkedThroughMs = bar.endMs;
@@ -364,7 +424,7 @@ export async function tickCTDashboard(
       if (quote.price <= position.stopLevel) {
         exit = "stop";
         detail = position.stopSource === "initial" ? "stop" : position.stopSource;
-      } else if (position.targetLevel !== null && quote.price >= position.targetLevel) {
+      } else if (!exec && position.targetLevel !== null && quote.price >= position.targetLevel) {
         exit = "target";
         detail = "target";
       }
@@ -392,13 +452,51 @@ export async function tickCTDashboard(
         await deps.checkpoint(state);
         continue;
       }
-      await submit(
-        trade,
-        "sell",
-        remaining(trade),
-        quote.bid ?? quote.price,
-        exit,
-      );
+      if (exec) {
+        // A resting target must be gone before another sell can be sent (one active sell per trade).
+        const targets = state.orders.filter((o) => o.tradeId === trade.id && o.side === "sell" && o.purpose === "target" && isActiveOrder(o));
+        if (targets.length) {
+          for (const t of targets)
+            if (t.brokerOrderId && t.status !== "cancel_requested") {
+              await deps.broker.cancel(t);
+              t.status = "cancel_requested";
+            }
+          await deps.checkpoint(state);
+          continue;
+        }
+        const stop = exec.stop;
+        const bid = quote.bid ?? quote.price;
+        // The first limit of the chase: the stop-limit for a stop, a hair under the bid for planned exits. Fixed for the whole chase.
+        trade.ctChase ??= {
+          limit0: exit === "stop" ? ctStopLimitPrice(trade.ctPosition?.stopLevel ?? bid, stop, tick) : ctTickRound(bid * (1 - stop.slackPct / 100), tick, "down"),
+          k: 0,
+        };
+        if (trade.ctChase.k > stop.maxChases && stop.emergencyMarket) {
+          if (!trade.ctEmergency) {
+            trade.ctEmergency = true;
+            event(state, at, "error", `${trade.symbol} 비상 시장가 청산 · 지정가 ${stop.maxChases}번 재주문 후 미체결 (${exit})`);
+          }
+          await submit(trade, "sell", remaining(trade), bid, exit, "market");
+        } else {
+          const price = ctTickRound(trade.ctChase.limit0 * Math.pow(1 - stop.chaseStepPct / 100, trade.ctChase.k), tick, "down");
+          await submit(trade, "sell", remaining(trade), price, exit, "limit");
+        }
+      } else
+        await submit(
+          trade,
+          "sell",
+          remaining(trade),
+          quote.bid ?? quote.price,
+          exit,
+        );
+    } else if (
+      exec &&
+      trade.ctPosition?.targetLevel != null &&
+      !state.orders.some((o) => o.tradeId === trade.id && o.side === "sell" && isActiveOrder(o)) &&
+      // Not in the bar the entry filled in (the replay does not count the target there: its high may have come before the fill).
+      now >= Math.floor(Date.parse(trade.entryAt ?? "") / barMs) * barMs + barMs
+    ) {
+      await submit(trade, "sell", remaining(trade), ctTickRound(trade.ctPosition.targetLevel, tick, "up"), "target", "limit_maker");
     }
     await evidence(trade, bars);
   }
@@ -460,6 +558,7 @@ export async function tickCTDashboard(
       if (!signal || now >= signal.validUntil) continue;
       // Entry windows are judged at the signal bar's close — the same instant the backtest uses.
       if (rule.spec.entry.entryWindows?.length && ctEntryBlocked(rule.spec, rule.contract.market, signal.decidedAt)) continue;
+      const exec = limitOf(rule);
       const quote = await deps.broker.quote(symbol),
         quoteTime = Date.parse(quote.timestamp ?? ""),
         bookTime = Date.parse(quote.bookTimestamp ?? "");
@@ -484,15 +583,18 @@ export async function tickCTDashboard(
       if (!Number.isFinite(buyingPower) || buyingPower <= 0) continue;
       const plan = ctExitPlan(rule.spec);
       if (plan.invalidationLow && quote.ask <= signal.patternLow) continue;
+      // Limit rules rest a post-only buy at the decision bar's close (rounded down to a tick), exactly the replay's order;
+      // earlier rules pay the ask.
+      const entryPrice = exec ? ctTickRound(signal.reference, ctTickOf(exec, symbol), "down") : quote.ask;
       // A managed exit sizes from the stop distance at the price we would pay; no valid stop, no entry.
-      const probe = plan.managed ? ctOpenPosition(rule.spec, signal, quote.ask, now) : null;
+      const probe = plan.managed ? ctOpenPosition(rule.spec, signal, entryPrice, now) : null;
       if (plan.managed && !probe) continue;
       const quantity = ctQuantity(
         rule.spec,
         rule.contract,
         Math.min(state.cashUsd, buyingPower),
         equity,
-        quote.ask,
+        entryPrice,
         last.volume,
         probe ? ctRiskPct(probe) : undefined,
       );
@@ -562,7 +664,7 @@ export async function tickCTDashboard(
         "signal",
         `${symbol} · ${rule.spec.name} · ${rule.hash.slice(0, 10)}`,
       );
-      await submit(trade, "buy", quantity, quote.ask, "entry");
+      await submit(trade, "buy", quantity, entryPrice, "entry", exec ? "limit_maker" : undefined);
       return state;
     }
   }

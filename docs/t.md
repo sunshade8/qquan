@@ -64,3 +64,7 @@ T는 freellmapi 무료 쿼터(월 토큰 한도, 공급자가 끊을 때까지)�
 - 무료 모델의 도구 사용·긴 문맥 추론은 Opus 5.5보다 약하다. LiveBench agentic이 Opus 5.5 85.0 대 Gemini 3.8 Flash 30.1이다. 이 공간은 "같은 판에서 무료 모델이 어디까지 가는가"를 싸게 보는 실험이지, CT 결과의 대체물이 아니다. 통과 전략이 나와도 CT의 독립 검토를 다시 거쳐야 신뢰할 수 있다.
 - 설계자 세션은 요약 사고(thinking) 없이 돌아간다(무료 모델은 thinking 블록을 내지 않음).
 - freellmapi의 한도·모델은 매일 바뀐다. 같은 연구를 다른 날 돌리면 다른 모델이 설계자일 수 있다. 호출마다 실제 모델이 연구 기록(`calls[].model`)에 남는다.
+
+## 지정가 전용·Upbit 제외 (2026-10-17)
+
+T는 CT를 자동으로 따라가지 않는 복제본이라 같은 변경을 직접 적용했다: `lib/t-limit-execution.ts`, `lib/t-account-fees.ts`, `t-costs`(프로필 `binance-spot-usdt` v2·`binance-usdm` v1), `t-engine`(`replayCT`의 지정가 분기, `ctExitStep`의 지정가 옵션), `t-spec`(`contract.execution`), `t-research-store`(계약 생성), `t-board`(판 서명), `t-execution`(관통 체결 옵션). 규칙·한계는 `docs/ct.md`「지정가 전용 체결」과 같다. T에는 모의·실전·주문 경로가 없으므로 주문 파라미터·모의 체결·주문 의도 장부는 복제하지 않았다. Upbit은 같은 플래그(`QQUAN_ENABLE_UPBIT`)로 막힌다(새 T 코인 연구는 원래 Binance만). 테스트: `tests/t-limit-execution.test.mjs`.

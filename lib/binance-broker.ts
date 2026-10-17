@@ -1,8 +1,8 @@
 import {
   BinanceAPI,
   BinanceError,
-  binanceQuantize,
   binanceSetting,
+  binanceKline,
   type BinanceFilter,
 } from "./binance-api.ts";
 import {
@@ -11,6 +11,8 @@ import {
   type BrokerQuote,
 } from "./trading-engine.ts";
 import type { DashboardOrder } from "./dashboard-types.ts";
+import { binanceSpotOrderParams } from "./binance-orders.ts";
+import type { CTBar } from "./ct-engine.ts";
 const api = () =>
   new BinanceAPI(
     "spot",
@@ -25,6 +27,12 @@ export async function binanceQuote(symbol: string): Promise<BrokerQuote> {
   if (!(bid > 0 && ask >= bid)) throw new Error("Binance 비정상 호가");
   const at = new Date().toISOString();
   return { price: (bid + ask) / 2, bid, ask, timestamp: at, bookTimestamp: at };
+}
+/** Public one-minute candles of a pair from `sinceMs` on (paper limit fills judge resting orders against them). */
+export async function binanceCandlesSince(symbol: string, sinceMs: number): Promise<CTBar[]> {
+  if (!["BTCUSDT", "ETHUSDT", "SOLUSDT"].includes(symbol)) throw new Error("선택 Binance 기초자산 밖의 symbol");
+  const rows = (await api().read("klines", { symbol, interval: "1m", startTime: Math.floor(sinceMs / 60000) * 60000, limit: 1000 })) as unknown as unknown[][];
+  return rows.map((r) => binanceKline(r)).filter((b) => b.endMs <= Date.now());
 }
 type Account = {
   balances: Array<{ asset: string; free: string }>;
@@ -61,22 +69,20 @@ export function binanceSpotBroker(): DashboardBroker & {
         filters = info.symbols.find((s) => s.symbol === r.symbol)?.filters;
       if (!filters)
         throw new BrokerRejection("Binance instrument 미확인", "instrument");
-      const p = binanceQuantize(
-        String(r.quantity),
-        String(r.limitPrice ?? r.referencePrice),
+      // Limit-only (docs/ct.md): entries/targets LIMIT_MAKER, other sells LIMIT GTC, the single emergency exit MARKET.
+      const params = binanceSpotOrderParams({
+        symbol: r.symbol,
+        side: r.side,
+        kind: r.orderType ?? "limit",
+        quantity: r.quantity,
+        price: r.limitPrice ?? r.referencePrice,
+        stopPrice: r.stopPrice,
+        referencePrice: r.referencePrice,
+        clientOrderId: r.clientOrderId,
         filters,
-        r.quantity * (r.limitPrice ?? r.referencePrice),
-      );
+      });
       try {
-        const order = await client.mutate("order", {
-          symbol: r.symbol,
-          side: r.side.toUpperCase(),
-          type: "LIMIT",
-          timeInForce: "GTC",
-          quantity: p.quantity,
-          price: p.price,
-          newClientOrderId: r.clientOrderId,
-        });
+        const order = await client.mutate("order", params);
         return { brokerOrderId: String(order.orderId) };
       } catch (e) {
         if (

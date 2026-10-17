@@ -195,3 +195,37 @@ export async function ctReconcileBrokerIntent(
     .run();
   return { status: order.status, brokerId: order.orderId };
 }
+
+/**
+ * The dashboards' own path into the intent ledger (live and paper CT orders). The row is written BEFORE the order leaves
+ * (`prepared` → `submitting`), then settled from the broker's answer: `acknowledged`, `rejected` (a definite no) or
+ * `unknown` (no answer: only reconciliation may resolve it, never a blind re-send). A restart finds every order that was
+ * in flight in this table as well as in the dashboard state.
+ */
+export type CTLedgerOrder = { id: string; clientOrderId: string; symbol: string; side: "buy" | "sell"; quantity: number; limitPrice: number | null; orderType?: string; purpose: string };
+export function ctOrderLedger(account: "paper" | "live", owner = "dashboard") {
+  const run = async (sql: string, ...values: unknown[]) => {
+    const db = ctDb();
+    await db.prepare(CT_ORDER_INTENTS_SCHEMA).run();
+    return db.prepare(sql).bind(...values).run();
+  };
+  return {
+    async prepare(order: CTLedgerOrder) {
+      await run(
+        "INSERT OR IGNORE INTO ct_order_intents(id,owner_id,account_id,instrument_key,position_side,client_id,status,payload,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        order.id,
+        owner,
+        account,
+        `spot:${order.symbol}`,
+        "LONG",
+        order.clientOrderId,
+        "submitting",
+        JSON.stringify(order),
+        Date.now(),
+      );
+    },
+    async settle(order: Pick<CTLedgerOrder, "id">, status: string, brokerId?: string | null, error?: string | null) {
+      await run("UPDATE ct_order_intents SET status=?,broker_id=COALESCE(?,broker_id),error=?,updated_at=? WHERE id=?", status, brokerId ?? null, error ?? null, Date.now(), order.id);
+    },
+  };
+}

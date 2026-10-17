@@ -26,15 +26,45 @@ Binance USDT 연구의 Upbit KRW 실행은 차단한다. 기존 Upbit 기록·�
 
 | 프로필 | 수수료 | 스프레드·슬리피지 | 출처 |
 | --- | --- | --- | --- |
-| `binance-spot-usdt` v1 (새 코인 연구) | 편도 0.1%(Regular User maker/taker 0.100%, BNB 할인은 가정하지 않음) | **실측 p90**, 종목·주문 규모별(`lib/ct-cost-measurements.ts`) | [Binance 수수료표](https://www.binance.com/en/fee/schedule), 2026-10-14 확인 |
+| `binance-spot-usdt` **v2** (새 코인 연구, **지정가 전용**, 2026-10-17) | maker **0.100%** / taker **0.100%**(Regular User, BNB 25% 할인 0.075%는 가정하지 않음). 계약에는 `max(공식 표, 계정 실제 요율)`을 동결하고 둘 다 기록 | 실측 p90 — **taker 다리(손절·시간 청산·비상 시장가)에만** 붙는다. maker 다리는 스프레드·충격 없음 | [Binance 수수료표](https://www.binance.com/en/fee/schedule)(페이지에 수정일 표기 없음), 2026-10-17 확인 |
+| `binance-spot-usdt` v1 (이전 계약) | 편도 0.1%, 다음 봉 시가 ± 충격, 모두 taker | 실측 p90 | 2026-10-14 확인. `ctCostProfile(id, version)`로 계속 조회 |
+| `binance-usdm` v1 (USDⓈ-M 선물, 계약에 아직 쓸 수 없음) | maker **0.0200%** / taker **0.0500%**(Regular User VIP 0, BNB 10% 할인은 선물 계정에 BNB가 있을 때만이라 가정하지 않음). 주문은 `LIMIT` + `GTX` | 선물 호가는 2026-10-17부터 수집(`binance-usdm`). 측정 전에는 `ctProfileCosts`가 거부 | [Binance Futures 수수료 FAQ](https://www.binance.com/en/support/faq/detail/360033544231)(페이지 수정 2026-05-01 11:51), 2026-10-17 확인 |
 | `upbit-krw` v2 (참고, 새 계약에 쓰지 않음) | **0.05%**(원화마켓 일반 주문, 매수·매도 동일) — [Open API 주문 가능 정보 문서](https://docs.upbit.com/kr/reference/available-order-information)(수정 2026-10-07)의 `bid_fee`·`ask_fee`·`maker_*` 값 0.0005, 2026-10-14 확인. v1의 0.139%는 **예약주문** 요율로 Open API 일반 주문에 적용되지 않는다. 실전 진입은 주문 가능 정보의 실제 수수료가 0.05%를 넘으면 계속 차단한다 | 실측 p90 | [Upbit Open API](https://docs.upbit.com/kr/reference/available-order-information) |
 | `toss-us-equity` v1 (주식) | 기존 `lib/broker-costs.ts`(편도 0.1% + SEC 매도 0.0008%) | 기존 가정 0.05%/0.03%, **측정하지 않음** | `docs/toss-api.md` |
 
-**스프레드·슬리피지 측정** (`scripts/data/measure-orderbook.mjs`, 인증 없는 공개 API만): Binance `depth`(500호가)와 Upbit `orderbook`을 1분마다 BTC·ETH·SOL 스냅샷으로 저장(SQLite `ct_orderbook_samples`)하고, $1,000와 $10,000(자본의 10배) 시장가 매수·매도가 mid를 얼마나 미는지 호가를 직접 걸어 계산한다(Upbit은 KRW-USDT 환산). 프로필 값은 **측정 p90을 올림**한 값이고 측정값 아래로 내려가지 않는다(`--check`가 이를 확인하고 낮으면 실패). 스프레드 = p90 스프레드, 슬리피지 = p90 편도 충격이 반 스프레드를 넘는 부분이라 `spread/2 + slippage ≥ p90 충격`이다. 자본이 1,000 이하면 $1,000 값, 그 이상이면 $10,000 값을 쓰고 선택한 종목 중 최악의 값으로 계약을 만든다.
+**스프레드·슬리피지 측정** (`scripts/data/measure-orderbook.mjs`, 인증 없는 공개 API만): Binance 현물 `depth`·**USDⓈ-M 선물 `depth`(venue `binance-usdm`, 2026-10-17부터)**(500호가)와, `QQUAN_ENABLE_UPBIT=true`일 때만 Upbit `orderbook`을 1분마다 BTC·ETH·SOL 스냅샷으로 저장(SQLite `ct_orderbook_samples`)하고, $1,000와 $10,000(자본의 10배) 시장가 매수·매도가 mid를 얼마나 미는지 호가를 직접 걸어 계산한다(Upbit은 KRW-USDT 환산). 프로필 값은 **측정 p90을 올림**한 값이고 측정값 아래로 내려가지 않는다(`--check`가 이를 확인하고 낮으면 실패). 스프레드 = p90 스프레드, 슬리피지 = p90 편도 충격이 반 스프레드를 넘는 부분이라 `spread/2 + slippage ≥ p90 충격`이다. 자본이 1,000 이하면 $1,000 값, 그 이상이면 $10,000 값을 쓰고 선택한 종목 중 최악의 값으로 계약을 만든다.
 
 실측 결과(초기 약 30분 표본): Binance BTCUSDT는 스프레드·충격이 ≈0.00001%로 **가격 틱(0.01 USDT) 수준**이고 ETHUSDT 0.0004%, SOLUSDT 0.009%다. 이전 계약이 가정한 스프레드 0.05% + 슬리피지 0.03%(편도 0.055%)는 BTCUSDT에서 약 4,000–9,000배 과대였다. 그래서 BTC 왕복 비용은 0.3095%에서 **약 0.200%**(수수료 0.1%×2가 거의 전부)로 내려갔다. 반대로 Upbit KRW-BTC는 $1,000에서도 편도 충격 p90 0.06%로 Binance보다 훨씬 비싸다 — Binance 연구와 Upbit 실행이 다르다는 기존 차단 정책의 근거가 하나 더 생겼다.
 
 **잠정**: 측정 72시간(`CT_PROFILE_MIN_HOURS`)을 채우기 전의 프로필은 `provisional`로 표시된다. 샘플러는 72시간 실행으로 시작했다(`npm run data:orderbook -- --hours=72`, 로그 `~/.qquan/logs/orderbook-sampler.log`). 끝난 뒤 `npm run data:orderbook -- --profile --write-lib`로 표를 갱신하고 `--check`로 확인하면 잠정 표시가 사라진다(프로필 버전 변경 시에는 `version`을 올린다). **측정으로 알 수 없는 것**: 신호 봉 종가와 실제 체결 사이의 지연, 큐 위치, 역선택. 프로필은 실거래 비용의 하한이지 예측이 아니며, 게이트의 **비용 2배 스트레스는 그대로 유지**된다.
+
+### 지정가 전용 체결 (2026-10-17, `lib/ct-limit-execution.ts`)
+
+소유자 결정: **코인은 모두 Binance 기준이고 모든 주문은 지정가다.** 계약의 `execution`(프로필 v2부터 동결)이 있으면 백테스트(`replayCT`)·모의·실전이 **같은 함수**로 체결을 판단한다. `execution`이 없는 이전 계약은 예전 모델(다음 봉 시가 ± 충격, taker)로 **비트 단위로 같게** 재현된다(골든 회귀 `tests/ct-pattern-{1,2}-regression.test.mjs` 해시 불변).
+
+**중요한 사실**: Spot Regular 등급은 maker와 taker가 **둘 다 0.1%**다. 현물에서 지정가로 바꿔도 **수수료는 줄지 않고** 줄어드는 것은 진입의 스프레드·충격뿐이다(BTCUSDT는 원래 거의 0). 수수료 차이는 선물에서 생긴다(maker 0.02% vs taker 0.05%). 연구 시작 카드와 진행 바가 이 문장을 그대로 보여 준다(`ctExecutionNote`).
+
+| 다리 | 주문 | 체결 규칙(백테스트 = 모의) | 비용 |
+| --- | --- | --- | --- |
+| 진입 | `LIMIT_MAKER`(post-only) 매수, 가격 = 결정 봉 종가를 틱 내림 | **entryTtlBars(3)봉 안에 가격이 `penetrationTicks`(1)틱 이상 관통**해야 체결(닿기만 하면 미체결). 체결가 = 지정가. 시간 안에 못 채우면 **미체결**: 거래로 세지 않고 `unfilled`로 기록 | maker 수수료, 스프레드·충격 없음 |
+| 목표 | 체결 직후부터 걸어 둔 `LIMIT_MAKER` 매도 | 같은 관통 규칙, **진입 체결 봉에서는 인정하지 않음**(고가가 체결보다 먼저일 수 있음). 체결가 = 목표가(더 좋은 시가로 팔지 않음) | maker |
+| 손절 | 손절가 도달 시 `LIMIT` 매도 = 손절가 − `slackPct`(0.10%) (거래소 `STOP_LOSS_LIMIT`과 같은 모양) | 갭이 지정가를 넘지 않았으면 즉시 체결(taker). 넘었으면 `chaseSeconds`(10초, 1분 단위 올림)마다 `chaseStepPct`(0.10%)씩 `maxChases`(3)번 낮춰 재주문하고, 그 사이 가격이 지정가를 관통하면 maker 체결, 시가가 이미 지정가 이상이면 taker 체결 | taker 또는 maker |
+| 비상 | **시장가 1회(유일한 예외)**: 마지막 재주문 후에도 미체결이면. 기본 켜짐, 발생마다 기록(`trade.ctEmergency`, 이벤트, `result.execution.exits.emergency`, 진단) | 다음 구간의 시가 | taker + 측정 충격(p90) |
+| 시간·일 경계·무효화·북 청산 | 매도 1호가 아래 `LIMIT`(즉시 체결 가능) | 봉 종가 | taker + 충격 |
+
+비상 시장가를 끄면(`stop.emergencyMarket=false`) 화면 문구가 "손실 상한 없음"으로 바뀐다. 끄면 갭에서 손절이 체결되지 않고 보유가 길어질 수 있다. 비용 2배 스트레스는 수수료와 충격을 모두 2배로 하고, 지연 스트레스는 주문을 그만큼 늦게 낸다.
+
+**결과 보고** (`result.execution`): 신호 수, 체결·미체결, **체결률**, 체결된 신호와 미체결 신호의 이후 수익(결정 가격 → 최대 60봉 뒤 종가)과 그 차이(**역선택**: 음수면 체결되는 주문이 이후 더 나쁘다는 뜻), 청산 방식별 건수(목표·손절 taker/maker·비상·기타). 진단에 미체결 건수·비상 청산·역선택이 한 줄씩 남는다. 이전 천장 측정의 지정가 모델(닿으면 체결, 체결률 96–99%)은 대기열·역선택을 무시한 **상한**이었다.
+
+**한계(숨기지 않는다)**: ① 설계자의 측정 도구(`query_conditional_returns` 등 `ctNetTradePct` 기반)는 여전히 "신호 다음 봉 시가 진입"을 가정한다. 지정가 계약에서는 진입 충격을 뺀 비용(`ctRoundTripCostPct`: maker 진입 + taker 청산)만 반영하고 미체결은 모른다. 미체결·역선택까지 반영한 숫자는 `replayCT`(학습·개발·최종·스트레스)뿐이다. ② 모의 체결은 Binance 1분 캔들의 고저가로 판단한다(주문 이후 시작한 캔들만 인정, 진행 중인 캔들은 무시). 호가 대기열은 보지 않는다. ③ 모의에서 지정가로 대기하다 체결된 손절 다리는 수수료를 order.feePct(taker)로 계산한다(현물은 maker=taker라 같다). ④ 거래소에 걸어 두는 `STOP_LOSS_LIMIT`/OCO 주문은 구현하지 않았다. 손절은 지금까지처럼 러너가 감시하고 신호가 오면 지정가를 낸다(러너가 꺼지면 보호가 없다는 점은 그대로이고, 실전은 "러너 온라인"을 요구한다). `binanceSpotOrderParams`는 `stop_loss_limit` 형태를 만들 수 있다. ⑤ Binance 현물 매수 수수료는 받는 자산(BTC)으로 빠지므로 `binance-broker.ts`의 USDT 외 수수료 거부 때문에 실전 매수 체결이 대사에서 막힌다 — 이전부터 있던 제약이고 실전은 잠금 상태다.
+
+계정 실제 요율은 읽기 전용 GET으로만 본다(`lib/ct-account-fees.ts`: Spot `GET /api/v3/account/commission`의 standard+tax, USDⓈ-M `GET /fapi/v1/commissionRate`). 읽지 못하면(키 없음·IP 허용 목록 밖) 공식 표만 동결하고 계약에 그 사실을 남긴다. 키는 IP 제한이 걸려 있으므로 실패하면 자격증명보다 IP를 먼저 의심한다.
+
+**주문 의도 장부**: `lib/ct-order-intents-store.ts`의 `ctOrderLedger`가 모의·실전 CT 주문마다 `submitting`(전송 전) → `acknowledged`/`rejected`/`unknown` → 종결 상태를 기록한다. 대시보드 상태의 `submitting` 주문(재시작 후 `recover`로 대사)과 같은 시점에 쓰며, 응답이 없는 주문은 재전송하지 않는다.
+
+**Upbit 제외**: `QQUAN_ENABLE_UPBIT`(기본 꺼짐, `lib/upbit-flag.ts`)가 새 Upbit 모의·실전 시작(`ctStartState`가 서버에서 거부), 전략 탭의 Upbit 패키지, 호가 샘플러·천장 측정 기본값의 Upbit을 막는다. 과거 Upbit 연구·거래 기록, `upbit-krw` 프로필, 이전 계약의 저장된 비용은 그대로 읽힌다. 플래그를 켜면 이전 동작으로 돌아온다(`tests/upbit-flag.test.mjs`). 열린 Upbit 포지션의 청산 경로(`ctBroker`의 `KRW-` 분기)는 지우지 않았다.
+
+**천장 측정 다시 돌리는 법**(이 작업에서는 돌리지 않았다): `node --env-file-if-exists=.dev.vars --experimental-strip-types --no-warnings scripts/research/ct-ceiling-execution.ts` — 지정가 시나리오(SM, FM)는 이제 관통 체결(틱 1)이 기본이고 `--touch`가 예전 정의다. 결과 파일 `~/.qquan/cache/ceiling-execution/results.jsonl`은 id로 이어 달리므로 **새 정의로 돌리기 전에 옮겨 둔다**(그대로 두면 이미 끝난 조합을 건너뛴다). Upbit 시나리오는 `QQUAN_ENABLE_UPBIT=true`일 때만 돈다. 필드 측정은 `ct-ceiling-field.ts`가 Upbit 경로를 `QQUAN_ENABLE_UPBIT=true` 또는 `--with-upbit`일 때만 돈다.
 
 ### 단타 보유 규칙
 

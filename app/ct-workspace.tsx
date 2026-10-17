@@ -49,7 +49,7 @@ type CTResponse = {
   availability: { ready: boolean; missing: string[] };
   runnerOnline: boolean;
   /** Cost profile a start would use (exchange, version, round trip per symbol). */
-  costPreview?: { label: string; version: number; provisional: boolean; feeVerified: boolean; perSymbol: Array<{ symbol: string; roundTripPct: number }> };
+  costPreview?: { label: string; version: number; provisional: boolean; feeVerified: boolean; fee?: { makerPct: number; takerPct: number; url: string; checkedAt: string }; executionNote?: string | null; perSymbol: Array<{ symbol: string; roundTripPct: number }> };
 };
 const CRYPTO_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
 function download(value: unknown, name: string) {
@@ -938,6 +938,9 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
             {preview ? (
               <p className="ui-sub" data-testid="ct-cost-profile">
                 비용 프로필: {preview.label} v{preview.version}{preview.provisional ? " (잠정 · 호가 측정 72시간 미만)" : ""} · 왕복 {previewRoundTrip.toFixed(3)}%{preview.feeVerified ? "" : " · 수수료 공식 문서 미확인"}
+              
+                {preview.fee ? <><br />수수료 메이커 {preview.fee.makerPct}% / 테이커 {preview.fee.takerPct}% · 출처 <a href={preview.fee.url} target="_blank" rel="noreferrer">{new URL(preview.fee.url).hostname}</a> · 확인 {preview.fee.checkedAt}</> : null}
+                {preview.executionNote ? <><br />{preview.executionNote}</> : null}
               </p>
             ) : null}
             {market==="crypto"?<div className="ct-compare-toolbar"><label>상품 <select value={product} onChange={e=>setProduct(e.target.value)}>{products.filter(p=>p.product!=="stock").map(p=><option key={p.product} value={p.product}>{p.label}</option>)}</select></label><label>거래 설정 선택 <select value={selectionMode} onChange={e=>setSelectionMode(e.target.value)}><option value="manual">직접 지정</option><option value="agent">에이전트 선택</option></select></label><span className="ui-sub">허용 방향 롱 · 거래 위험 0.5% · 총 배분 상한 25%</span>{product!=="spot"?<p className="ui-alert">{products.find(p=>p.product===product)?.reason.join(" · ")} · 현재 연구/운용 연결 미완료이며 시작을 차단합니다.</p>:null}</div>:null}

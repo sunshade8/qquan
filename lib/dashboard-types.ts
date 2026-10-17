@@ -30,6 +30,11 @@ export type DashboardOrder = {
   /** Null for paper fills, which take the quote as it is. */
   limitPrice: number | null;
   referencePrice: number;
+  /** CT limit-only execution: how the order was sent, and the fee rate of its leg (maker or taker) for paper commissions. */
+  orderType?: "limit_maker" | "limit" | "stop_loss_limit" | "market";
+  feePct?: number;
+  /** CT limit-only paper fills: the tick and the through-the-price distance the contract froze. */
+  fillRule?: { tick: number; penetrationTicks: number };
   filledQuantity: number;
   averageFillPrice: number | null;
   commissionUsd: number;
@@ -56,6 +61,10 @@ export type DashboardTrade = {
   ctPosition?: import("./ct-engine.ts").CTPosition;
   /** CT: why the position is being closed (stop, breakeven, trail, target, time_stop, max_hold, day_end, session, invalid_stop). */
   ctExitReason?: string;
+  /** CT limit-only execution: the sell being chased after a stop — the stop-limit's first limit and the re-prices done so far. */
+  ctChase?: { limit0: number; k: number };
+  /** CT limit-only execution: the emergency market sell was used (recorded, shown on the screen). */
+  ctEmergency?: boolean;
   barMinutes?: 1 | 3 | 5;
   id: string;
   strategyId: string;

@@ -144,7 +144,7 @@ export function ctSimulateStopExit(input: {
     tick = ctTickOf(policy, symbol),
     stop = policy.stop,
     limit0 = ctStopLimitPrice(stopLevel, stop, tick);
-  let first = lowerBound(rows, triggerStartMs);
+  const first = lowerBound(rows, triggerStartMs);
   if (triggerPrice >= limit0) {
     const bar = rows[first];
     return { price: triggerPrice, leg: "taker", chases: 0, fillEndMs: bar ? bar.endMs : triggerStartMs + 60_000 };

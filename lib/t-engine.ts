@@ -22,6 +22,18 @@ import {
 import { buildHigherSeries, higherWindow, type CTHigherSeries } from "./t-timeframes.ts";
 import { buildDayLevels, levelFeature, levelLines, type CTDayLevels } from "./t-levels.ts";
 import { easternWallTimeToEpoch } from "./market-clock.ts";
+import {
+  ctForwardReturnPct,
+  ctLegCosts,
+  ctSimulateStopExit,
+  ctThroughHit,
+  ctTickOf,
+  ctTickRound,
+  emptyExecutionStats,
+  type CTExecutionPolicy,
+  type CTExecutionStats,
+  type CTExitLeg,
+} from "./t-limit-execution.ts";
 
 export type CTBar = {
   startMs: number;
@@ -66,6 +78,8 @@ export type CTTrade = {
   reason: string;
   specHash: string;
   compliant: boolean;
+  /** Limit-order contracts only: how the exit filled (a resting target, a marketable/stop-limit sell, the emergency market sell) and the re-prices before it. */
+  exitFill?: { leg: CTExitLeg | "marketable"; chases: number };
   /** Managed exits only: how the stop and target stood and moved. Absent for classic exits (results stay byte-identical). */
   management?: CTTradeManagement;
 };
@@ -105,6 +119,8 @@ export type CTResult = {
   emptyDays: number;
   diagnostics: string[];
   blocked: Record<string, number>;
+  /** Limit-order contracts only: fill rate, adverse selection and how exits filled. */
+  execution?: CTExecutionStats;
 };
 export function validCTBar(b: CTBar) {
   return (
@@ -738,12 +754,20 @@ export function ctExitStep(
   position: CTPosition,
   bar: CTBar,
   forced: CTExitHit | null = null,
+  /**
+   * Limit-order contracts: the target is a resting sell limit, so it fills only when the bar trades through it (not in the
+   * bar the entry filled in) and at its own price, never at a better open. Everything else is unchanged.
+   */
+  limit: { tick: number; penetrationTicks: number; fillBar: boolean } | null = null,
 ): { position: CTPosition; exit: CTExitHit | null } {
   const plan = ctExitPlan(spec),
     p = position;
   if (bar.low <= p.stopLevel)
     return { position: p, exit: { price: Math.min(p.stopLevel, bar.open), reason: p.stopSource === "initial" ? "stop" : p.stopSource } };
-  if (p.targetLevel !== null && bar.high >= p.targetLevel)
+  if (limit) {
+    if (p.targetLevel !== null && !limit.fillBar && ctThroughHit("sell", p.targetLevel, bar, limit.tick, limit.penetrationTicks))
+      return { position: p, exit: { price: ctTickRound(p.targetLevel, limit.tick, "up"), reason: "target" } };
+  } else if (p.targetLevel !== null && bar.high >= p.targetLevel)
     return { position: p, exit: { price: bar.open >= p.targetLevel ? bar.open : p.targetLevel, reason: "target" } };
   const barNo = p.bars + 1;
   if (plan.timeStop && barNo === plan.timeStop.bars && (bar.close - p.entry) / p.initialRisk < plan.timeStop.minR)
@@ -951,18 +975,25 @@ export function ctImpactPct(contract: Pick<CTContract, "costs">, multiplier = 1)
  * sell at exit × (1 − impact) minus fee and sell tax.
  */
 export function ctNetTradePct(
-  contract: Pick<CTContract, "costs">,
+  contract: Pick<CTContract, "costs"> & Partial<Pick<CTContract, "execution">>,
   entryOpen: number,
   exitPrice: number,
   multiplier = 1,
 ) {
+  if (contract.execution) {
+    // Limit contract (conservative screen): the entry is a maker fill at its own price, every exit is priced as a taker.
+    const impact = ctImpactPct(contract, multiplier) / 100,
+      buyFee = (contract.execution.makerFeePct * multiplier) / 100,
+      sellFee = ((contract.execution.takerFeePct + contract.costs.sellTaxPct) * multiplier) / 100;
+    return ((exitPrice * (1 - impact) * (1 - sellFee)) / (entryOpen * (1 + buyFee)) - 1) * 100;
+  }
   const impact = ctImpactPct(contract, multiplier) / 100,
     buyFee = (contract.costs.feePct * multiplier) / 100,
     sellFee = ((contract.costs.feePct + contract.costs.sellTaxPct) * multiplier) / 100;
   return ((exitPrice * (1 - impact) * (1 - sellFee)) / (entryOpen * (1 + impact) * (1 + buyFee)) - 1) * 100;
 }
 /** Round-trip cost with no price move, percent of the capital put in. */
-export function ctRoundTripCostPct(contract: Pick<CTContract, "costs">, multiplier = 1) {
+export function ctRoundTripCostPct(contract: Pick<CTContract, "costs"> & Partial<Pick<CTContract, "execution">>, multiplier = 1) {
   return -ctNetTradePct(contract, 100, 100, multiplier);
 }
 /** The stop/target story of a managed trade, for records and charts. */
@@ -989,6 +1020,9 @@ export function replayCT(
   const spec = ctSpecSchema.parse(specInput),
     plan = ctExitPlan(spec),
     multiplier = options.costMultiplier ?? 1;
+  // Limit-order contracts (lib/t-limit-execution.ts) simulate stop chases on the contract's one-minute rows.
+  const limitPolicy: CTExecutionPolicy | null = contract.execution?.mode === "limit" ? contract.execution : null,
+    oneMinute = data;
   // Free bars: the candidate trades its own bar over the contract's one-minute data.
   data = ctDataAt(data, spec.minutes);
   const result: CTResult = {
@@ -1039,9 +1073,16 @@ export function replayCT(
     entryImpact: number;
     checkedThrough: number;
     position: CTPosition;
+    /** Limit contracts: the stop's sell order is still working (chased) until `fill.fillEndMs`. */
+    exiting?: { fill: ExitFill; hit: CTExitHit };
   } | null = null;
-  let pending: { symbol: string; signal: CTSignal; index: number } | null =
+  let pending: { symbol: string; signal: CTSignal; index: number; limit?: number; forward?: number } | null =
     null;
+  type ExitFill = { price: number; leg: CTExitLeg | "marketable"; chases: number; fillEndMs: number };
+  const stats = emptyExecutionStats(),
+    filledForward: number[] = [],
+    unfilledForward: number[] = [];
+  const forwardBars = Math.min(60, spec.exit.maxHoldBars);
   const times = [
     ...new Set(
       spec.symbols.flatMap((s) =>
@@ -1105,7 +1146,60 @@ export function replayCT(
       dayStart = marked;
     }
     result.bars++;
-    if (pending && !held) {
+    if (pending && !held && limitPolicy) {
+      // Limit entry: a buy limit at the decision bar's close (rounded down to a tick) rests for entryTtlBars bars and
+      // fills only when a bar trades through it. A delayed order (the gate's delay stress) is placed that many bars later.
+      const i = indexes[pending.symbol].get(time),
+        rows = data[pending.symbol],
+        bar = i === undefined ? null : rows[i];
+      if (bar && i! > pending.index) {
+        const delay = options.delayBars ?? 0,
+          signal = pending.signal,
+          tick = ctTickOf(limitPolicy, pending.symbol),
+          limit = pending.limit!,
+          last = pending.index + delay + limitPolicy.entryTtlBars;
+        const dayEnd = ctSessionPolicy(contract).freeBars ? ctDayEndMs(contract.market, bar.startMs + 1) : null;
+        const drop = (reason: "data_gap" | "day_end" | "unfilled") => {
+          result.missed++;
+          addBlock(reason);
+          if (reason === "unfilled") {
+            stats.unfilled++;
+            if (pending!.forward !== undefined && Number.isFinite(pending!.forward)) unfilledForward.push(pending!.forward);
+          }
+          pending = null;
+        };
+        if (bar.startMs !== rows[i! - 1].endMs) drop("data_gap");
+        else if (i! > last) drop("unfilled");
+        else if (i! >= pending.index + 1 + delay && ctThroughHit("buy", limit, bar, tick, limitPolicy.penetrationTicks)) {
+          if (dayEnd !== null && bar.endMs > dayEnd - spec.minutes * 60_000) drop("day_end");
+          else {
+            const price = limit,
+              feePct = ctLegCosts("entry", limitPolicy, 0, multiplier).feePct / 100;
+            const position = ctOpenPosition(spec, signal, price, bar.startMs, { stopScale: options.stopScale });
+            const q = position
+              ? ctQuantity(spec, contract, cash, cash, price, Math.min(rows[pending.index].volume, bar.volume), plan.managed ? ctRiskPct(position) : undefined)
+              : 0;
+            if (
+              q &&
+              position &&
+              (!plan.invalidationLow || price > signal.patternLow) &&
+              Math.abs(price / signal.reference - 1) * 100 <= spec.entry.maxDeviationPct &&
+              contract.costs.spreadPct * multiplier <= spec.entry.maxSpreadPct
+            ) {
+              held = { symbol: pending.symbol, signal, entry: price, at: bar.startMs, quantity: q, fee: q * price * feePct, entryImpact: 0, checkedThrough: bar.startMs, position };
+              cash -= q * price + held.fee;
+              stats.filled++;
+              if (pending.forward !== undefined && Number.isFinite(pending.forward)) filledForward.push(pending.forward);
+            } else {
+              result.missed++;
+              addBlock(!position && plan.managed ? "invalid_stop" : "liquidity_or_deviation");
+            }
+            pending = null;
+          }
+        }
+      }
+    }
+    if (pending && !held && !limitPolicy) {
       const i = indexes[pending.symbol].get(time),
         rows = data[pending.symbol],
         bar = i === undefined ? null : rows[i];
@@ -1197,10 +1291,80 @@ export function replayCT(
           result.maxDrawdownPct,
           (1 - lowEquity / peak) * 100,
         );
-        const step = ctExitStep(spec, held.signal, held.position, bar, ctForcedExit(spec, contract.market, bar));
-        held.position = step.position;
-        const exit = step.exit ?? (options.policy?.exit() ? {price:bar.close,reason:"book_signal_expired"} : null);
-        if (exit) {
+        let step: ReturnType<typeof ctExitStep>;
+        let exit: CTExitHit | null;
+        if (limitPolicy && held.exiting) {
+          // The stop's sell order is still being chased; the position stays open until it fills.
+          step = { position: held.position, exit: null };
+          exit = bar.endMs >= held.exiting.fill.fillEndMs ? held.exiting.hit : null;
+        } else {
+          step = ctExitStep(
+            spec,
+            held.signal,
+            held.position,
+            bar,
+            ctForcedExit(spec, contract.market, bar),
+            limitPolicy ? { tick: ctTickOf(limitPolicy, held.symbol), penetrationTicks: limitPolicy.penetrationTicks, fillBar: bar.startMs === held.at } : null,
+          );
+          held.position = step.position;
+          exit = step.exit ?? (options.policy?.exit() ? {price:bar.close,reason:"book_signal_expired"} : null);
+        }
+        let limitFill: ExitFill | null = null;
+        if (limitPolicy && exit) {
+          if (held.exiting) limitFill = held.exiting.fill;
+          else if (exit.reason === "stop" || exit.reason === "breakeven" || exit.reason === "trail") {
+            const sim = ctSimulateStopExit({
+              rows: oneMinute[held.symbol] ?? [],
+              triggerStartMs: bar.startMs,
+              triggerPrice: exit.price,
+              stopLevel: held.position.stopLevel,
+              policy: limitPolicy,
+              symbol: held.symbol,
+            });
+            // No one-minute rows to chase on: price it as an immediate marketable stop-limit.
+            limitFill = sim
+              ? { price: sim.price, leg: sim.leg === "taker" ? "marketable" : sim.leg, chases: sim.chases, fillEndMs: sim.chases === 0 ? bar.endMs : Math.max(bar.endMs, sim.fillEndMs) }
+              : { price: exit.price, leg: "marketable", chases: 0, fillEndMs: bar.endMs };
+            if (limitFill.fillEndMs > bar.endMs) {
+              held.exiting = { fill: limitFill, hit: exit };
+              exit = null;
+            }
+          } else limitFill = { price: exit.price, leg: exit.reason === "target" ? "maker" : "marketable", chases: 0, fillEndMs: bar.endMs };
+        }
+        if (exit && limitPolicy && limitFill) {
+          const maker = limitFill.leg === "maker",
+            costs = ctLegCosts(maker ? "maker" : "taker", limitPolicy, ctImpactPct(contract), multiplier),
+            tick = ctTickOf(limitPolicy, held.symbol),
+            price = maker
+              ? ctTickRound(limitFill.price, tick, "up")
+              : ctFillPrice(limitFill.price * (1 - costs.impactPct / 100), contract.market, "sell", contract.currency),
+            fees = held.fee + (held.quantity * price * (costs.feePct + (contract.costs.sellTaxPct * multiplier))) / 100,
+            pnl = (price - held.entry) * held.quantity - fees;
+          cash += held.quantity * price - (fees - held.fee);
+          result.trades.push({
+            symbol: held.symbol,
+            signal: held.signal,
+            entryAt: held.at,
+            exitAt: limitFill.fillEndMs,
+            entry: held.entry,
+            exit: price,
+            quantity: held.quantity,
+            fees,
+            executionCost: held.entryImpact + held.quantity * (limitFill.price - price),
+            pnl,
+            reason: exit.reason,
+            specHash: hash,
+            compliant: true,
+            exitFill: { leg: limitFill.leg, chases: limitFill.chases },
+            ...(plan.managed ? { management: ctManagement(held.position) } : {}),
+          });
+          if (limitFill.leg === "emergency") stats.exits.emergency++;
+          else if (limitFill.leg === "maker") stats.exits[exit.reason === "target" ? "target" : "stopMaker"]++;
+          else if (exit.reason === "stop" || exit.reason === "breakeven" || exit.reason === "trail") stats.exits.stopTaker++;
+          else stats.exits.other++;
+          lastExit = time;
+          held = null;
+        } else if (exit) {
           const price = ctFillPrice(
             exit.price *
               (1 -
@@ -1275,7 +1439,11 @@ export function replayCT(
         const signal = options.policy ? options.policy.signal(symbol,time) : detectCT(spec, symbol, rows, time, featureCaches[symbol], higherSets[symbol], levelSets[symbol]);
         if (signal) {
           result.signals++;
-          pending = { symbol, signal, index: i };
+          if (limitPolicy) {
+            stats.signals++;
+            const limit = ctTickRound(signal.reference, ctTickOf(limitPolicy, symbol), "down");
+            pending = { symbol, signal, index: i, limit, forward: ctForwardReturnPct(data[symbol], i, limit, forwardBars) };
+          } else pending = { symbol, signal, index: i };
           break;
         }
       }
@@ -1380,6 +1548,21 @@ export function replayCT(
     result.diagnostics.push("비용 후 양의 엣지 미확인");
   if ((result.meanDailyReturnPct ?? 0) <= 0)
     result.diagnostics.push("일평균 비용 후 수익 0 이하");
+  if (limitPolicy) {
+    const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null),
+      filledMean = mean(filledForward),
+      unfilledMean = mean(unfilledForward);
+    stats.fillRatePct = stats.filled + stats.unfilled ? (stats.filled / (stats.filled + stats.unfilled)) * 100 : 0;
+    stats.filledForwardPct = filledMean;
+    stats.unfilledForwardPct = unfilledMean;
+    stats.adverseSelectionPct = filledMean !== null && unfilledMean !== null ? filledMean - unfilledMean : null;
+    result.execution = stats;
+    if (stats.unfilled)
+      result.diagnostics.push(`지정가 미체결 ${stats.unfilled}건 · 체결률 ${stats.fillRatePct.toFixed(1)}%`);
+    if (stats.exits.emergency) result.diagnostics.push(`비상 시장가 청산 ${stats.exits.emergency}건`);
+    if (stats.adverseSelectionPct !== null && stats.adverseSelectionPct < 0)
+      result.diagnostics.push(`역선택: 체결된 신호의 이후 수익이 미체결보다 ${(-stats.adverseSelectionPct).toFixed(3)}%p 낮음`);
+  }
   if(options.accountState)result.accountState={peakEquity:peak,maxDrawdownPct:result.maxDrawdownPct};
   return result;
 }

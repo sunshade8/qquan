@@ -279,7 +279,8 @@ export function ctProfileCosts(
     };
     // `costs.feePct` is the taker fee: position sizing, the drawdown mark and the 2× stress read it.
     feePct = frozen.takerFeePct;
-    if (account.fees === null) notes.push(`계정 실제 수수료를 읽지 못해 공식 표만 동결${account.note ? `(${account.note})` : ""}`);
+    // A screen preview does not read the account (no note): only a real read attempt that failed is worth saying.
+    if (account.fees === null) { if (account.note) notes.push(`계정 실제 수수료를 읽지 못해 공식 표만 동결(${account.note})`); }
     else if (account.fees.makerPct > profile.execution.official.makerPct || account.fees.takerPct > profile.execution.official.takerPct)
       notes.push("계정의 실제 수수료가 공식 표보다 높아 더 높은 값을 동결");
   }

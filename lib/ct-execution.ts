@@ -17,6 +17,7 @@
  */
 import type { CTBar } from "./ct-engine.ts";
 import { dayLastIndex, MOVE_REASON, type DayInfo, type MoveLabels } from "./ct-moves.ts";
+import { ctThroughHit } from "./ct-limit-execution.ts";
 
 export const EXEC_REASON = { ...MOVE_REASON, unfilled: 5 } as const;
 
@@ -34,6 +35,12 @@ export type ExecutionOptions = {
   funding?: { times: Float64Array; rates: Float64Array };
   /** Trade-through instead of touch for the maker entry and the maker target (sensitivity only). */
   strict?: boolean;
+  /**
+   * With `strict` and a tick size: the through-the-price fill rule of the limit-only contracts (lib/ct-limit-execution.ts) —
+   * the bar must trade at least `penetrationTicks` (minimum 1) ticks through the price. Without `tickSize`, strict stays the plain `<` / `>`.
+   */
+  penetrationTicks?: number;
+  tickSize?: number;
 };
 
 /** Distance unit c of the label: taker 2 × (taker + impact); maker = maker entry + taker exit + impact (conservative). */
@@ -89,7 +96,9 @@ export function labelExecution(bars: CTBar[], day: DayInfo, o: ExecutionOptions)
     const entry = maker ? bars[i].close : bars[e].open;
     if (maker) {
       const b = bars[e];
-      const touched = long ? (o.strict ? b.low < entry : b.low <= entry) : o.strict ? b.high > entry : b.high >= entry;
+      const touched = o.strict && o.tickSize
+        ? ctThroughHit(long ? "buy" : "sell", entry, b, o.tickSize, o.penetrationTicks ?? 1)
+        : long ? (o.strict ? b.low < entry : b.low <= entry) : o.strict ? b.high > entry : b.high >= entry;
       if (!(b.volume > 0 && touched)) {
         label[i] = 0;
         netPct[i] = 0;
@@ -117,7 +126,11 @@ export function labelExecution(bars: CTBar[], day: DayInfo, o: ExecutionOptions)
         break;
       }
       if (!fillBar) {
-        const hit = maker ? (long ? (o.strict ? b.high > target : b.high >= target) : o.strict ? b.low < target : b.low <= target) : long ? b.high >= target : b.low <= target;
+        const hit = maker
+          ? o.strict && o.tickSize
+            ? ctThroughHit(long ? "sell" : "buy", target, b, o.tickSize, o.penetrationTicks ?? 1)
+            : long ? (o.strict ? b.high > target : b.high >= target) : o.strict ? b.low < target : b.low <= target
+          : long ? b.high >= target : b.low <= target;
         if (hit) {
           exit = j;
           price = maker ? target : long ? (b.open >= target ? b.open : target) : b.open <= target ? b.open : target;

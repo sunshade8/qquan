@@ -245,7 +245,8 @@ async function upbitPath() {
 if (!args.report) {
   const t0 = Date.now();
   if (!args["skip-binance"]) await binancePath();
-  if (!args["skip-upbit"]) await upbitPath();
+  // Upbit price path: only with QQUAN_ENABLE_UPBIT=true (or --with-upbit); every coin measurement is Binance by default.
+  if ((process.env.QQUAN_ENABLE_UPBIT === "true" || args["with-upbit"]) && !args["skip-upbit"]) await upbitPath();
   writeFileSync(join(CACHE, "timing.json"), JSON.stringify({ seconds: timing, wallSeconds: (Date.now() - t0) / 1000, finishedAt: new Date().toISOString() }, null, 1));
   console.error(`done in ${((Date.now() - t0) / 1000).toFixed(0)}s · combos ${done.size}`);
 }

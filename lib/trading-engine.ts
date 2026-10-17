@@ -51,6 +51,9 @@ export type BrokerOrderState = {
 export type SubmitRequest = {
   clientOrderId: string; symbol: string; side: "buy" | "sell"; quantity: number;
   limitPrice: number | null; referencePrice: number;
+  /** CT limit-only execution: absent = the earlier plain limit order. "market" is the single emergency exception. */
+  orderType?: "limit_maker" | "limit" | "stop_loss_limit" | "market";
+  stopPrice?: number;
 };
 
 /**

@@ -93,11 +93,11 @@ SQLite WAL, 30초 busy timeout, `BEGIN IMMEDIATE` batch로 프로세스 간 접�
 ```sh
 # Binance USDⓈ-M 파생(최근 36개월, BTC/ETH/SOL): 월 프리미엄 1분봉·펀딩비 + 일 5분 지표. 체크섬 파일로 검증. 약 10분, 원본 zip 139MB.
 .venv/bin/python scripts/data/download-binance-derivs.py [--symbols BTCUSDT,ETHUSDT,SOLUSDT] [--months 36] [--end 2026-10-13]
-# Upbit KRW 1분봉(공개 시세 API, 요청 200개 단위, 초당 8회 이하). 시장 하나당 약 21–34분, 시장별로 병렬 실행 가능.
+# (비활성: QQUAN_ENABLE_UPBIT=true일 때만 쓴다. 코인은 모두 Binance 기준) Upbit KRW 1분봉(공개 시세 API, 요청 200개 단위, 초당 8회 이하). 시장 하나당 약 21–34분, 시장별로 병렬 실행 가능.
 .venv/bin/python scripts/data/download-upbit-minute.py --markets KRW-BTC,KRW-USDT,KRW-ETH,KRW-SOL --from 2025-10-13 --to 2026-10-14
 # 측정용 열 내보내기 → 측정 → 보고서
 .venv/bin/python scripts/data/export-ceiling-cache.py
-node --experimental-strip-types --no-warnings scripts/research/ct-ceiling-field.ts [--only=btc,1y] [--skip-binance|--skip-upbit]
+node --experimental-strip-types --no-warnings scripts/research/ct-ceiling-field.ts [--only=btc,1y] [--skip-binance] [--with-upbit | QQUAN_ENABLE_UPBIT=true]
 node --experimental-strip-types --no-warnings scripts/research/ct-ceiling-field.ts --report --out=docs/research/ct-ceiling-2026-10-14-field.md
 ```
 
@@ -216,3 +216,7 @@ node scripts/data/verify-runtime.mjs # 빌드 서버를 새 임시 사용자 DB�
 ```
 
 실제 검증 범위와 한계는 [2026-10-13 검증 기록](local-validation-2026-10-13.md)에 있다. 이번 변경은 로컬 commit만 하고, main push에 의한 자동 Vercel 배포를 피했다.
+
+## Upbit 비활성과 지정가 전용 (2026-10-17)
+
+코인 연구·데이터·비용·리플레이·호가 측정·모의·실전은 모두 Binance 기준이다. Upbit 코드는 지우지 않고 `QQUAN_ENABLE_UPBIT`(기본 꺼짐)로 막는다(`.env.example`). 호가 샘플러는 Binance 현물과 USDⓈ-M 선물을 수집한다. 새 코인 연구는 프로필 `binance-spot-usdt` v2(지정가 전용)로 계약을 만들고 `contract.execution`에 maker/taker 수수료(공식 표와 계정 실제 값 중 큰 것), 주문 유효 봉 수, 관통 틱 수, 손절 추적 정책을 동결한다. 자세한 규칙은 `docs/ct.md`「지정가 전용 체결」.
