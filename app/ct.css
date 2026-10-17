@@ -1,7 +1,9 @@
 /* ==========================================================================
    CT (chart trading). Tokens and primitives come from globals.css and ui.css.
-   Layout order: head, market, start, progress, result, history, evidence,
-   sources, advanced, registered, dashboards.
+   Layout order (research tab): head, toolbar (market + tabs), then with a study:
+   progress (status, now, result, folded steps), registered, new study, folded
+   details (history, evidence, sessions, playbook, sources, book, advanced);
+   with no study: start, empty state.
    ========================================================================== */
 .ct-workspace {
   --ct-pad: var(--sp-5);
@@ -31,7 +33,10 @@
 /* ---- head, market, start ---------------------------------------------------- */
 .ct-head { display: grid; gap: var(--sp-1); }
 .ct-head h1 { display: flex; align-items: center; gap: 10px; margin: 0; font-size: var(--fs-6); font-weight: 650; letter-spacing: -.02em; line-height: var(--lh-tight); }
+.ct-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-3) var(--sp-4); }
 .ct-market { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3); }
+.ct-research { display: grid; gap: var(--sp-5); min-width: 0; }
+.ct-research > * { min-width: 0; }
 .ct-start { display: grid; gap: var(--sp-3); }
 .ct-start-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-4); }
 .ct-start-head > div { display: grid; gap: var(--sp-1); min-width: 0; }
@@ -50,7 +55,7 @@
   backdrop-filter: blur(18px) saturate(150%);
 }
 .ct-live { display: grid; gap: 0; position: relative; }
-.ct-live:not(.is-live) { padding: 0 var(--sp-4); border: 1px solid var(--line); border-radius: var(--r-3); background: var(--panel); overflow: hidden; }
+.ct-live:not(.is-live) { padding: 0 var(--sp-4) var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-3); background: var(--panel); overflow: hidden; }
 .ct-live-main { display: flex; align-items: center; gap: var(--sp-5); padding: 10px 0 12px; min-width: 0; }
 .ct-live-state { display: flex; align-items: center; gap: 10px; flex: 0 1 252px; min-width: 0; }
 .ct-live-dot { width: 10px; height: 10px; }
@@ -81,6 +86,16 @@
 
 /* ---- progress section ------------------------------------------------------- */
 .ct-progress-section { display: grid; gap: var(--sp-4); }
+/* Folded groups: the process (steps, feed) and the reference records. Open while a study runs. */
+.ct-steps, .ct-detail-group { border: 1px solid var(--line); border-radius: var(--r-3); background: var(--panel); padding: 0 var(--sp-4); }
+.ct-steps > summary, .ct-detail-group > summary { min-height: 48px; }
+.ct-steps > .ui-disclosure-body, .ct-detail-group > .ui-disclosure-body { padding: var(--sp-1) 0 var(--sp-4); }
+.t-models { margin: var(--sp-5) var(--sp-5) 0; }
+.t-models > summary > span { font-weight: 600; }
+.ct-roster { border-top: 1px solid var(--line); }
+@media (max-width: 640px) { .t-models { margin: var(--sp-3) var(--sp-3) 0; } }
+.ct-detail-body { gap: var(--sp-6) !important; }
+.ct-detail-body > .ct-section + .ct-section, .ct-detail-body > .ct-section + .ui-card { margin-top: 0; }
 .ct-progress-tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
 .ct-progress-grid { display: grid; grid-template-columns: 272px minmax(0, 1fr); gap: var(--sp-5); align-items: start; }
 .ct-progress-main { display: grid; gap: var(--sp-4); min-width: 0; }
@@ -338,10 +353,7 @@
   .ct-step-body { padding-top: 0; }
   .ct-step-hint { display: none; }
   .ct-step[data-state="active"] .ct-step-hint { display: block; }
-  .ct-limits { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-3); }
-  .ct-limits > .ui-label, .ct-limits-note { grid-column: 1 / -1; }
-  .ct-limit { grid-template-columns: 1fr; }
-  .ct-limit b { text-align: left; }
+  .ct-limits { gap: var(--sp-2); }
   .ct-agents { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ct-now-usage { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -349,8 +361,11 @@
   .ct-workspace { --ct-pad: var(--sp-3); gap: var(--sp-4); }
   .ct-form { grid-template-columns: minmax(0, 1fr); }
   .ct-head h1 { font-size: var(--fs-5); }
-  .ct-market .ui-segmented { width: 100%; }
-  .ct-market .ui-segmented > button { flex: 1; }
+  .ct-toolbar { display: grid; gap: var(--sp-2); }
+  .ct-toolbar .ui-segmented { width: 100%; }
+  .ct-toolbar .ui-segmented > button { flex: 1; }
+  .ct-market > .ui-sub { display: none; }
+  .ct-steps, .ct-detail-group { padding: 0 var(--sp-3); }
   .ct-start-head .ui-btn.primary { width: 100%; }
   .ct-live-state { flex: 1 1 auto; }
   .ct-live-actions { margin-left: 0; }
@@ -366,9 +381,6 @@
   .ct-metric-grid { grid-template-columns: 1fr; }
   .ct-feed-details > summary { grid-template-columns: minmax(0, 1fr) auto 14px; padding-inline: var(--sp-3); }
   .ct-feed-details > summary .ui-badge { display: none; }
-  .ct-limits { grid-template-columns: 1fr; }
-  .ct-limit { grid-template-columns: auto 1fr; }
-  .ct-limit b { text-align: right; }
   .ct-now { padding: var(--sp-3); }
   .ct-now-body { grid-template-columns: 36px minmax(0, 1fr); }
   .ct-now-icon { width: 36px; height: 36px; }
@@ -408,25 +420,25 @@
 /* Stage 3: trader tools summary, chart thumbnails and the read-only playbook */
 .ct-trader { display: grid; gap: var(--sp-3); }
 .ct-trader-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--sp-3); list-style: none; margin: 0; padding: 0; }
-.ct-trader-stats li { display: grid; gap: 2px; padding: var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-2, 8px); }
-.ct-trader-stats b { font-size: var(--fs-4, 1.15rem); }
+.ct-trader-stats li { display: grid; gap: 2px; padding: var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-2); }
+.ct-trader-stats b { font-size: var(--fs-4); }
 .ct-trader-stats small { color: var(--secondary); }
 .ct-thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: var(--sp-2); }
 .ct-thumb { display: grid; gap: 2px; text-decoration: none; color: inherit; }
-.ct-thumb img { width: 100%; height: auto; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+.ct-thumb img { width: 100%; height: auto; border: 1px solid var(--line); border-radius: var(--r-1); background: var(--panel-alt); }
 .ct-thumb small { color: var(--secondary); }
 .ct-playbook-filters { display: flex; flex-wrap: wrap; gap: var(--sp-3); margin: var(--sp-2) 0; }
 .ct-playbook { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp-2); }
 .ct-playbook li { display: grid; gap: 2px; padding: var(--sp-2) 0; border-top: 1px solid var(--line); }
-.ct-grade { display: inline-block; width: fit-content; padding: 0 var(--sp-2); border-radius: 999px; border: 1px solid var(--line); font-size: var(--fs-1, 0.8rem); color: var(--secondary); margin-right: var(--sp-1, 4px); }
-.ct-grade-passed_final, .ct-grade-adopted_daily { color: var(--positive, #0f9d58); border-color: currentColor; }
-.ct-grade-failed_final, .ct-grade-development_failed, .ct-grade-screen_failed { color: var(--amber, #b45309); border-color: currentColor; }
+.ct-grade { display: inline-block; width: fit-content; padding: 0 var(--sp-2); border-radius: 999px; border: 1px solid var(--line); font-size: var(--fs-1); color: var(--secondary); margin-right: var(--sp-1); }
+.ct-grade-passed_final, .ct-grade-adopted_daily { color: var(--up); border-color: currentColor; }
+.ct-grade-failed_final, .ct-grade-development_failed, .ct-grade-screen_failed { color: var(--warn-text); border-color: currentColor; }
 /* Stage 4: calibration records (the designer's eye) and the thinking summary per turn. */
-.ct-calibration { margin: var(--sp-2) 0 var(--sp-3); padding: var(--sp-2) var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-2, 8px); }
+.ct-calibration { margin: var(--sp-2) 0 var(--sp-3); padding: var(--sp-2) var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-2); }
 .ct-calibration small { color: var(--secondary); }
-.ct-grade-calibration-skill { color: var(--positive, #0f9d58); border-color: currentColor; }
-.ct-grade-calibration-inconclusive { color: var(--amber, #b45309); border-color: currentColor; }
-.ct-thinking { display: grid; gap: var(--sp-1, 4px); margin-bottom: var(--sp-3); }
+.ct-grade-calibration-skill { color: var(--up); border-color: currentColor; }
+.ct-grade-calibration-inconclusive { color: var(--warn-text); border-color: currentColor; }
+.ct-thinking { display: grid; gap: var(--sp-1); margin-bottom: var(--sp-3); }
 .ct-thinking-text { white-space: pre-wrap; margin: 0; }
 
 /* ---- data catch-up card: the store is behind the research window ------------------ */
@@ -464,22 +476,31 @@
 .ct-lesson-card a { color: var(--accent-text); }
 .ct-coverage { display: grid; gap: var(--sp-2); padding-top: var(--sp-2); border-top: 1px solid var(--line); }
 .ct-coverage p { margin: 0; }
-.ct-playbook li[data-focus="true"] { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-2, 8px); }
+.ct-playbook li[data-focus="true"] { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-2); }
 .ct-lessons-line b { font-weight: 600; }
 .ct-table-wrap { overflow-x: auto; max-width: 100%; }
 .ct-coverage-table td:first-child, .ct-coverage-table th:first-child { white-space: normal; min-width: 12rem; }
 .ct-coverage-table td { color: var(--text); }
 
-.ct-subtabs { margin: 16px 0 24px; }
-.ct-compare-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin:16px 0; }
-.ct-compare-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; margin:18px 0; }
+.ct-subtabs { margin: 0; }
+.ct-compare-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:var(--sp-3); margin:var(--sp-4) 0; }
+.ct-compare-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--sp-4); margin:var(--sp-4) 0; }
 .ct-compare-form > h2,.ct-compare-form > p { grid-column:1/-1; }
-.ct-compare-form label { display:flex; flex-direction:column; gap:6px; min-width:0; }
-.ct-compare-form input,.ct-compare-form select,.ct-replay select { font:inherit; color:inherit; background:transparent; border:1px solid var(--border,#ddd); border-radius:6px; padding:8px; min-width:0; }
-.ct-comparison-chart { width:100%; max-height:300px; display:block; margin:20px 0; }
-.ct-replay-arms { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:24px; }
-.ct-validation pre,.ct-replay pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:450px; overflow:auto; font-size:12px; }
+.ct-compare-form label,.ct-compare-toolbar label { display:flex; flex-direction:column; gap:var(--sp-1); min-width:0; font-size:var(--fs-2); font-weight:600; color:var(--secondary); }
+.ct-compare-toolbar label { flex-direction:row; align-items:center; gap:var(--sp-2); }
+.ct-compare-form input,.ct-compare-form select,.ct-compare-toolbar select,.ct-replay select { font:inherit; font-size:var(--fs-3); font-weight:400; color:var(--text); background:var(--panel); border:1px solid var(--line-strong); border-radius:var(--r-2); min-height:var(--control-h); padding:0 var(--sp-3); min-width:0; }
+.ct-comparison-chart { width:100%; max-height:300px; display:block; margin:var(--sp-5) 0; }
+.ct-replay-arms { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--sp-5); }
+.ct-validation pre,.ct-replay pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:450px; overflow:auto; font-size:var(--fs-1); }
 .ct-validation code,.ct-replay code { overflow-wrap:anywhere; }
-.ct-validation > article { margin:18px 0; }
+.ct-validation > article { margin:var(--sp-4) 0; }
 .ct-workspace [hidden] { display:none!important; }
 @media(max-width:640px){.ct-compare-form,.ct-replay-arms{grid-template-columns:minmax(0,1fr)}.ct-compare-toolbar{align-items:stretch}.ct-validation,.ct-replay{min-width:0}.ct-replay-arms h3{overflow-wrap:anywhere}}
+
+/* ---- operation tab: connection status and package picker ---------------------------------------- */
+.ct-conn.ui-card.pad { padding-block: 0; }
+.ct-conn > summary { min-height: 48px; }
+.ct-conn > :not(summary) { margin-bottom: var(--sp-3); }
+.ct-package { display: grid; gap: var(--sp-2); margin: 0 0 var(--sp-4); min-width: 0; }
+.ct-package legend { padding: 0 var(--sp-2); font-size: var(--fs-3); font-weight: 650; }
+.ct-package label { display: flex !important; align-items: center; gap: var(--sp-2); font-size: var(--fs-3); }

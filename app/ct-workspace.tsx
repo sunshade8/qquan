@@ -929,53 +929,11 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
   };
   const runnerOnline = data?.runnerOnline ?? false;
 
-  return (
-    <div className="ct-workspace">
-      {cj && live ? (
-        <div className="ct-sticky" role="region" aria-label="연구 진행 상태">
-          <LiveStatusBar job={cj} runnerOnline={runnerOnline} busy={busy} onAct={(a) => void act(a)} />
-        </div>
-      ) : null}
-
-      <header className="ct-head">
-        <h1><ChartCandlestick size={22} strokeWidth={1.9} aria-hidden="true" />차트 트레이딩 <small className="ui-sub">v0.0</small></h1>
-        <p className="ui-sub">공개 접근법 조사부터 실제 실험까지. 검증된 규칙을 모의·실전 운용으로 연결합니다.</p>
-      </header>
-
-      <div className="ct-market">
-        <div className="ui-segmented" role="group" aria-label="CT 시장">
-          {(["stock", "crypto"] as const).map((m) => (
-            <button
-              key={m}
-              aria-pressed={market === m}
-              onClick={() => {
-                setMarket(m);
-                const u=new URL(location.href);u.searchParams.set("ctMarket",m);for(const key of ["experiment","day","decision"])u.searchParams.delete(key);history.pushState({},"",u);
-                setSelected("");
-                setSymbols("");
-                setCapital("");
-              }}
-            >
-              {m === "stock" ? "주식" : "코인"}
-            </button>
-          ))}
-        </div>
-        <span className="ui-sub">
-          {market === "stock"
-            ? "Toss · 미국 현금 주식 · USD"
-            : "Binance · Spot · USDT"}
-        </span>
-      </div>
-
-      <nav className="ui-segmented ct-subtabs" aria-label="CT 작업">
-        {[["research","연구"],["validation","검증"],["operation","운용"]].map(([key,label])=><button key={key} aria-current={tab===key?"page":undefined} aria-pressed={tab===key} onClick={()=>selectTab(key)}>{label}</button>)}
-      </nav>
-      {tab==="validation"?<CTValidation key={market} market={market} runId={job?.id}/>:null}
-      <div hidden={tab!=="research"}>
+  const startCard = (
       <section className="ct-start ui-card pad" aria-labelledby="ct-start-h">
         <div className="ct-start-head">
           <div>
-            <h2 className="ui-title" id="ct-start-h">전략 연구 시작</h2>
+            <h2 className="ui-title" id="ct-start-h">{cj ? "새 연구 시작" : "전략 연구 시작"}</h2>
             <p className="ui-sub ui-num">{summary}</p>
             {preview ? (
               <p className="ui-sub" data-testid="ct-cost-profile">
@@ -1146,10 +1104,57 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
           </div>
         ) : null}
       </section>
+  );
 
+  return (
+    <div className="ct-workspace">
+      {cj && live ? (
+        <div className="ct-sticky" role="region" aria-label="연구 진행 상태">
+          <LiveStatusBar job={cj} runnerOnline={runnerOnline} busy={busy} onAct={(a) => void act(a)} />
+        </div>
+      ) : null}
+
+      <header className="ct-head">
+        <h1><ChartCandlestick size={22} strokeWidth={1.9} aria-hidden="true" />차트 트레이딩 <small className="ui-sub">v0.0</small></h1>
+        <p className="ui-sub">공개 접근법 조사부터 실제 실험까지. 검증된 규칙을 모의·실전 운용으로 연결합니다.</p>
+      </header>
+
+      <div className="ct-toolbar">
+      <div className="ct-market">
+        <div className="ui-segmented" role="group" aria-label="CT 시장">
+          {(["stock", "crypto"] as const).map((m) => (
+            <button
+              key={m}
+              aria-pressed={market === m}
+              onClick={() => {
+                setMarket(m);
+                const u=new URL(location.href);u.searchParams.set("ctMarket",m);for(const key of ["experiment","day","decision"])u.searchParams.delete(key);history.pushState({},"",u);
+                setSelected("");
+                setSymbols("");
+                setCapital("");
+              }}
+            >
+              {m === "stock" ? "주식" : "코인"}
+            </button>
+          ))}
+        </div>
+        <span className="ui-sub">
+          {market === "stock"
+            ? "Toss · 미국 현금 주식 · USD"
+            : "Binance · Spot · USDT"}
+        </span>
+      </div>
+
+      <nav className="ui-segmented ct-subtabs" aria-label="CT 작업">
+        {[["research","연구"],["validation","검증"],["operation","운용"]].map(([key,label])=><button key={key} aria-current={tab===key?"page":undefined} aria-pressed={tab===key} onClick={()=>selectTab(key)}>{label}</button>)}
+      </nav>
+      </div>
+      {tab==="validation"?<CTValidation key={market} market={market} runId={job?.id}/>:null}
+      <div className="ct-research" hidden={tab!=="research"}>
+      {!cj ? startCard : null}
       <section className="ct-progress-section" aria-labelledby="ct-progress-h">
         <div className="ui-card-head">
-          <h2 className="ui-title" id="ct-progress-h">연구 진행</h2>
+          <h2 className="ui-title" id="ct-progress-h">연구</h2>
           <div className="ct-progress-tools">
             {!cj && data ? (
               <span className="ui-badge" data-tone={runnerOnline ? undefined : "warn"}>
@@ -1194,21 +1199,52 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
                 {onPrepareData ? <button className="ui-btn sm" onClick={onPrepareData}>데이터 설정 열기</button> : null}
               </div>
             ) : null}
-            <div className="ct-progress-grid">
-              <PhaseStepper job={cj} />
-              <div className="ct-progress-main">
-                <LatestTrialCard trial={latestTrial} index={cj.ct.trials.length} total={cj.ct.contract.policy.maxCandidates} />
-                <ActivityFeed
-                  key={cj.id}
-                  jobId={cj.id}
-                  tools={cj.ct.tools}
-                  calls={calls}
-                  live={live}
-                  onDownload={download}
-                  onError={reportError}
-                />
+            {cj?.ct.endReason ? (
+              <section className="ct-result ui-card pad" data-passed={cj.ct.passed ? "true" : "false"} aria-labelledby="ct-result-h">
+                <div className="ct-result-head">
+                  <div>
+                    <h2 className="ui-title" id="ct-result-h">{cj.ct.passed ? "검증 통과 전략" : "통과 전략 없음"}</h2>
+                    <p className="ui-sub">
+                      {cj.ct.passed
+                        ? cj.ct.endReason
+                        : `연구는 정상적으로 종료되었습니다. 기준을 넘은 후보가 없어 등록할 전략이 없습니다. ${cj.ct.endReason}`}
+                    </p>
+                    {cj.ct.frozenHash ? <code className="ct-hash">{cj.ct.frozenHash}</code> : null}
+                  </div>
+                  {cj.ct.passed ? (
+                    <button className="ui-btn primary lg" disabled={busy || registeredThis} onClick={() => void act("register")}>
+                      {registeredThis ? "등록됨" : "전략 등록"}
+                    </button>
+                  ) : null}
+                </div>
+                {cj.ct.final ? (
+                  <>
+                    <h3 className="ui-label">동결 규칙 최종 평가</h3>
+                    <FinalMetrics result={cj.ct.final} />
+                  </>
+                ) : null}
+              </section>
+            ) : null}
+            <details className="ui-disclosure ct-steps" open={live}>
+              <summary>진행 단계와 활동 기록<small className="ui-num">{CT_PHASES[cj.ct.phase]} · 도구 {cj.ct.tools.length}건 · 모델 {calls.length}건</small></summary>
+              <div className="ui-disclosure-body">
+              <div className="ct-progress-grid">
+                <PhaseStepper job={cj} />
+                <div className="ct-progress-main">
+                  <LatestTrialCard trial={latestTrial} index={cj.ct.trials.length} total={cj.ct.contract.policy.maxCandidates} />
+                  <ActivityFeed
+                    key={cj.id}
+                    jobId={cj.id}
+                    tools={cj.ct.tools}
+                    calls={calls}
+                    live={live}
+                    onDownload={download}
+                    onError={reportError}
+                  />
+                </div>
               </div>
-            </div>
+              </div>
+            </details>
           </>
         ) : (
           <div className="ui-empty">
@@ -1218,33 +1254,29 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
         )}
       </section>
 
-      {cj?.ct.endReason ? (
-        <section className="ct-result ui-card pad" data-passed={cj.ct.passed ? "true" : "false"} aria-labelledby="ct-result-h">
-          <div className="ct-result-head">
-            <div>
-              <h2 className="ui-title" id="ct-result-h">{cj.ct.passed ? "검증 통과 전략" : "통과 전략 없음"}</h2>
-              <p className="ui-sub">
-                {cj.ct.passed
-                  ? cj.ct.endReason
-                  : `연구는 정상적으로 종료되었습니다. 기준을 넘은 후보가 없어 등록할 전략이 없습니다. ${cj.ct.endReason}`}
-              </p>
-              {cj.ct.frozenHash ? <code className="ct-hash">{cj.ct.frozenHash}</code> : null}
-            </div>
-            {cj.ct.passed ? (
-              <button className="ui-btn primary lg" disabled={busy || registeredThis} onClick={() => void act("register")}>
-                {registeredThis ? "등록됨" : "전략 등록"}
-              </button>
-            ) : null}
-          </div>
-          {cj.ct.final ? (
-            <>
-              <h3 className="ui-label">동결 규칙 최종 평가</h3>
-              <FinalMetrics result={cj.ct.final} />
-            </>
-          ) : null}
+
+      {data?.registered.length ? (
+        <section className="ct-section" aria-labelledby="ct-reg-h">
+          <h2 className="ui-title" id="ct-reg-h">등록된 전략 <span className="ct-count ui-num">{data.registered.length}</span></h2>
+          <ul className="ct-registered">
+            {data.registered.map((p) => (
+              <li key={p.id}>
+                <span className="ct-registered-name">{p.spec.name}</span>
+                <code>버전 {p.hash.slice(0, 12)}</code>
+                <button className="ui-btn sm" onClick={() => download(p, `${p.id}.json`)}>
+                  <Download size={13} aria-hidden="true" />전략 패키지 다운로드
+                </button>
+              </li>
+            ))}
+          </ul>
         </section>
       ) : null}
 
+      {cj ? startCard : null}
+      {cj ? (
+        <details className="ui-disclosure ct-detail-group">
+          <summary>연구 상세 기록<small className="ui-num">설계 세션 {cj.ct.sessions?.length ?? 0} · 후보 {cj.ct.trials.length} · 출처 {cj.ct.sources.length}</small></summary>
+          <div className="ui-disclosure-body ct-detail-body">
       {cj ? <ResearchSessions ct={cj.ct} jobId={cj.id} /> : null}
       <PlaybookPanel market={market} />
 
@@ -1282,26 +1314,12 @@ export function CTWorkspace({onPrepareData}:{onPrepareData?:()=>void}) {
         </details>
       ) : null}
 
-      {data?.registered.length ? (
-        <section className="ct-section" aria-labelledby="ct-reg-h">
-          <h2 className="ui-title" id="ct-reg-h">등록된 전략 <span className="ct-count ui-num">{data.registered.length}</span></h2>
-          <ul className="ct-registered">
-            {data.registered.map((p) => (
-              <li key={p.id}>
-                <span className="ct-registered-name">{p.spec.name}</span>
-                <code>버전 {p.hash.slice(0, 12)}</code>
-                <button className="ui-btn sm" onClick={() => download(p, `${p.id}.json`)}>
-                  <Download size={13} aria-hidden="true" />전략 패키지 다운로드
-                </button>
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
-
       {ct&&ctSessionPolicy(ct.contract).book?<section className="ui-card pad"><h2 className="ui-title">부품 · 북 · 정책 7</h2><p className="ui-sub">제품 {ct.contract.semantics?.productVersion??"v0.0"} · {ct.contract.semantics?.engine??"ct-decision-1"} · traderTools {ct.contract.policy.traderTools}</p><h3>부품</h3>{ct.components?.length?<div className="ui-scroll-x"><table className="ui-table"><thead><tr><th scope="col">조건/봉</th><th scope="col">이벤트/일</th><th scope="col">기준선 대비</th><th scope="col">군집 p</th><th scope="col">학습·개발 판정</th></tr></thead><tbody>{ct.components.map(r=><tr key={r.id}><th scope="row">{r.candidate.spec.name} · {r.candidate.spec.minutes}분 · 롱</th><td>{r.training?.events??"—"} / {r.training?.days??"—"}</td><td>{r.training?.differencePct.toFixed(4)??"—"}%</td><td>{r.training?.p.toFixed(4)??"—"}</td><td>{r.duplicateOf?"중복 제외":r.grade} · {r.training?.reasons.join(" · ")}</td></tr>)}</tbody></table></div>:<p className="ui-sub">제출된 부품 없음</p>}<h3>북</h3>{ct.books?.length?ct.books.map(b=><article key={b.id}><strong>{b.id} · {b.rule.kind} {"k" in b.rule?b.rule.k:""}</strong><p>{b.componentIds.join(" · ")}</p><p>일평균 {dayMean(b.development??b.training).toFixed(4)}% · 수익일 {(b.development??b.training).positiveDayPct?.toFixed(1)??"—"}% · 낙폭 {(b.development??b.training).maxDrawdownPct.toFixed(2)}%</p><p>{b.reasons.join(" · ")||"검증 중"}</p></article>):<p className="ui-sub">학습 통과·중복 제거 후 부품 2개 이상이 필요합니다. 개발에서 재조합하지 않습니다.</p>}<button className="ui-btn" onClick={()=>selectTab("validation")}>검증에서 비교 · 판단 리플레이</button></section>:null}
+          </div>
+        </details>
+      ) : null}
       </div>
-      <div hidden={tab!=="operation"}>
+      <div className="ct-research" hidden={tab!=="operation"}>
       <CTConnectionStatus/>
       <TradingDashboards
         key={market}

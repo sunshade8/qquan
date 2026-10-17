@@ -590,7 +590,7 @@ export function TradingDashboards({ book = "relay" }: { book?: TradingBookId } =
   const view = data.dashboards[mode];
   const usd=(v:number|null|undefined,signed=false)=>formatMoney(v,signed,data.currency??"USD");
   return <MoneyContext.Provider value={data.currency??"USD"}><section className="trading-dashboards">
-    {book.startsWith("ct-")&&view.status==="stopped"?<fieldset className="ui-card pad"><legend>운용 패키지 · 동결된 버전 선택</legend>{view.strategies.map(s=><label key={s.id} style={{display:"block"}}><input type="checkbox" checked={selectedVersions.includes(s.id)} onChange={e=>setSelectedVersions(ids=>e.target.checked?[...ids,s.id]:ids.filter(id=>id!==s.id))}/> {s.name}</label>)}<p className="ui-sub">선택한 순서로 충돌을 해결하고 하나의 계좌 위험 한도를 공유합니다. 기본 보수적 프로파일은 동시 포지션 1개입니다. 선택하지 않으면 가장 최근 등록 버전을 사용합니다.</p></fieldset>:null}
+    {book.startsWith("ct-")&&view.status==="stopped"?<fieldset className="ui-card pad ct-package"><legend>운용 패키지 · 동결된 버전 선택</legend>{view.strategies.map(s=><label key={s.id} style={{display:"block"}}><input type="checkbox" checked={selectedVersions.includes(s.id)} onChange={e=>setSelectedVersions(ids=>e.target.checked?[...ids,s.id]:ids.filter(id=>id!==s.id))}/> {s.name}</label>)}<p className="ui-sub">선택한 순서로 충돌을 해결하고 하나의 계좌 위험 한도를 공유합니다. 기본 보수적 프로파일은 동시 포지션 1개입니다. 선택하지 않으면 가장 최근 등록 버전을 사용합니다.</p></fieldset>:null}
     <div className="trading-tabs" role="tablist" aria-label="트레이딩 대시보드">
       {(["live", "paper"] as const).map((item) => {
         const dashboard = data.dashboards[item];

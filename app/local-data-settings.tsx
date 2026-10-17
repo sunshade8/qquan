@@ -76,7 +76,7 @@ export default function LocalDataSettings() {
       {error && <p role="alert">{error}</p>}
       {!error && data.length > 0 && <p>로컬 저장소 연결됨 · 저장된 파일 검증 결과</p>}
       {data.map((d) => (
-        <article key={d.dataset} style={{ display: "block" }}>
+        <article key={d.dataset} className="local-data-card">
           <h3>
             {d.dataset === "stock"
               ? "주식 1분봉 · NVDA · Massive"
@@ -95,6 +95,9 @@ export default function LocalDataSettings() {
             }{" "}
             · 작업 {d.job?.status ?? "없음"} · 손상 파일 {d.corruptFiles}
           </p>
+          <details className="ui-disclosure local-data-more">
+            <summary>저장 위치와 검증 범위</summary>
+            <div className="ui-disclosure-body">
           <p>
             저장 위치: <code>{d.location}</code>
           </p>
@@ -119,16 +122,19 @@ export default function LocalDataSettings() {
                 파일 요청 구간 작업 {d.job.done}/{d.job.total} 완료 · 요청{" "}
                 {date(d.job.start)}–{date(d.job.end)}
               </p>
-              {d.job.errors !== "[]" && (
-                <p role="alert">
-                  {d.job.errors} · 권한 오류는 Massive 요금제/키를 확인하고,
-                  미공개 아카이브는 공개 후 재개하세요.
-                </p>
-              )}
             </>
           )}
-          <div style={{ display: "flex", gap: 10 }}>
+            </div>
+          </details>
+          {d.job && d.job.errors !== "[]" && (
+            <p role="alert" className="ui-alert" data-tone="danger">
+              {d.job.errors} · 권한 오류는 Massive 요금제/키를 확인하고,
+              미공개 아카이브는 공개 후 재개하세요.
+            </p>
+          )}
+          <div className="local-data-actions">
             <button
+              className="ui-btn sm primary"
               disabled={busy}
               onClick={() =>
                 void action({ action: "enqueue", dataset: d.dataset })
@@ -139,6 +145,7 @@ export default function LocalDataSettings() {
             {d.job && (
               <>
                 <button
+                  className="ui-btn sm"
                   disabled={busy}
                   onClick={() =>
                     void action({ action: "cancel", id: d.job!.id })
@@ -147,6 +154,7 @@ export default function LocalDataSettings() {
                   취소
                 </button>
                 <button
+                  className="ui-btn sm"
                   disabled={busy}
                   onClick={() =>
                     void action({ action: "resume", id: d.job!.id })

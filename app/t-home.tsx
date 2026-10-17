@@ -48,11 +48,13 @@ function ModelPlacement() {
   useEffect(() => { queueMicrotask(() => void load(false)); }, [load]);
 
   return (
-    <section className="ui-card pad" aria-labelledby="t-models-h" style={{ marginBottom: 16 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
-        <h2 className="ui-title" id="t-models-h">모델 배치 <span className="ui-sub">LiveBench 2.0 · {data?.liveBench.release ?? "2026-10-14"}</span></h2>
-        <button className="ui-btn" disabled={busy} onClick={() => void load(true)}>{busy ? "불러오는 중" : "모델 다시 불러오기"}</button>
-      </div>
+    <details className="ui-disclosure ct-steps t-models" aria-labelledby="t-models-h">
+      <summary>
+        <span id="t-models-h">모델 배치</span>
+        <small className="ui-num">LiveBench 2.0 · {data?.liveBench.release ?? "2026-10-14"}{data && !data.router.error ? ` · 사용 가능 ${data.router.ready}/${data.router.total}` : ""}</small>
+      </summary>
+      <div className="ui-disclosure-body">
+      <div><button className="ui-btn sm" disabled={busy} onClick={() => void load(true)}>{busy ? "불러오는 중" : "모델 다시 불러오기"}</button></div>
       {error ? <p className="ui-alert" role="alert">{error}</p> : null}
       {data ? (
         <>
@@ -97,7 +99,8 @@ function ModelPlacement() {
           </details>
         </>
       ) : null}
-    </section>
+      </div>
+    </details>
   );
 }
 

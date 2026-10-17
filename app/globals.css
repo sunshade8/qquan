@@ -278,6 +278,15 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .settings-list article > span i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .settings-list .connected { color: var(--green); }
 .settings-list .missing { color: var(--warn-text); }
+.settings-list #local-market-data { display: grid; gap: var(--sp-3); word-break: keep-all; }
+.settings-list #local-market-data > h2 { margin: 0; font-size: var(--fs-5); font-weight: 650; letter-spacing: -.02em; }
+.settings-list #local-market-data > p { margin: 0; color: var(--secondary); font-size: var(--fs-2); line-height: var(--lh-read); }
+.settings-list .local-data-card { display: grid !important; gap: var(--sp-2); align-items: start; }
+.local-data-card h3 { margin: 0; font-size: var(--fs-3); font-weight: 650; }
+.local-data-card p { margin: 0; color: var(--secondary); font-size: var(--fs-2); line-height: var(--lh-read); }
+.local-data-card code { font-family: var(--font-mono); font-size: var(--fs-1); overflow-wrap: anywhere; word-break: normal; }
+.local-data-card .ui-disclosure-body { gap: var(--sp-1); }
+.local-data-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
 .settings-list .llm-cost-card { padding: 24px; display: grid; gap: 16px; }
 .llm-cost-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
 .llm-cost-head > div { display: grid; gap: 3px; }
@@ -1648,7 +1657,7 @@ em.verdict.inconclusive { color: var(--warn-text); background: color-mix(in srgb
 .invest-tabs button.active { color: var(--accent-text); border-bottom-color: var(--accent); }
 .invest-tabs button span { display: grid; gap: 1px; }
 .invest-tabs button strong { font-size: var(--fs-2); }
-.invest-tabs button small { color: var(--tertiary); font-size: var(--fs-1); }
+.invest-tabs button small { color: var(--secondary); font-size: var(--fs-1); }
 
 /* 급등주 ------------------------------------------------------------------ */
 .surge-board { padding: 18px 22px 34px; display: grid; gap: 14px; align-content: start; min-height: 0; overflow-y: auto; }
@@ -1729,7 +1738,9 @@ em.verdict.inconclusive { color: var(--warn-text); background: color-mix(in srgb
 
 @media (max-width: 760px) {
   .surge-board { padding: 14px 12px 26px; }
-  .invest-tabs { padding: 10px 12px 0; }
+  .invest-tabs { padding: 10px 12px 0; overflow-x: auto; scrollbar-width: none; }
+  .invest-tabs button { flex: 1 0 auto; padding: 9px 10px 11px; }
+  .invest-tabs button small { display: none; }
 }
 .surge-reference { border: 1px solid var(--line); border-radius: var(--r-2); padding: 9px 12px; }
 .surge-reference > summary { cursor: pointer; color: var(--secondary); font-size: var(--fs-1); }
@@ -1981,3 +1992,4 @@ body { -webkit-font-smoothing: antialiased; font-optical-sizing: auto; }
   .rail, .command-bar { background: var(--panel); backdrop-filter: none; }
   .chart-surface, .data-dock, .agent-dock { border-color: rgba(60, 60, 67, .42); }
 }
+.local-data-card .ui-alert { display: block; }

@@ -812,7 +812,7 @@ export function CTConnectionStatus() {
       .catch(() => setRows([]));
   }, []);
   return (
-    <details className="ui-card pad">
+    <details className="ui-card pad ui-disclosure ct-conn">
       <summary>상품별 연결·검증 상태 · 실전 기본 잠금</summary>
       <div className="ui-scroll-x">
         <table className="ui-table">

@@ -333,11 +333,8 @@ export function PhaseStepper({ job }: { job: CTJob }) {
     ol.scrollTo({ left: el.offsetLeft - (ol.clientWidth - el.offsetWidth) / 2, behavior: calm ? "auto" : "smooth" });
   }, [ct.phase]);
   const activeLeft = Math.max(0, policy.maxActiveMs - ct.activeMs);
+  // Cost and candidate counts live in the status bar; only the active-time limit is unique to the stepper.
   const limits = [
-    job.budgetUsd >= 1000
-      ? { label: "비용", value: `${usd(job.costUsd)} / 무제한`, ratio: 0 }
-      : { label: "비용", value: `${usd(job.costUsd)} / ${usd(job.budgetUsd)}`, ratio: job.costUsd / (job.budgetUsd || 1) },
-    { label: "후보", value: `${ct.submitted ?? ct.trials.length} / ${policy.maxCandidates}`, ratio: (ct.submitted ?? ct.trials.length) / policy.maxCandidates },
     { label: "활성 시간", value: `${formatClock(ct.activeMs)} / ${formatClock(policy.maxActiveMs)}`, ratio: ct.activeMs / policy.maxActiveMs },
   ];
   return (
@@ -737,7 +734,10 @@ export function NowPanel({ job, calls, driver }: { job: CTJob; calls: CTCall[]; 
         </div>
       ) : null}
 
-      <Roster agents={agents} job={job} />
+      <details className="ui-disclosure ct-roster">
+        <summary>에이전트 {agents.length}개<small className="ui-num">작업 중 {agents.filter((a) => a.state === "working").length} · 완료 {agents.filter((a) => a.state === "done").length}</small></summary>
+        <div className="ui-disclosure-body"><Roster agents={agents} job={job} /></div>
+      </details>
     </section>
   );
 }
