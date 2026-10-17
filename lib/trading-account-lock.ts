@@ -2,7 +2,7 @@ import Decimal from "decimal.js";
 import { env } from "cloudflare:workers";
 const db = () => (env as unknown as { DB: D1Database }).DB;
 /** Shared by relay, surge and CT live books. Lock loss prevents any subsequent write. */
-export async function accountLock(broker: "toss" | "upbit", owner: string) {
+export async function accountLock(broker: "toss" | "upbit" | "binance", owner: string) {
   await db()
     .prepare(
       "CREATE TABLE IF NOT EXISTS trading_account_locks (id TEXT PRIMARY KEY,owner TEXT,until_ms INTEGER)",
@@ -21,7 +21,7 @@ export async function accountLock(broker: "toss" | "upbit", owner: string) {
   return result.meta.changes === 1;
 }
 export async function releaseAccountLock(
-  broker: "toss" | "upbit",
+  broker: "toss" | "upbit" | "binance",
   owner: string,
 ) {
   await db()
@@ -48,7 +48,7 @@ export async function accountHasUncertainOrders(excludeId: string) {
 }
 
 export async function renewAccountLock(
-  broker: "toss" | "upbit",
+  broker: "toss" | "upbit" | "binance",
   owner: string,
 ) {
   const now = Date.now();

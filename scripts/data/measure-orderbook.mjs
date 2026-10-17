@@ -1,8 +1,9 @@
 /**
  * Order-book sampler for the CT cost profile (docs/ct.md「비용 프로필」).
  *
- * Polls PUBLIC, unauthenticated endpoints once a minute — Binance Spot `depth` and Upbit
- * `orderbook` — and stores, per snapshot, the spread and the per-side price impact of a
+ * Polls PUBLIC, unauthenticated endpoints once a minute — Binance Spot `depth` (venue "binance") and
+ * Binance USDⓈ-M futures `depth` (venue "binance-usdm"; before 2026-10-17 the futures book was approximated by the
+ * spot one). Upbit `orderbook` is sampled only with QQUAN_ENABLE_UPBIT=true. Stores, per snapshot, the spread and the per-side price impact of a
  * market order sized like the contract capital ($1,000) and ten times that ($10,000).
  * No keys, no account, no orders. Rows go to SQLite table `ct_orderbook_samples`.
  *
@@ -38,7 +39,9 @@ db.exec(`CREATE TABLE IF NOT EXISTS ct_orderbook_samples (
 const NOTIONALS_USD = [1000, 10000];
 const BINANCE = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
 const UPBIT = ["KRW-BTC", "KRW-ETH", "KRW-SOL"];
+const UPBIT_ENABLED = process.env.QQUAN_ENABLE_UPBIT === "true";
 const BINANCE_HOSTS = ["https://api.binance.com", "https://data-api.binance.vision"];
+const BINANCE_USDM_HOSTS = ["https://fapi.binance.com"];
 
 async function getJson(url) {
   const res = await fetch(url, { signal: AbortSignal.timeout(15000), headers: { accept: "application/json" } });
@@ -79,28 +82,43 @@ async function sweep() {
     }
     if (!done) errors.push(`binance ${symbol} unavailable`);
   }
-  try {
-    // KRW per USD proxy: the KRW-USDT ticker (USDT ≈ 1 USD). Upbit sizes are in KRW.
-    const [{ trade_price: krwPerUsd }] = await getJson("https://api.upbit.com/v1/ticker?markets=KRW-USDT");
-    const books = await getJson(`https://api.upbit.com/v1/orderbook?markets=${UPBIT.join(",")}&count=30`);
-    for (const b of books) {
-      const units = b.orderbook_units;
-      out.push(
-        ...store(
-          ts,
-          "upbit",
-          b.market,
-          {
-            bids: units.map((u) => ({ price: u.bid_price, size: u.bid_size })),
-            asks: units.map((u) => ({ price: u.ask_price, size: u.ask_size })),
-          },
-          krwPerUsd,
-        ),
-      );
+  for (const symbol of BINANCE) {
+    let done = false;
+    for (const host of BINANCE_USDM_HOSTS) {
+      try {
+        const d = await getJson(`${host}/fapi/v1/depth?symbol=${symbol}&limit=500`);
+        out.push(...store(ts, "binance-usdm", symbol, { bids: levels(d.bids), asks: levels(d.asks) }, 1));
+        done = true;
+        break;
+      } catch (e) {
+        errors.push(String(e.message));
+      }
     }
-  } catch (e) {
-    errors.push(String(e.message));
+    if (!done) errors.push(`binance-usdm ${symbol} unavailable`);
   }
+  if (UPBIT_ENABLED)
+    try {
+      // KRW per USD proxy: the KRW-USDT ticker (USDT ≈ 1 USD). Upbit sizes are in KRW.
+      const [{ trade_price: krwPerUsd }] = await getJson("https://api.upbit.com/v1/ticker?markets=KRW-USDT");
+      const books = await getJson(`https://api.upbit.com/v1/orderbook?markets=${UPBIT.join(",")}&count=30`);
+      for (const b of books) {
+        const units = b.orderbook_units;
+        out.push(
+          ...store(
+            ts,
+            "upbit",
+            b.market,
+            {
+              bids: units.map((u) => ({ price: u.bid_price, size: u.bid_size })),
+              asks: units.map((u) => ({ price: u.ask_price, size: u.ask_size })),
+            },
+            krwPerUsd,
+          ),
+        );
+      }
+    } catch (e) {
+      errors.push(String(e.message));
+    }
   return { ts, rows: out, errors };
 }
 
@@ -184,6 +202,7 @@ if (args.check) {
   const table = profileTable();
   let bad = 0;
   for (const profile of Object.values(CT_COST_PROFILES)) {
+    if (profile.venue === "upbit" && !UPBIT_ENABLED) continue; // Upbit is off (QQUAN_ENABLE_UPBIT)
     for (const [symbol, per] of Object.entries(profile.symbols ?? {})) {
       for (const [usd, v] of Object.entries(per)) {
         const m = table[`${profile.venue}:${symbol}`]?.[usd];

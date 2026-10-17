@@ -1,6 +1,7 @@
 import { accountLock, releaseAccountLock, renewAccountLock, accountHasUncertainOrders, otherBookReservations } from "./trading-account-lock.ts";
 import { ctBroker, ctDecorateView, ctMarketOf, ctReadiness, ctStartState, ctTick, type CTBook } from "./ct-trading.ts";
 import { ctPackages } from "./ct-research-store.ts";
+import { upbitEnabled, isUpbitContract } from "./upbit-flag.ts";
 /**
  * Wires the trading engine to the world: D1 for state, Toss for quotes, minute
  * candles and orders, Massive for warm-up sessions.
@@ -303,7 +304,7 @@ async function bookStrategies(book: TradingBook): Promise<SlotStrategy[]> {
 
 async function guardedBroker(broker:DashboardBroker,book:TradingBook,owner:string):Promise<DashboardBroker>{
   if(broker.mode!=="live")return broker;
-  const account=book==="ct-crypto"?"upbit":"toss";
+  const account=book==="ct-crypto"?(upbitEnabled()?"upbit":"binance"):"toss";
   return {...broker,async buyingPowerUsd(){const available=await broker.buyingPowerUsd?.();if(available===undefined||available===null||!Number.isFinite(available))return NaN;return Math.max(0,available-await otherBookReservations(rowId(book,"live")));},async submit(request){await renewAccountLock(account,owner);if(request.side==="buy"&&await accountHasUncertainOrders(rowId(book,"live")))throw new BrokerRejection("타 장부 응답 미확정 주문 대사 필요","account-uncertain");return broker.submit(request);},async cancel(order){await renewAccountLock(account,owner);return broker.cancel(order);}};
 }
 
@@ -344,7 +345,7 @@ async function tickOne(book: TradingBook, mode: DashboardMode, options: { force?
   const owner = crypto.randomUUID();
   if (!(await acquireLease(book, mode, owner))) return "busy";
   let accountHeld = false;
-  const accountBroker = book === "ct-crypto" ? "upbit" : "toss";
+  const accountBroker = book === "ct-crypto" ? (upbitEnabled() ? "upbit" : "binance") : "toss";
   try {
     if (mode === "live") { accountHeld = await accountLock(accountBroker,owner); if(!accountHeld) return "account_busy"; }
     const { state } = await readRow(book, mode);
@@ -424,7 +425,7 @@ export async function startTrading(book: TradingBook, mode: DashboardMode, confi
     const data=await tradingDashboards(book);const ready=data.dashboards[mode].readiness;
     if(!ready.ready)throw new TradingUserError(ready.reasons.join(" · "));
     if(mode === "live" && confirm !== LIVE_CONFIRM_PHRASE)throw new TradingUserError("실거래 시작 확인 필요");
-    const packages=await ctPackages(ctMarketOf(book));
+    const packages=(await ctPackages(ctMarketOf(book))).filter(p=>upbitEnabled()||!isUpbitContract(p.contract));
     await withLease(book,mode,async state=>{
       if(state.status!=="stopped"||state.orders.some(isActiveOrder)||state.trades.some(t=>heldQuantity(t)>1e-8))throw new TradingUserError("실행 중이거나 정지 청산 미완료");
       const next=startDashboard(state,{now:()=>Date.now(),id:()=>crypto.randomUUID()},"CT 동결 버전");
@@ -496,7 +497,8 @@ export async function tradingDashboards(book: TradingBook = "relay"): Promise<Tr
   const RELAY_STRATEGIES = await bookStrategies(book);
   const [live, paper] = await Promise.all([readRow(book, "live"), readRow(book, "paper")]);
   if(isCTBook(book)) {
-    const packages=await ctPackages(ctMarketOf(book));
+    // Upbit packages stay in the database but are not shown or startable while QQUAN_ENABLE_UPBIT is off.
+    const packages=(await ctPackages(ctMarketOf(book))).filter(p=>upbitEnabled()||!isUpbitContract(p.contract));
     const heartbeat=Math.max(live.runnerHeartbeatAt??0,paper.runnerHeartbeatAt??0),online=Date.now()-heartbeat<RUNNER_ONLINE_MS;
     const readiness=await ctReadiness(book,live.state,paper.state,packages,online);
     // New coin runs are Binance USDT; only a book whose latest package is a legacy Upbit KRW contract keeps the Upbit framing.

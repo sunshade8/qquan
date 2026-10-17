@@ -37,6 +37,7 @@ import {
   UpbitError,
 } from "./upbit.ts";
 import Decimal from "decimal.js";
+import { assertUpbitStartAllowed, upbitEnabled, UPBIT_OFF_MESSAGE } from "./upbit-flag.ts";
 import { tossListOrders, tossPrimaryAccount } from "./toss-orders.ts";
 import { fetchTossQuote, fetchTossTradingDay } from "./market-data.ts";
 import { easternParts } from "./market-clock.ts";
@@ -255,6 +256,8 @@ export async function ctStartState(
     if ((p.book?.hash ?? await ctHash(executableCT(p.spec))) !== p.hash)
       throw new Error("CT 등록 해시 불일치");
   const chosen = packages.at(-1)!;
+  // A new Upbit run is refused by the server (hiding the choice in the screen is not enough).
+  assertUpbitStartAllowed(chosen.contract);
 
   if(packages.some(p=>p.contract.currency!==chosen.contract.currency||p.contract.capital!==chosen.contract.capital||p.contract.costProfile?.id!==chosen.contract.costProfile?.id))throw new Error("운용 패키지의 통화·자본·비용 프로파일 불일치");
   state.ctRules = packages.map(p=>({...(p.book?{book:p.book,components:p.components}:{}),id:p.id,spec:p.spec,hash:p.hash,contract:p.contract}));
@@ -304,6 +307,10 @@ export async function ctReadiness(
   if(book === "ct-crypto"&&latest?.contract.currency==="USDT") {
     if(binanceSetting("BINANCE_TRADING_DISABLED")!=="false")liveReasons.push("BINANCE_TRADING_DISABLED · 실주문 잠금");
     liveReasons.push("Binance 계좌/수수료/주문/스트림 통합 검증 필요");
+  }
+  else if (book === "ct-crypto" && !upbitEnabled()) {
+    // No Binance package registered (an Upbit one is hidden while the flag is off): nothing to check an account for.
+    if (latest) { paperReasons.push(UPBIT_OFF_MESSAGE); liveReasons.push(UPBIT_OFF_MESSAGE); }
   }
   else if (book === "ct-crypto") {
     if (!upbitConfigured()) liveReasons.push("Upbit 계좌 키 미설정");

@@ -399,6 +399,11 @@ export type CTContract = {
   dataProvenance?: Record<string,string>;
   /** Cost profile the `costs` below came from (absent on contracts frozen before profiles). */
   costProfile?: { id: string; version: number };
+  /**
+   * Limit-order-only execution (lib/ct-limit-execution.ts), frozen with the contract. Absent = the earlier model
+   * (fill at the next bar's open ± impact, taker fee) and the contract replays exactly as it always did.
+   */
+  execution?: import("./ct-limit-execution.ts").CTExecutionPolicy;
   timezone: "America/New_York" | "Asia/Seoul" | "UTC";
   capital: number;
   costs: {
