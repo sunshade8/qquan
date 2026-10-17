@@ -11,7 +11,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let gap = Number(process.env.GAP_MS ?? 2000);
 async function get(url) {
   for (let attempt = 0; attempt < 8; attempt++) {
-    const res = await fetch(url + (url.includes("?") ? "&" : "?") + "apiKey=" + key);
+    let res;
+    try { res = await fetch(url + (url.includes("?") ? "&" : "?") + "apiKey=" + key); }
+    catch (e) { console.error("network error, retry", e.cause?.code ?? e.message); await sleep(20000); continue; }
     if (res.status === 429) { console.error("429 backoff, gap", gap); gap = Math.min(gap * 1.5 + 500, 13000); await sleep(15000); continue; }
     const body = await res.json();
     await sleep(gap);
